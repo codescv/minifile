@@ -76,8 +76,9 @@ Material 3 cards/list sections:
    - `SD Card` / `USB Drive (SanDisk)` — removable volumes; show `Mount` button if SAF access not yet granted (see §6).
    - Unmounted/ejected volumes disappear automatically (`ACTION_MEDIA_MOUNTED/UNMOUNTED` receiver).
 2. **App Data** — `Android/data`, `Android/obb` (SAF tree entries, with a lock badge until granted) and **Installed Apps** (Apps Inspector, §6.3).
-3. **Quick Access** — `Download`, `DCIM`, `Pictures`, `Documents`, `Movies`, `Music` (standard public dirs).
-4. **Recent Favorites** — up to 4 most recently used favorites (chips), "See all →" to Favorites tab.
+3. **Mounted folders** — every SAF tree the user has granted via **"Mount a folder…"** (generic `ACTION_OPEN_DOCUMENT_TREE`; any folder the system picker allows becomes a browsable volume with full read/write). This is the **fallback when All-files access is denied** on API 30+ (the picker refuses the primary root and `Download` root, but allows e.g. `Documents`, `Pictures/MyFolder`, or an SD/USB root). Rows show display name, provider, and an *Unmount* (revoke) action in the row menu.
+4. **Quick Access** — `Download`, `DCIM`, `Pictures`, `Documents`, `Movies`, `Music` (standard public dirs).
+5. **Recent Favorites** — up to 4 most recently used favorites (chips), "See all →" to Favorites tab.
 
 ### 1.3 Directory Browser
 
@@ -240,7 +241,7 @@ Fields:
 │   Authentication           Anonymous       › │
 │   Read-only                     ◯ off        │
 │   Keep screen on while running  ● on         │
-│   Start automatically on Wi-Fi  ◯ off        │
+│   Passive ports          50000–50100       › │
 │                                              │
 │  Activity                        [Clear]     │
 │   20:14:03  192.168.1.10 connected           │
@@ -255,9 +256,9 @@ Fields:
 - **Settings** (persisted):
   - Port (1024–65535, default **2121**; validation + "port in use" error on start).
   - Root folder: picker over volumes/Favorites (File path or SAF tree) — the FTP virtual root `/` maps to it; clients can never escape it.
-  - Authentication: *Anonymous* (any user/pass accepted) or *Username + Password* (password stored in `EncryptedSharedPreferences`/private prefs; shown masked with reveal).
+  - Authentication: *Anonymous* (any user/pass accepted) or *Username + Password* (password stored in app-private `SharedPreferences` (`MODE_PRIVATE`) — `security-crypto` is deprecated and not available offline; the trade-off is acceptable because the password only protects a LAN FTP session and app-private storage is inaccessible to other apps on non-rooted devices; shown masked with reveal).
   - Read-only toggle: write commands (`STOR, DELE, MKD, RMD, RNFR/RNTO, APPE`) return `550 Read-only server`.
-  - Passive port range (default 50000–50100), UTF-8 (always on), idle timeout (default 300 s), keep-screen-on, auto-start on Wi-Fi (optional; via `ConnectivityManager` callback).
+  - Passive port range (default 50000–50100), UTF-8 (always on), idle timeout (default 300 s), keep-screen-on. *Auto-start on Wi-Fi* is **dropped from v1** (starting a foreground service from a background `NetworkCallback` is blocked on API 31+); the row in the mock-up above is replaced by **"Stopped by system"** handling: if Android stops the service (`Service.onTimeout`, low memory), the app posts a "MiniFile FTP was stopped — tap to restart" notification.
 - **Live log**: last 500 entries (ring buffer) with timestamp, client IP, command / transfer summary with byte count and duration; connection count chip; export log to a text file.
 - QR code of the URL is a *nice-to-have* (only if implementable without a dependency — otherwise omit).
 
@@ -376,7 +377,7 @@ Available **whenever items are selected or on the clipboard**:
 | 33–35 | `MANAGE_EXTERNAL_STORAGE`. | Picker blocks `Android/data` root on 33+; **per-package subfolders** can still be granted on many OEM builds via `EXTRA_INITIAL_URI` = `primary:Android/data/<pkg>` (MiniFile's Apps Inspector constructs this URI per app). If the system refuses, show a clear explanation and offer the ADB/"Shizuku-free" alternatives list (just an info sheet; no root). `Android/obb` same rules. | SAF tree (`ACTION_OPEN_DOCUMENT_TREE` with `StorageVolume.createOpenDocumentTreeIntent()`); `File` works for reads when All-files access granted. |
 
 UX:
-- First launch → **Storage access onboarding** card (not a blocking wall): explains why All-files access is needed, `Grant` button opens the settings screen; the app remains usable for SAF-mounted locations without it.
+- First launch → **Storage access onboarding** card (not a blocking wall): explains why All-files access is needed, `Grant` button opens the settings screen, and a secondary **"Mount a folder instead…"** button runs the generic SAF flow; the app remains fully usable for SAF-mounted locations (Storage Home → *Mounted folders*, §1.2) without All-files access.
 - Each SAF location shows **Mount** (grant) on first use; the app calls `takePersistableUriPermission` and remembers the grant (`PersistedTree` table). Revoked grants are detected (`SecurityException`) → row shows "Access lost · Mount again".
 - Tools → *Storage access* page lists all granted trees with *Revoke* buttons.
 
@@ -413,6 +414,7 @@ Sections (M3 settings list):
 - **Icons**: `material-icons-extended`: `Folder, InsertDriveFile, Image, Movie, MusicNote, Description, Archive, Android, Code, Star/StarBorder, VisibilityOff, Usb, SdCard, Smartphone, Wifi, Build, ContentCopy, ContentCut, ContentPaste, DriveFileRenameOutline, Delete, CreateNewFolder, NoteAdd, Info, Search, Sort, GridView, ViewList, Check, Close`.
 - **Motion**: `AnimatedContent` directory transitions (slide/fade ≤ 200 ms), selection checkbox morph, shared-axis between tabs. Respect "Remove animations" accessibility setting.
 - **Density**: list rows 56 dp; touch targets ≥ 48 dp; breadcrumbs 32 dp chips.
+- **Edge-to-edge** (mandatory with `targetSdk 35`): `enableEdgeToEdge()` in `MainActivity`; every screen uses `Scaffold` with `contentWindowInsets` and the `NavigationBar`/bottom bars/FAB/clipboard bar apply `WindowInsets.navigationBars` + `ime` padding so nothing draws under system bars; `LazyColumn` content padding includes the bottom inset.
 - **Accessibility**: content descriptions for all icons/badges ("Hidden from gallery", "Favorite"), TalkBack announces selection counts, large-text tested at 200%, color contrast AA, keyboard navigation in the Web Companion.
 - **Localization**: all strings in `strings.xml` (English base); RTL-safe layouts; file sizes via `Formatter.formatFileSize`; dates via `DateUtils` relative + full.
 

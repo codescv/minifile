@@ -60,7 +60,18 @@ python3 -m unittest discover -s companion/tests -v
 ```
 Debug APK path: `app/build/outputs/apk/debug/app-debug.apk`. `gradle.properties` must set `org.gradle.jvmargs=-Xmx3g`, `android.useAndroidX=true`, `kotlin.code.style=official`.
 
-Android app config: `applicationId "com.minifile.explorer"`, `namespace "com.minifile.explorer"`, `minSdk 26`, `targetSdk 35`, `compileSdk 35`, `versionCode 1`, `versionName "1.0.0"`, `jvmTarget "17"` (Kotlin & Java toolchain 17 for AGP compatibility; JDK 21 runs Gradle), `buildFeatures { compose = true; buildConfig = true }`.
+Android app config: `applicationId "com.minifile.explorer"`, `namespace "com.minifile.explorer"`, `minSdk 26`, `targetSdk 35`, `compileSdk 35`, `versionCode 1`, `versionName "1.0.0"`, `buildFeatures { compose = true; buildConfig = true }`.
+
+**Reproducibility rules (binding):**
+- **Never** use `kotlin { jvmToolchain(17) }` or `java { toolchain { … } }` — Gradle would try to auto-provision a JDK 17 and fail offline. Instead set directly:
+  ```kotlin
+  android { compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 } }
+  kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
+  ```
+  JDK 21 (`JAVA_HOME`) runs Gradle and compiles with `--release`-style targeting of 17.
+- Git worktrees do **not** contain `local.properties` (git-ignored) → `ANDROID_HOME` must be exported in every build shell (or copy `local.properties` into the worktree; it stays ignored).
+- **Milestone M0 (first commit of `feat/android-app`)**: an empty Compose skeleton app (`MainActivity` showing "MiniFile") that passes `./gradlew --offline assembleDebug testDebugUnitTest` with one trivial JUnit test, committed *before* any feature code. Every dependency added later must also resolve with `--offline`; if one does not, pick a cached alternative rather than dropping `--offline`.
+- Lock the versions in `gradle/libs.versions.toml`; no dynamic (`+`) versions; `repositories { google(); mavenCentral() }` only.
 
 ---
 
@@ -207,7 +218,7 @@ data class VfsNode(
 data class Volume(
     val id: String,            // uuid or "primary"
     val name: String,          // "Internal Storage", "SD Card", "USB Drive (SanDisk)"
-    val kind: VolumeKind,      // PRIMARY, SD_CARD, USB_OTG, APP_DATA, APP_OBB
+    val kind: VolumeKind,      // PRIMARY, SD_CARD, USB_OTG, APP_DATA, APP_OBB, MOUNTED_TREE (generic "Mount a folder…" SAF grant, DESIGN §1.2)
     val root: VfsPath?,        // null until a SAF grant exists
     val totalBytes: Long, val freeBytes: Long,   // -1 when unknown
     val isMounted: Boolean, val needsSafGrant: Boolean,
@@ -240,10 +251,20 @@ class FileSystemRepository(private val backends: List<FileSystem>) : FileSystem 
 ```
 Path safety: `LocalFileSystem` canonicalizes and refuses names containing `/` or NUL; `SafFileSystem` builds children with `DocumentsContract.buildDocumentUriUsingTree` and never concatenates strings into URIs.
 
+**Jail support for `Local` roots (used by the FTP server and by `ZipArchiver.extract`):** `LocalFileSystem` exposes
+```kotlin
+fun isInside(candidate: File, root: File): Boolean {
+    val r = root.canonicalPath; val c = candidate.canonicalPath
+    return c == r || c.startsWith(r + File.separator)
+}
+```
+which resolves **symlinks** via `canonicalPath`. `FtpPathResolver` and the extractor call it on the fully resolved target before every list/stat/open/create/rename/delete; a `false` result is a hard failure (`550` for FTP, "unsafe entry skipped" for zip). This is what makes a symlink inside the root that points outside (`root/evil -> /`) non-traversable. Covered by `FtpPathResolverTest` (symlink case) and `ZipArchiverTest`.
+
 ### 4.3 Storage Volumes & SAF (data layer)
 - `AndroidVolumeProvider.volumes(): Flow<List<Volume>>` — merges `StorageManager.storageVolumes`, `PersistedTreeStore` grants, and `VolumeChangeReceiver` events.
 - `PersistedTreeStore`: map `volumeKey → treeUri` in prefs; on load it validates against `contentResolver.persistedUriPermissions` and drops stale grants.
 - SAF mount flow (`SafMountLauncher` in UI, `ActivityResultContracts.OpenDocumentTree`):
+  - Generic **"Mount a folder…"** (Storage Home, onboarding card): plain `ACTION_OPEN_DOCUMENT_TREE` with no initial URI; the result becomes a `Volume(kind = MOUNTED_TREE)` keyed by its tree URI. This is the guaranteed path when All-files access is denied.
   - Removable volume: `volume.createOpenDocumentTreeIntent()` (API 29+) else `ACTION_OPEN_DOCUMENT_TREE`.
   - `Android/data`/`obb`: `EXTRA_INITIAL_URI = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:Android/data")` (`…/obb`); per-package: `"primary:Android/data/<pkg>"`.
   - On result: `takePersistableUriPermission(uri, READ|WRITE)`; verify the returned tree really is the requested one (`DocumentsContract.getTreeDocumentId(uri)` starts with the expected id) else show "You picked a different folder" and keep it as a generic mounted tree.
@@ -281,6 +302,8 @@ class ZipArchiver(private val fs: FileSystem) {
 }
 ```
 **Zip-slip guard (mandatory, tested):** for every entry compute `relative = entry.name` → reject if it is empty, absolute (`/`, `\`, or `X:`), contains a NUL, or any segment equals `..` after splitting on both `/` and `\`. For `Local` destinations additionally verify `File(dstDir, relative).canonicalPath.startsWith(dstCanonical + File.separator)`. For SAF destinations, create children segment by segment through `FileSystem.child/createDirectory` (no path strings), which structurally prevents escape. Zip-bomb guard per DESIGN §3.3. Uses `java.util.zip` with `Charsets.UTF_8`; falls back to `CP437` decoding when the UTF-8 flag is absent and names fail to decode.
+
+**Archive source backend:** `java.util.zip.ZipFile` requires a `java.io.File`, so `Local` archives use `ZipFile` (random access → fast `listEntries`, selective extract by entry). `Saf` archives (USB/`Android/data`) use `ZipInputStream` over `fs.openInput(zip)` — sequential; `listEntries` scans once (sizes come from the local header / stream, "compressed size" may be unknown → `-1`), and selective extract is implemented as a name filter while streaming. Both paths share the same entry-safety and conflict logic (`ZipEntrySink`). Compression always writes through `ZipOutputStream` over `fs.openOutput`, so it works for both backends.
 
 ### 5.3 `ChecksumCalculator`
 `suspend fun digest(path: VfsPath, algorithm: "MD5"|"SHA-256", sink: ProgressSink): String` — `MessageDigest` over `openInput`, 256 KB buffer, cancellable, lower-case hex.
@@ -325,16 +348,22 @@ class FtpServerEngine(config: FtpConfig, fs: FileSystem, externalIpProvider: () 
 **Command set** (replies per RFC 959/3659/2389/2428):
 `USER, PASS, QUIT, NOOP, SYST ("215 UNIX Type: L8"), FEAT (lists `UTF8, MLST type*;size*;modify*;perm*;, MLSD, SIZE, MDTM, REST STREAM, EPSV, PASV, TVFS`), OPTS UTF8 ON, PWD/XPWD, CWD, CDUP, TYPE (A/I; data always sent raw), MODE S, STRU F, PASV, EPSV (also `EPSV ALL`), PORT, EPRT, LIST, NLST, MLSD, MLST, SIZE, MDTM, REST, RETR, STOR, APPE, DELE, MKD/XMKD, RMD/XRMD, RNFR/RNTO, ABOR, STAT (basic), HELP`. Unknown → `502`. Not logged in → `530`. Write command while read-only → `550 Read-only server`.
 
-**Path jail (`FtpPathResolver`)** — virtual absolute paths (`/a/b`) are normalized by splitting on `/`, dropping empty and `.` segments, resolving `..` by popping (never past root), rejecting NUL and backslash-containing segments; the result maps to `root` by descending segment by segment via `FileSystem.child`. Therefore `CWD ../../..`, `RETR /../../etc/passwd`, and encoded variants can never leave `root`. **Unit-tested with an adversarial table.**
+**Path jail (`FtpPathResolver`)** — virtual absolute paths (`/a/b`) are normalized by splitting on `/`, dropping empty and `.` segments, resolving `..` by popping (never past root), rejecting NUL and backslash-containing segments; the result maps to `root` by descending segment by segment via `FileSystem.child`. Therefore `CWD ../../..`, `RETR /../../etc/passwd`, and encoded variants can never leave `root`. For `Local` roots the resolver additionally runs `LocalFileSystem.isInside(resolvedFile, rootFile)` (canonical-path/symlink check, §4.2) **before every** list/stat/open/create/rename/delete; failure → `550 Access denied`. **Unit-tested with an adversarial table incl. a symlink-escape case** (JVM temp dir + `Files.createSymbolicLink`).
 
-**Passive mode:** `PASV` binds an ephemeral listener from `passivePorts` on `0.0.0.0`, replies `227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)` where `h` = the **local address of the control socket** (`controlSocket.localAddress`) — this is the interface the client reached us on, so it is correct on Wi-Fi, hotspot and USB tethering; `EPSV` replies `229 Entering Extended Passive Mode (|||port|)` (address-less, preferred by modern clients and Python `ftplib` for IPv6). Data listener accept timeout 30 s; only one data connection per session; the accepted peer must match the control peer IP (anti-bounce) unless `allowForeignDataPeer` is set for testing. **Active mode** `PORT`/`EPRT` connects from `port-1` best-effort (falls back to ephemeral).
+**Passive mode:** `PASV` binds an ephemeral listener from `passivePorts` on the wildcard address, replies `227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)` where `h` = the **local address of the control socket** (`controlSocket.localAddress`) — this is the interface the client reached us on, so it is correct on Wi-Fi, hotspot and USB tethering. If the control connection is **IPv6** (incl. IPv4-mapped not representable), `PASV` replies `522 Network protocol not supported, use (1)` (RFC 2428) and the client falls back to `EPSV` (Python `ftplib` does so automatically); `EPSV` replies `229 Entering Extended Passive Mode (|||port|)` (address-less). The control listener binds `InetSocketAddress(port)` (dual-stack where the OS allows; Android phones typically reach it over IPv4). Data listener accept timeout 30 s; only one data connection per session; the accepted peer must match the control peer IP (anti-bounce) unless `allowForeignDataPeer` is set for testing. **Active mode** `PORT`/`EPRT` connects from `port-1` best-effort (falls back to ephemeral).
+
+**Reply formats (part of the interop contract, §6.4):** `PWD`/`MKD` → `257 "<path>"` with embedded `"` doubled; `MLSD` omits the `modify` fact when the mtime is unknown (SAF returns 0); `LIST` dates use `MMM dd HH:MM` for entries newer than 6 months and `MMM dd  yyyy` otherwise (English month names, `Locale.US`); `STOR`/`MKD` whose parent does not exist → `550`; `RNTO` whose target is on a different backend → `550`; `REST` before `STOR` on a `Saf` root → `504 REST not supported for STOR on this volume` (`REST`+`RETR` works on both backends; `APPE` on SAF uses `"wa"` mode via `openOutput(append=true)`).
 
 **Listings:** `LIST` emits UNIX `ls -l` style (`drwxr-xr-x 1 owner group size Mon dd HH:MM name`); `MLSD/MLST` emit facts `type=dir|file;size=;modify=YYYYMMDDHHMMSS;perm=…`. Hidden files are always listed (the FTP client decides). UTF-8 encoded names always.
 
 **Transfers:** `RETR` honours `REST` offset (Local: `RandomAccessFile`/`skip`; SAF: `InputStream.skip`), `STOR` creates/truncates via `FileSystem.createFile`+`openOutput`, `APPE` appends; writes go to the final name directly (simplicity; the UI log shows partial uploads if the client aborts). Each transfer updates `FtpEvent.Transfer` with bytes & duration for the live log and notification ("↑ 2 ↓ 5 files").
 
 ### 6.2 `FtpServerService` (service)
-Foreground service with `foregroundServiceType="dataSync"` (API 34+ requires the matching `FOREGROUND_SERVICE_DATA_SYNC` permission) holding a `WifiManager.WifiLock` (`WIFI_MODE_FULL_HIGH_PERF`) + partial `WakeLock` while running; notification channel `ftp` with URL text and **Stop** action; `LanAddressResolver` enumerates `NetworkInterface.getNetworkInterfaces()` for non-loopback, up, IPv4 site-local addresses (prefers `wlan*`, then `ap*/swlan*`, then `rndis*/usb*`), and refreshes via `ConnectivityManager.NetworkCallback`. The Wireless screen observes `FtpServerState(isRunning, urls, clients, log)` from a process singleton `FtpServerHolder`. Manifest permissions: `INTERNET`, `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `POST_NOTIFICATIONS`, `WAKE_LOCK`, plus storage: `READ/WRITE_EXTERNAL_STORAGE` (`maxSdkVersion` 32/29), `MANAGE_EXTERNAL_STORAGE`, `QUERY_ALL_PACKAGES`, `REQUEST_INSTALL_PACKAGES` (for opening APKs). In-app warning: FTP is unencrypted; use on trusted Wi-Fi only.
+Foreground service with `foregroundServiceType="specialUse"` + permission `FOREGROUND_SERVICE_SPECIAL_USE` + manifest `<property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="ftp-server"/>` (we are not Play-distributed; `dataSync` would be killed by the Android 15 ~6 h/24 h FGS timeout). Still override `Service.onTimeout(startId, fgsType)` (API 35) to stop the engine gracefully and post a "MiniFile FTP was stopped by the system — tap to restart" notification. The service holds a `WifiManager.WifiLock` (`WIFI_MODE_FULL_LOW_LATENCY` on API 29+, `WIFI_MODE_FULL_HIGH_PERF` below) + partial `WakeLock` while running; notification channel `ftp` with URL text and **Stop** action. The server is started **only from the foreground UI** (Start button) — no background auto-start (blocked on API 31+ for FGS launches from `NetworkCallback`).
+
+`LanAddressResolver` enumerates `NetworkInterface.getNetworkInterfaces()` and accepts every interface that is up, non-loopback, non-virtual, with an IPv4 address (**not** filtered by `isSiteLocalAddress()` alone — that would miss 100.64/10 CGNAT, 169.254/16 link-local and non-RFC1918 corporate LANs). Ordering for display: site-local on `wlan*` first, then `ap*/swlan*` (hotspot), then `rndis*/usb*` (tethering), then everything else; refreshed via `ConnectivityManager.NetworkCallback` while the UI is visible. The Wireless screen observes `FtpServerState(isRunning, urls, clients, log)` from a process singleton `FtpServerHolder`.
+
+Manifest permissions: `INTERNET`, `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE` (FTP), `FOREGROUND_SERVICE_DATA_SYNC` (`FileOperationService` keeps `dataSync`), `POST_NOTIFICATIONS`, `WAKE_LOCK`, plus storage: `READ/WRITE_EXTERNAL_STORAGE` (`maxSdkVersion` 32/29), `MANAGE_EXTERNAL_STORAGE`, `QUERY_ALL_PACKAGES`, `REQUEST_INSTALL_PACKAGES` (for opening APKs). `FileProvider` (`xml/file_paths.xml`) declares `<external-path name="ext" path="."/>` **and** `<root-path name="root" path="."/>` so Share/Open works for secondary-volume File-backend paths (`/storage/XXXX-XXXX/...`); SAF items are shared by their `content://` URI directly. In-app warning: FTP is unencrypted; use on trusted Wi-Fi only.
 
 ### 6.3 PC Companion (Python 3, stdlib only)
 
@@ -361,7 +390,15 @@ Path handling: client always sends `/`-separated POSIX paths; `posixpath.normpat
 
 **`cli.py`** implements DESIGN §4.3 with `argparse` subparsers; `--json` prints one JSON object (or NDJSON for streaming progress). Errors → messages on stderr + exit codes 0/1/2/3/4.
 
-**`webui.py`** — `ThreadingHTTPServer` on `127.0.0.1:<port>` (default 8765), token in `?t=<random>` validated via cookie `mf_token` set on first page load; all `/api/*` requests require the token header `X-MF-Token` and reject non-localhost `Origin`. Serves `static/` SPA. JSON API:
+**`webui.py`** — `ThreadingHTTPServer` bound to `127.0.0.1:<port>` (default 8765). Security model (all enforced in one `_authorize()` hook, unit-tested):
+- **Token**: generated per run (`secrets.token_urlsafe(32)`), passed once in the launch URL `?t=<token>`; the first page load sets cookie `mf_token` (`SameSite=Strict; HttpOnly`) and the SPA also keeps it in memory. Every `/api/*` request must carry header `X-MF-Token: <token>`; **the only exception is file-returning navigations** (`GET /api/download`) which may authenticate with the `mf_token` cookie because the browser cannot add headers to a navigation/download.
+- **`Host` allow-list** against DNS rebinding: only `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`; anything else → `403`.
+- **`Origin`/`Referer` check** on state-changing methods: if present, must be `http://127.0.0.1:<port>` or `http://localhost:<port>`.
+- **Static files**: served from `static/` only; `os.path.realpath(joined).startswith(realpath(static_dir) + os.sep)` or `404`.
+- **Local filesystem confinement**: `/api/local/*` paths are `realpath`-normalized; with `--jail DIR` (default: off, i.e. whole user filesystem) they must be under `DIR`.
+- **Multipart on Python 3.13**: `cgi.FieldStorage` no longer exists → `/api/upload` uses a **stdlib streaming multipart parser** (own boundary scanner over `rfile` with a 1 MiB rolling buffer, or `email.parser.BytesFeedParser` for small bodies) that streams each part directly into FTP `STOR` without buffering whole files in memory. Filenames are sanitized (`os.path.basename`, no `..`, no NUL).
+
+Serves the `static/` SPA. JSON API:
 
 | Method & path | Body / query | Returns |
 |---------------|--------------|---------|
@@ -381,7 +418,7 @@ Path handling: client always sends `/`-separated POSIX paths; `posixpath.normpat
 | `GET /api/transfers` | — | `[{job_id, state, current, done_bytes, total_bytes, speed, error}]` |
 | `POST /api/transfers/{id}/cancel` | — | `{ok}` |
 | `POST /api/upload` | multipart (browser drop) `?dst=/Download` | `{stored:[...]}` — streams through to FTP `STOR` |
-| `GET /api/download` | `?path=` | file stream (`Content-Disposition`), dirs zipped on the fly |
+| `GET /api/download` | `?path=` (cookie auth allowed) | file stream (`Content-Disposition`), dirs zipped on the fly |
 | `GET/PUT /api/favorites` | `[{name, path}]` | list (stored in config.json) |
 
 **`gui.py`** — `try: import tkinter` → if available, a simple two-listbox Tk window (optional, best-effort); on `ImportError` or no display (`$DISPLAY` unset on Linux), print a one-line notice and start `webui` (opening the browser unless `--no-browser`). `python3 -m minifile_companion gui` must therefore **always work on this host** by serving the web UI.
@@ -390,13 +427,16 @@ Path handling: client always sends `/`-separated POSIX paths; `posixpath.normpat
 1. Banner: `220 MiniFile FTP Server ready` (contains `MiniFile`).
 2. `FEAT` advertises `UTF8`, `MLSD`, `MLST`, `SIZE`, `MDTM`, `REST STREAM`, `EPSV`, `PASV`, `TVFS`.
 3. `OPTS UTF8 ON` → `200`. All names UTF-8 both ways; test name: `测试 файл ✓ (1).txt`.
-4. `MLSD` facts: `type`, `size`, `modify` (UTC `YYYYMMDDHHMMSS`), `perm`; `type=cdir`/`pdir` entries may be omitted.
+4. `MLSD` facts: `type`, `size`, `modify` (UTC `YYYYMMDDHHMMSS`), `perm`; `type=cdir`/`pdir` entries may be omitted. **`modify` is omitted when unknown** (SAF mtime 0) and the client maps a missing fact to `mtime=None` (sync treats `None` as "always copy if sizes differ").
 5. `SIZE` on a directory → `550`. `MDTM` on a missing file → `550`.
 6. `STOR` into a read-only server → `550 Read-only server`; client surfaces "Phone server is read-only".
-7. `.nomedia` is an ordinary empty file; `nomedia --status` = `SIZE /dir/.nomedia` succeeds.
-8. Paths with `..` → server resolves within root (never `550 outside root` leak; it just clamps) — client `ls /../..` returns the root listing.
+7. `.nomedia` is an ordinary empty file; `nomedia --status` = `SIZE /dir/.nomedia` succeeds (`550` = absent); `nomedia --on` = `STOR /dir/.nomedia` with an empty body; `nomedia --off` = `DELE /dir/.nomedia`.
+8. Paths with `..` → server resolves within root (never `550 outside root` leak; it just clamps) — client `ls /../..` returns the root listing. Symlink escapes on the server → `550 Access denied`.
 9. Idle control connection closed after `idleTimeoutMs` with `421`.
-10. The Python test fixture (`companion/tests/ftp_fixture.py`, a tiny stdlib FTP server implementing the same contract) exists so companion tests run without the phone; `tester` additionally runs the companion suite against the **Kotlin** `FtpServerEngine` launched on the JVM (§8.4).
+10. `PWD`/`MKD` reply `257 "<path>"` with embedded `"` doubled (`""`); the client un-doubles. `LIST` lines are UNIX style with dates `MMM dd HH:MM` (< 6 months) or `MMM dd  yyyy`; the client's `LIST` parser accepts both, but prefers `MLSD`.
+11. `STOR`/`MKD` with a missing parent → `550` (the client creates parents itself with `mkdir -p` semantics). `RNTO` across backends → `550`; the client falls back to copy+delete only when the user passes `mv --copy-fallback`.
+12. `REST` + `RETR` works everywhere; `REST` + `STOR` returns `504` on SAF roots → the client disables upload-resume when it sees `504` and restarts the upload. `APPE` is supported on both backends.
+13. The Python test fixture (`companion/tests/ftp_fixture.py`, a tiny stdlib FTP server implementing the same contract incl. items 10–12) exists so companion tests run without the phone; `tester` additionally runs the companion suite against the **Kotlin** `FtpServerEngine` launched on the JVM (§8.4). Companion tests honour `MINIFILE_TEST_SERVER=host:port` and `MINIFILE_TEST_ROOT=<server-side dir>` (for on-disk state assertions); tests that need fixture-only modes (read-only, bad credentials, idle timeout) call `self.skipTest(...)` when an external server is configured.
 
 ---
 
@@ -412,7 +452,7 @@ Path handling: client always sends `/`-separated POSIX paths; `posixpath.normpat
 | `theme`, `dynamic_color`, `show_thumbnails`, `editor_font_sp`, `editor_wrap`, `editor_line_numbers`, `remember_last_folder`, `last_folder` | misc | sensible |
 | `favorites` | JSON array of `Favorite` | 3 seeded entries |
 | `saf_trees` | JSON `{volumeKey: treeUri}` | `{}` |
-| `ftp_port`, `ftp_root`, `ftp_auth_mode`, `ftp_user`, `ftp_password` (private prefs), `ftp_read_only`, `ftp_pasv_range`, `ftp_idle_timeout`, `ftp_keep_screen_on`, `ftp_autostart_wifi` | — | 2121, primary root, anonymous, …, false, 50000-50100, 300, true, false |
+| `ftp_port`, `ftp_root`, `ftp_auth_mode`, `ftp_user`, `ftp_password` (app-private `SharedPreferences`, `MODE_PRIVATE`; no `security-crypto` — see DESIGN §4.1), `ftp_read_only`, `ftp_pasv_range`, `ftp_idle_timeout`, `ftp_keep_screen_on` | — | 2121, primary root, anonymous, …, false, 50000-50100, 300, true |
 | `onboarding_done` | Boolean | false |
 
 ```kotlin
@@ -441,7 +481,8 @@ interface FavoritesRepository {
 | `NomediaManagerTest` | set/unset/has, scanner callback invoked, SAF-like fake |
 | `FavoritesRepositoryTest` | add/remove/reorder/touch/export/import with in-memory `KeyValueStore`; seeded defaults |
 | `TransferTargetValidatorTest` | SameDirectory / InsideSource / ReadOnly / Unavailable reasons |
-| `FtpPathResolverTest` | adversarial table (`..`, `%2e%2e` literal, backslashes, NUL, deep traversal) always inside root |
+| `FtpPathResolverTest` | adversarial table (`..`, `%2e%2e` literal, backslashes, NUL, deep traversal) always inside root; **symlink escape** (`root/link -> outside`, created with `Files.createSymbolicLink`) → rejected |
+| `FtpEngineServeTest` | §8.4 item 1 — skipped unless `MINIFILE_FTP_SERVE=1` (interop harness for `tester`) |
 | `FtpServerEngineTest` | boots on port 0/loopback with `LocalFileSystem` on a temp dir; uses `sun.net.ftp`-free hand-rolled socket client or `java.net.Socket` script: login anon & credentials (wrong password → 530), `FEAT`, `OPTS UTF8 ON`, `PWD/CWD/CDUP`, `PASV` reply parses to the control-local IP, `EPSV`, `LIST/NLST/MLSD/MLST` formats, `SIZE/MDTM`, `RETR` with `REST`, `STOR`, `APPE`, `DELE/MKD/RMD/RNFR/RNTO`, UTF-8 filename roundtrip, read-only → 550, jail escape attempts, idle timeout, concurrent sessions, `stop()` closes everything |
 | `BrowserViewModelTest` (optional) | pure state reducer tests for sort/filter/selection if the VM is split into a testable reducer |
 
@@ -456,22 +497,29 @@ Target: **100 % pass**, ≥ 90 % line coverage of `core.*` (informational; not g
 - `ftp_fixture.py`: threaded stdlib FTP server (subset: same command set as §6.1 incl. `MLSD`, `UTF8`, `PASV/EPSV`, `REST`, read-only mode, auth) serving a temp dir — the reference for the interop contract.
 - `test_client.py`: connect/auth failures, `list/stat/walk`, UTF-8 names, download/upload file & dir with progress, resume, overwrite policies, `read_text/write_text` with encodings, `mkdir -p`, recursive `remove`, `rename`, `nomedia` on/off/status, `sync` to_phone/to_pc/both/delete/dry-run/exclude, path normalization (`..` never sent raw).
 - `test_cli.py`: every subcommand via `subprocess`/`main(argv)`, `--json` output schema, exit codes 0/1/2/3/4, `edit` with `EDITOR=python3 -c …` mock, `scan` against the fixture on 127.0.0.1 (subnet override `127.0.0.1/32`).
-- `test_webui.py`: start server on port 0, token enforcement (401 without token / wrong Origin), every `/api/*` endpoint incl. multipart upload, download streaming, directory zip download, transfer queue lifecycle & cancel, favorites CRUD, local path confinement (cannot list outside allowed roots when `--jail` is set).
+- `test_webui.py`: start server on port 0, auth enforcement (401 without `X-MF-Token`, 403 on bad `Host`, 403 on foreign `Origin`, cookie accepted **only** for `GET /api/download`), static path traversal (`/static/../webui.py` → 404), every `/api/*` endpoint incl. streaming multipart upload (incl. a > 5 MB file and UTF-8 filename, no `cgi` import anywhere), download streaming, directory zip download, transfer queue lifecycle & cancel, favorites CRUD, local path confinement (cannot list outside allowed roots when `--jail` is set).
 - `test_scanner.py`: banner match, timeout handling, concurrent workers.
 
 ### 8.4 Cross-component integration (`tester`)
-1. Build a JVM runner: `./gradlew :app:testDebugUnitTest --tests FtpServerEngineIntegrationMain` or a small Gradle `JavaExec` task `runFtpEngine` (`app/src/test/.../FtpEngineRunner.kt`, `main(port, rootDir, readOnly)`) that starts `FtpServerEngine` on 127.0.0.1 with a temp dir.
-2. Run the Python suite with `MINIFILE_TEST_SERVER=127.0.0.1:<port>` so `test_client.py` targets the **Kotlin** engine instead of the Python fixture; all tests must pass identically (this proves contract §6.4).
+1. **`FtpEngineServeTest`** (owned by **`coder-android`**, M3 deliverable, lives in `app/src/test/java/com/minifile/explorer/core/ftp/FtpEngineServeTest.kt`): a JUnit test that is **skipped via `Assume.assumeTrue(System.getenv("MINIFILE_FTP_SERVE") == "1")`** in normal runs. When enabled it starts `FtpServerEngine` with `LocalFileSystem` and blocks:
+   - env: `MINIFILE_FTP_PORT` (default `0` = ephemeral), `MINIFILE_FTP_ROOT` (default: new temp dir), `MINIFILE_FTP_READONLY` (`1`/`0`), `MINIFILE_FTP_USER`/`MINIFILE_FTP_PASS` (unset = anonymous), `MINIFILE_FTP_READY_FILE`, `MINIFILE_FTP_STOP_FILE`.
+   - prints `READY port=<n> root=<path>` to stdout **and** writes the same line to `$MINIFILE_FTP_READY_FILE`; then polls (500 ms) until `$MINIFILE_FTP_STOP_FILE` exists, stops the engine and passes.
+   - run: `MINIFILE_FTP_SERVE=1 MINIFILE_FTP_READY_FILE=/tmp/mf.ready MINIFILE_FTP_STOP_FILE=/tmp/mf.stop ./gradlew --offline :app:testDebugUnitTest --tests '*FtpEngineServeTest*' -i`.
+   `tester` drives this from a script under `tools/` (its own directory) without touching `app/**`.
+2. Run the Python suite with `MINIFILE_TEST_SERVER=127.0.0.1:<port> MINIFILE_TEST_ROOT=<root>` so `test_client.py`/`test_cli.py` target the **Kotlin** engine instead of the Python fixture; all non-skipped tests must pass identically (this proves contract §6.4).
 3. End-to-end CLI script: `scan --subnet 127.0.0.1/32` → `mkdir /it` → `put` a tree with UTF-8 names → `ls -R` → `sync --both` → `cat`/`edit` → `nomedia --on` → `rm -r`; verify filesystem state on the server side.
 4. Record results in `TEST_REPORT.md` on `main`.
 
 ### 8.5 Security checklist (reviewed by `critic`, verified by `tester`)
 - [ ] Zip-slip & zip-bomb guards present and tested (§5.2).
-- [ ] FTP jail cannot be escaped by `..`, absolute paths, backslashes, NUL, or symlinks (`Local` backend resolves `canonicalPath` and re-checks prefix before opening streams).
+- [ ] FTP jail cannot be escaped by `..`, absolute paths, backslashes, NUL, or symlinks (`FtpPathResolver` + `LocalFileSystem.isInside` canonical-path check before every operation, §4.2/§6.1).
+- [ ] `PASV` on IPv6 control connections returns `522`; `LanAddressResolver` shows all usable IPv4 addresses.
+- [ ] `FtpServerService` uses `specialUse` FGS type with `onTimeout` handling; no background auto-start.
 - [ ] PASV data connections only accepted from the control peer IP; passive range bounded; listeners closed on session end.
 - [ ] Credentials never logged; FTP log redacts `PASS ****`.
 - [ ] `FileProvider` paths limited (`xml/file_paths.xml`); no `file://` URIs leave the app.
-- [ ] Web UI binds to `127.0.0.1` only, token + Origin check, no directory traversal in `/api/local/*` (`os.path.realpath` under allowed roots when jailed) and static file serving (`static/` only).
+- [ ] Web UI binds to `127.0.0.1` only; `Host` allow-list (anti DNS-rebinding), `X-MF-Token` header on all `/api/*` (cookie only for `GET /api/download`), `Origin` check on mutations, no directory traversal in `/api/local/*` (`os.path.realpath` under allowed roots when jailed) nor in static file serving (`static/` only); multipart parsed by a stdlib streaming parser (Python 3.13 has no `cgi`).
+- [ ] `FileProvider` declares `<external-path>` **and** `<root-path>`; `MainActivity` calls `enableEdgeToEdge()` and all bottom chrome is inset-aware.
 - [ ] Services are not exported; notifications use `PendingIntent.FLAG_IMMUTABLE`.
 - [ ] No network permission use besides the FTP server and companion loopback.
 
@@ -492,6 +540,6 @@ Branch flow: `main` ← `test/verification` ← (`feat/android-app`, `feat/pc-co
 
 ## 10. Implementation Order (suggested milestones)
 
-**Android** — M1 `core.vfs`+`PathUtils`+tests → M2 `core.ops` (ops, zip, checksum, text, nomedia)+tests → M3 `core.ftp` engine+tests → M4 data layer (prefs, favorites, SAF, volumes) → M5 UI shell (tabs, Home, Browser, selection, clipboard bar, Favorite picker) → M6 Editor, Archive preview, Properties → M7 Wireless screen + service → M8 Apps Inspector, Tools, polish.
+**Android** — **M0 offline-building Compose skeleton (committed first, §1.1)** → M1 `core.vfs`+`PathUtils`+tests → M2 `core.ops` (ops, zip, checksum, text, nomedia)+tests → M3 `core.ftp` engine+tests **+ `FtpEngineServeTest` harness (§8.4)** → M4 data layer (prefs, favorites, SAF, volumes) → M5 UI shell (edge-to-edge tabs, Home incl. *Mount a folder…*, Browser, selection, clipboard bar, Favorite picker) → M6 Editor, Archive preview, Properties → M7 Wireless screen + `specialUse` service → M8 Apps Inspector, Tools, polish.
 
 **Companion** — C1 `client.py` + fixture + tests → C2 `cli.py` + tests → C3 `webui.py` API + tests → C4 SPA (`static/`) → C5 `gui.py` fallback, `scan`, `shell`, README.
