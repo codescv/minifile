@@ -226,7 +226,7 @@ class FtpServerService : Service() {
             val pm = applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
             wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "minifile:ftp-cpu")?.apply {
                 setReferenceCounted(false)
-                acquire()
+                acquire(12L * 60L * 60L * 1000L)
             }
         }
     }

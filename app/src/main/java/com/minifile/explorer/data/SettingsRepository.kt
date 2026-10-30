@@ -139,15 +139,18 @@ class SettingsRepository(
     }
 
     fun update(transform: (AppSettings) -> AppSettings) = synchronized(lock) {
-        val next = transform(persisted)
+        val prevPersisted = persisted
+        val next = transform(prevPersisted)
         persist(next)
         persisted = next
-        // If user explicitly edits FTP port / passive ports in UI, clear debug override for those fields
-        if (next.ftpPort != _settings.value.ftpPort ||
-            next.ftpPasvStart != _settings.value.ftpPasvStart ||
-            next.ftpPasvEnd != _settings.value.ftpPasvEnd
+        // Only clear a debug override if that specific persisted field was explicitly modified
+        if (next.ftpPort != prevPersisted.ftpPort) {
+            debugOverrides = debugOverrides.copy(port = null)
+        }
+        if (next.ftpPasvStart != prevPersisted.ftpPasvStart ||
+            next.ftpPasvEnd != prevPersisted.ftpPasvEnd
         ) {
-            debugOverrides = DebugFtpOverrides()
+            debugOverrides = debugOverrides.copy(pasvStart = null, pasvEnd = null)
         }
         _settings.value = applyOverrides(next)
     }

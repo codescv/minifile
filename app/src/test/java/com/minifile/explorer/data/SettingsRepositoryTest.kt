@@ -38,6 +38,13 @@ class SettingsRepositoryTest {
         assertEquals(50000, repo1.settings.value.ftpPasvStart)
         assertEquals(50004, repo1.settings.value.ftpPasvEnd)
 
+        // Updating unrelated settings must preserve active debug overrides
+        repo1.update { it.copy(onboardingDone = true, updateLastCheckMs = 999L) }
+        assertTrue(repo1.settings.value.onboardingDone)
+        assertEquals(12121, repo1.settings.value.ftpPort)
+        assertEquals(50000, repo1.settings.value.ftpPasvStart)
+        assertEquals(50004, repo1.settings.value.ftpPasvEnd)
+
         // Fresh process reload restores persisted values
         val repo2 = SettingsRepository(store)
         assertTrue(repo2.settings.value.showHidden)
