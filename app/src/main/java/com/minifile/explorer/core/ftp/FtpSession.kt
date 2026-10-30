@@ -651,6 +651,8 @@ internal class FtpSession(
         return if (space < 0) "" else trimmed.substring(space + 1).trim()
     }
 
+    private class PassivePortExhaustedException : Exception("No free port in configured passive range")
+
     private fun handlePasv(reply: (Int, String) -> Unit) {
         val localAddr = controlSocket.localAddress
         val ipv4Bytes = extractIpv4Bytes(localAddr)
@@ -660,7 +662,12 @@ internal class FtpSession(
             return
         }
         closeDataChannels()
-        val server = bindPassiveServerSocket()
+        val server = try {
+            bindPassiveServerSocket()
+        } catch (_: PassivePortExhaustedException) {
+            reply(425, "Cannot open passive connection")
+            return
+        }
         passiveServer = server
         val port = server.localPort
         val h1 = ipv4Bytes[0].toInt() and 0xFF
@@ -683,7 +690,12 @@ internal class FtpSession(
             return
         }
         closeDataChannels()
-        val server = bindPassiveServerSocket()
+        val server = try {
+            bindPassiveServerSocket()
+        } catch (_: PassivePortExhaustedException) {
+            reply(425, "Cannot open passive connection")
+            return
+        }
         passiveServer = server
         reply(229, "Entering Extended Passive Mode (|||${server.localPort}|)")
     }
@@ -750,22 +762,22 @@ internal class FtpSession(
 
     private fun bindPassiveServerSocket(): ServerSocket {
         for (port in config.passivePorts) {
+            var ss: ServerSocket? = null
             try {
-                val ss = ServerSocket()
+                ss = ServerSocket()
                 ss.reuseAddress = true
                 ss.bind(InetSocketAddress(port))
                 ss.soTimeout = 30_000
                 return ss
             } catch (_: BindException) {
+                runCatching { ss?.close() }
                 continue
             } catch (_: IOException) {
+                runCatching { ss?.close() }
                 continue
             }
         }
-        // Fallback to OS-assigned ephemeral if range exhausted
-        val fallback = ServerSocket(0)
-        fallback.soTimeout = 30_000
-        return fallback
+        throw PassivePortExhaustedException()
     }
 
     private fun withDataConnection(

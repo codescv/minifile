@@ -250,4 +250,37 @@ class FtpServerEngineTest {
             assertEquals(421, timeoutCode)
         }
     }
+
+    @Test
+    fun passiveRangeBoundedReturns425WhenExhaustedAndNeverFallsBackToRandomPort() {
+        val rootDir = tempFolder.newFolder("ftp_pasv_bound")
+        File(rootDir, "hello.txt").writeText("bounded")
+
+        // Hold an occupied listening ServerSocket on wildcard address so the 1-port passive range is exhausted
+        java.net.ServerSocket(0).use { blocker ->
+            val occupiedPort = blocker.localPort
+            val engine = FtpServerEngine(
+                config = FtpConfig(
+                    port = 0,
+                    bindAddress = "127.0.0.1",
+                    root = VfsPath.Local(rootDir.absolutePath),
+                    auth = FtpAuth.Anonymous,
+                    passivePorts = occupiedPort..occupiedPort,
+                ),
+                fs = LocalFileSystem(),
+            )
+            engine.start()
+            activeEngine = engine
+
+            TestFtpClient("127.0.0.1", engine.boundPort).use { c ->
+                assertEquals(220, c.readResponse().first)
+                assertEquals(331, c.cmd("USER anonymous").first)
+                assertEquals(230, c.cmd("PASS guest@").first)
+
+                // Both PASV and EPSV must reject with 425 instead of binding outside passivePorts
+                assertEquals(425, c.cmd("PASV").first)
+                assertEquals(425, c.cmd("EPSV").first)
+            }
+        }
+    }
 }
