@@ -30,9 +30,13 @@ minifile/
 │   │   ├── config.py      # ~/.config/minifile/config.json
 │   │   ├── scanner.py     # LAN discovery
 │   │   ├── textutil.py    # encoding detection helpers
+│   │   ├── updater.py     # GitHub release check / download / safe staging (§11.3)
 │   │   └── static/        # index.html, app.css, app.js (no build step)
 │   ├── tests/             # unittest suite with embedded FTP server fixture (§8.3)
 │   └── README.md
+├── .github/workflows/release.yml          # tag-triggered GitHub Release (§11.4)
+├── tools/                                 # tester-owned scripts: interop runner, e2e/ ACID scripts (§8.4, §12)
+├── TEST_REPORT.md                         # written by tester (§12.4)
 └── .worktrees/            # (git-ignored) per-worker worktrees
 ```
 
@@ -48,8 +52,9 @@ minifile/
 | Compose | BOM `2024.10.01` (ui/foundation 1.7.5), `material3` **1.3.1** pinned explicitly if the BOM's 1.3.0 is not cached, `material-icons-extended` 1.7.6 | cached |
 | AndroidX | `core-ktx` 1.15.0, `activity-compose` 1.9.3, `lifecycle-runtime-compose`/`viewmodel-compose` 2.8.7, `lifecycle-service` 2.8.7, `documentfile` 1.0.1, `appcompat` 1.7.1 (only for `FileProvider`/compat if needed — otherwise `core`) | cached |
 | Coroutines | `kotlinx-coroutines-android` 1.9.0 | cached |
+| JSON | **`kotlinx-serialization-json` 1.7.3** + Gradle plugin `org.jetbrains.kotlin.plugin.serialization` 2.0.21 (both cached). **`org.json` is forbidden** in `core.*`/`data` code: the android.jar stubs throw "not mocked" in JVM unit tests, so `FavoritesRepository`, settings and `ReleaseJson` all use `@Serializable` data classes + `Json { ignoreUnknownKeys = true; isLenient = true }`. | cached |
 | Thumbnails (optional) | `io.coil-kt:coil-compose` 2.6.0 — **must be removable without breaking the build** (feature-flag `BuildConfig.THUMBNAILS`) | cached per researcher |
-| Tests | JUnit 4.13.2 (pure JVM). **No Robolectric/Mockito/MockK** (not cached) → all testable logic must be Android-free (§3.2 layering). | cached |
+| Tests | JUnit 4.13.2 (pure JVM). **No Robolectric/Mockito/MockK/`kotlinx-coroutines-test`** (not cached) → all testable logic must be Android-free (§3.2 layering); suspend code is tested with `runBlocking`, HTTP code with a loopback `com.sun.net.httpserver.HttpServer` (JDK built-in) test seam. | cached |
 | Python | 3.13 (`/usr/bin/python3`); `tkinter` **absent** on this host; no Node.js. | system |
 
 Build commands (from a worktree):
@@ -124,6 +129,7 @@ flowchart LR
 | `core.ops` | `FileOperations` (copy/move/delete/rename/mkdir/create, conflict policy, progress), `ZipArchiver` (compress/extract + zip-slip guard), `ChecksumCalculator`, `NomediaManager`, `TextFileCodec` (encoding detect/decode/encode, EOL) | **No** | ✅ |
 | `core.ftp` | `FtpServerEngine`, `FtpSession`, `FtpCommandHandler`, `FtpPathResolver` (virtual root jail), `FtpListingFormatter` (LIST/MLSD), `FtpConfig`, `FtpEvent` | **No** (uses `java.net`, `FileSystem` interface) | ✅ (real sockets on loopback) |
 | `core.model` | `Favorite`, `SortSpec`, `ViewMode`, `AppSettings`, `ClipboardState`, `OperationResult` | No | ✅ |
+| `core.update` | `SemanticVersion`, `ReleaseJson`/`ReleaseInfo` (GitHub release parsing + asset selection), `AppUpdater` (HTTP check + download with redirect/size/zip validation, `HttpURLConnection` seam), `UpdateException`, `CancelToken` — see §11 | **No** (validator for package/signature is injected from `data`) | ✅ (loopback `HttpServer`) |
 | `data` | `SafFileSystem` (DocumentFile), `AndroidVolumeProvider` (`StorageManager`), `PersistedTreeStore`, `FavoritesRepository`, `SettingsRepository` (SharedPreferences impl of `KeyValueStore`), `InstalledAppsRepository` (PackageManager), `MediaScanNotifier` | Yes | Interfaces tested with fakes; impls via manual/instrumented checks |
 | `service` | `FileOperationService` (foreground, progress notifications, cancel), `FtpServerService` (foreground, wake/wifi locks), `VolumeChangeReceiver` | Yes | — |
 | `ui` | Compose screens, `MiniFileApp` router, theme, components (`FileListItem`, `BreadcrumbBar`, `ClipboardBar`, `SelectionBottomBar`, `FavoritePickerSheet`, `ConflictDialog`, `ProgressSheet`), screens: `home`, `browser`, `favorites`, `wireless`, `tools`, `editor`, `archive`, `apps` | Yes | — |
@@ -483,6 +489,7 @@ interface FavoritesRepository {
 | `TransferTargetValidatorTest` | SameDirectory / InsideSource / ReadOnly / Unavailable reasons |
 | `FtpPathResolverTest` | adversarial table (`..`, `%2e%2e` literal, backslashes, NUL, deep traversal) always inside root; **symlink escape** (`root/link -> outside`, created with `Files.createSymbolicLink`) → rejected |
 | `FtpEngineServeTest` | §8.4 item 1 — skipped unless `MINIFILE_FTP_SERVE=1` (interop harness for `tester`) |
+| `SemanticVersionTest`, `ReleaseParserTest`, `AppUpdaterTest` | §11.1 — version grammar, GitHub JSON (latest/list/asset priority), HTTP rules via loopback `HttpServer` (redirects, downgrade refusal, caps, corrupt/cancelled downloads leave no `.tmp`) |
 | `FtpServerEngineTest` | boots on port 0/loopback with `LocalFileSystem` on a temp dir; uses `sun.net.ftp`-free hand-rolled socket client or `java.net.Socket` script: login anon & credentials (wrong password → 530), `FEAT`, `OPTS UTF8 ON`, `PWD/CWD/CDUP`, `PASV` reply parses to the control-local IP, `EPSV`, `LIST/NLST/MLSD/MLST` formats, `SIZE/MDTM`, `RETR` with `REST`, `STOR`, `APPE`, `DELE/MKD/RMD/RNFR/RNTO`, UTF-8 filename roundtrip, read-only → 550, jail escape attempts, idle timeout, concurrent sessions, `stop()` closes everything |
 | `BrowserViewModelTest` (optional) | pure state reducer tests for sort/filter/selection if the VM is split into a testable reducer |
 
@@ -499,6 +506,7 @@ Target: **100 % pass**, ≥ 90 % line coverage of `core.*` (informational; not g
 - `test_cli.py`: every subcommand via `subprocess`/`main(argv)`, `--json` output schema, exit codes 0/1/2/3/4, `edit` with `EDITOR=python3 -c …` mock, `scan` against the fixture on 127.0.0.1 (subnet override `127.0.0.1/32`).
 - `test_webui.py`: start server on port 0, auth enforcement (401 without `X-MF-Token`, 403 on bad `Host`, 403 on foreign `Origin`, cookie accepted **only** for `GET /api/download`), static path traversal (`/static/../webui.py` → 404), every `/api/*` endpoint incl. streaming multipart upload (incl. a > 5 MB file and UTF-8 filename, no `cgi` import anywhere), download streaming, directory zip download, transfer queue lifecycle & cancel, favorites CRUD, local path confinement (cannot list outside allowed roots when `--jail` is set).
 - `test_scanner.py`: banner match, timeout handling, concurrent workers.
+- `test_updater.py`: §11.3 (mock GitHub API on 127.0.0.1, redirect/scheme rules, SHA-256, zip-slip-safe staging, CLI exit codes, `/api/update`).
 
 ### 8.4 Cross-component integration (`tester`)
 1. **`FtpEngineServeTest`** (owned by **`coder-android`**, M3 deliverable, lives in `app/src/test/java/com/minifile/explorer/core/ftp/FtpEngineServeTest.kt`): a JUnit test that is **skipped via `Assume.assumeTrue(System.getenv("MINIFILE_FTP_SERVE") == "1")`** in normal runs. When enabled it starts `FtpServerEngine` with `LocalFileSystem` and blocks:
@@ -521,7 +529,8 @@ Target: **100 % pass**, ≥ 90 % line coverage of `core.*` (informational; not g
 - [ ] Web UI binds to `127.0.0.1` only; `Host` allow-list (anti DNS-rebinding), `X-MF-Token` header on all `/api/*` (cookie only for `GET /api/download`), `Origin` check on mutations, no directory traversal in `/api/local/*` (`os.path.realpath` under allowed roots when jailed) nor in static file serving (`static/` only); multipart parsed by a stdlib streaming parser (Python 3.13 has no `cgi`).
 - [ ] `FileProvider` declares `<external-path>` **and** `<root-path>`; `MainActivity` calls `enableEdgeToEdge()` and all bottom chrome is inset-aware.
 - [ ] Services are not exported; notifications use `PendingIntent.FLAG_IMMUTABLE`.
-- [ ] No network permission use besides the FTP server and companion loopback.
+- [ ] No network permission use besides the FTP server, the companion loopback, and the HTTPS-only GitHub update check (§11).
+- [ ] Updater: https-only, manual redirects ≤ 5 with no downgrade, JSON/size caps, `PK\x03\x04` + `AndroidManifest.xml`, `getPackageArchiveInfo` package == own, `longVersionCode >` installed, signing-cert set equality (API 28+) — mismatch is fatal; `.tmp` → atomic rename inside `cacheDir/updates/`; `FileProvider` `cache-path` limited to `updates/`; stale files purged. Companion: same redirect/scheme rules, SHA-256 vs `SHA256SUMS.txt`, zip-slip-safe staging, never overwrite the running tree.
 
 ---
 
@@ -529,9 +538,9 @@ Target: **100 % pass**, ≥ 90 % line coverage of `core.*` (informational; not g
 
 | Owner | Owns | Must not touch |
 |-------|------|----------------|
-| `coder-android` | `app/**`, root Gradle files, `libs.versions.toml` | `companion/**` |
+| `coder-android` | `app/**`, root Gradle files, `libs.versions.toml`, `.github/workflows/release.yml` (§11.4) | `companion/**` |
 | `coder-companion` | `companion/**` | `app/**`, Gradle files |
-| `tester` | `TEST_REPORT.md`, integration runner scripts under `tools/` (new dir), merges to `main` | feature code (files bugs to owners instead) |
+| `tester` | `TEST_REPORT.md`, integration runner scripts under `tools/` (new dir), ACID emulator E2E (§12), merges to `main`, GitHub repo/tag/release publication (§11.5) | feature code (files bugs to owners instead) |
 | `designer` | `DESIGN.md`, `ARCHITECTURE.md` (amendments on request) | — |
 
 Branch flow: `main` ← `test/verification` ← (`feat/android-app`, `feat/pc-companion`). Commits must keep `./gradlew --offline assembleDebug testDebugUnitTest` and `python3 -m unittest discover -s companion/tests` green.
@@ -540,6 +549,171 @@ Branch flow: `main` ← `test/verification` ← (`feat/android-app`, `feat/pc-co
 
 ## 10. Implementation Order (suggested milestones)
 
-**Android** — **M0 offline-building Compose skeleton (committed first, §1.1)** → M1 `core.vfs`+`PathUtils`+tests → M2 `core.ops` (ops, zip, checksum, text, nomedia)+tests → M3 `core.ftp` engine+tests **+ `FtpEngineServeTest` harness (§8.4)** → M4 data layer (prefs, favorites, SAF, volumes) → M5 UI shell (edge-to-edge tabs, Home incl. *Mount a folder…*, Browser, selection, clipboard bar, Favorite picker) → M6 Editor, Archive preview, Properties → M7 Wireless screen + `specialUse` service → M8 Apps Inspector, Tools, polish.
+**Android** — **M0 offline-building Compose skeleton (committed first, §1.1)** → M1 `core.vfs`+`PathUtils`+tests → M2 `core.ops` (ops, zip, checksum, text, nomedia)+tests → M3 `core.ftp` engine+tests **+ `FtpEngineServeTest` harness (§8.4)** → M4 data layer (prefs, favorites, SAF, volumes) → M5 UI shell (edge-to-edge tabs, Home incl. *Mount a folder…*, Browser, selection, clipboard bar, Favorite picker) → M6 Editor, Archive preview, Properties → M7 Wireless screen + `specialUse` service → M8 Apps Inspector, Tools, polish → **M9 `core.update` + Updates card + release signing config + `release.yml` (§11)**.
 
-**Companion** — C1 `client.py` + fixture + tests → C2 `cli.py` + tests → C3 `webui.py` API + tests → C4 SPA (`static/`) → C5 `gui.py` fallback, `scan`, `shell`, README.
+**Companion** — C1 `client.py` + fixture + tests → C2 `cli.py` + tests → C3 `webui.py` API + tests → C4 SPA (`static/`) → C5 `gui.py` fallback, `scan`, `shell`, README → **C6 `updater.py` + `update` command + `/api/update` + badge (§11.3)**.
+
+---
+
+## 11. Auto-Update & GitHub Releases (`codescv/minifile`)
+
+Canonical repository: `https://github.com/codescv/minifile` (SSH `git@github.com:codescv/minifile.git`). Product behaviour is in DESIGN §11; this section fixes the code contracts and security rules. Reference implementation pattern: `~/Developer/Lemuroid/lemuroid-app/src/main/java/com/swordfish/lemuroid/app/shared/update/` (`AppUpdater`, `SemanticVersion`, `ReleaseInfo`, `CancelToken`, `UpdateException`) — port the structure, not the Lemuroid-specific UI.
+
+### 11.1 Android `core.update` (pure JVM)
+
+```kotlin
+// SemanticVersion.kt
+data class SemanticVersion(val major: Int, val minor: Int, val patch: Int, val preRelease: String? = null) : Comparable<SemanticVersion> {
+    companion object {
+        fun parse(s: String): SemanticVersion?            // accepts "v1.2.3", "1.2.3", "1.2.3-beta.1", "1.2" (→ patch 0); null on garbage
+        fun stripDebugSuffix(v: String): String?           // "1.0.0-DEBUG"/"-debug" → "1.0.0"
+        fun isNewerVersion(current: String, candidate: String): Boolean   // false when either fails to parse
+    }
+}
+// ReleaseInfo.kt
+@Serializable data class ReleaseAsset(val name: String, @SerialName("browser_download_url") val url: String, val size: Long = -1, @SerialName("content_type") val contentType: String? = null)
+@Serializable data class ReleaseJson(@SerialName("tag_name") val tagName: String, val name: String? = null, val body: String? = null,
+    @SerialName("html_url") val htmlUrl: String? = null, @SerialName("published_at") val publishedAt: String? = null,
+    val prerelease: Boolean = false, val draft: Boolean = false, val assets: List<ReleaseAsset> = emptyList())
+object ReleaseParser {
+    fun parseLatest(json: String): ReleaseJson                      // object form (/releases/latest)
+    fun parseList(json: String, includePre: Boolean): ReleaseJson?  // array form (/releases?per_page=5): first non-draft (and non-pre unless includePre)
+    fun pickApk(r: ReleaseJson): ReleaseAsset?                      // priority: name matches ^minifile-.*-release\.apk$ > any *.apk; https URLs only
+    fun pickCompanionZip(r: ReleaseJson): ReleaseAsset?             // ^minifile-companion-.*\.zip$
+}
+// AppUpdater.kt
+class AppUpdater(
+    latestUrl: String = "https://api.github.com/repos/codescv/minifile/releases/latest",
+    listUrl: String = "https://api.github.com/repos/codescv/minifile/releases?per_page=5",
+    openConnection: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },   // test seam
+) {
+    fun checkLatestRelease(currentVersion: String, includePre: Boolean = false, cancel: CancelToken? = null, timeoutMs: Int = 15_000): UpdateCheckResult
+    fun downloadApk(url: String, dest: File, expectedSize: Long, cancel: CancelToken?, validator: (File) -> Unit, onProgress: (Long, Long) -> Unit): File
+}
+data class UpdateCheckResult(val currentVersion: String, val latest: ReleaseJson, val apk: ReleaseAsset?, val updateAvailable: Boolean)
+class UpdateException(val code: UpdateErrorCode, message: String, cause: Throwable? = null) : IOException(message, cause)
+enum class UpdateErrorCode { NETWORK, TIMEOUT, NOT_FOUND, RATE_LIMITED, BAD_JSON, NO_ASSET, CORRUPT_DOWNLOAD, VERIFY_FAILED, CANCELLED, INSECURE_URL }
+```
+
+**HTTP rules (binding, tested):**
+- Headers: `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, `User-Agent: MiniFile/<version> (Android)`; for assets `Accept: application/octet-stream`, `Accept-Encoding: identity`.
+- `/releases/latest` → on HTTP 404 fall back to `/releases?per_page=5`; HTTP 403/429 with `X-RateLimit-Remaining: 0` → `RATE_LIMITED` (UI: "GitHub rate limit, try later").
+- JSON body capped at **2 MiB**; download capped at `size` from the asset (or 512 MiB when unknown); `Content-Length` must equal `size` when both known.
+- **Redirects followed manually**: `instanceFollowRedirects = false`, ≤ **5** hops on `301/302/303/307/308`, each `Location` resolved against the previous URL, scheme must be `https` (`http` is rejected outright — **no https→http downgrade**, and the initial URL must be https). The manifest keeps `usesCleartextTraffic` at its default `false`.
+- Download streams to `dest.tmp` (`cacheDir/updates/minifile-<version>.apk.tmp`), progress every 256 KiB / 100 ms, cancel via `CancelToken` (closes the stream). After the stream ends: byte count == expected, first 4 bytes `PK\x03\x04`, `ZipFile(tmp).getEntry("AndroidManifest.xml") != null`, then the injected `validator` runs; any failure deletes `.tmp` and throws; success → `tmp.renameTo(dest)` (atomic within `cacheDir`).
+- Stale cleanup on every check: delete `cacheDir/updates/*` older than 7 days or whose version ≤ installed.
+
+**Android-side validator (`data/update/ApkValidator.kt`)** — runs before rename:
+```kotlin
+val info = pm.getPackageArchiveInfo(path, flags)   // flags: GET_SIGNING_CERTIFICATES on API 28+, else GET_SIGNATURES
+require(info != null)                              → VERIFY_FAILED "Not a valid APK"
+require(info.packageName == context.packageName)   → VERIFY_FAILED "Package mismatch"
+require(versionCodeOf(info) > installedVersionCode)→ VERIFY_FAILED "Not newer than installed"
+API 28+: require(certSet(info.signingInfo) == certSet(installed.signingInfo))  // apkContentsSigners (or signingCertificateHistory) compared as Set<ByteArray.sha256>
+API 26–27: compare GET_SIGNATURES arrays as sets
+```
+A signature mismatch is **fatal** (no "install anyway"): the system installer would fail or, worse, the user could be tricked into uninstall/reinstall. The downloaded file is deleted and the UI shows "The downloaded update is not signed by the same key as the installed app." plus the release page link.
+
+**Install (`UpdateInstaller`)**: `FileProvider` gains `<cache-path name="updates" path="updates/"/>` (only that subdirectory). Intent: `ACTION_VIEW`, `setDataAndType(uri, "application/vnd.android.package-archive")`, `FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK`. Gate: `pm.canRequestPackageInstalls()` else `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` with `package:<id>` data, resume after return. Manifest: `<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>` (already listed in §6.2 for opening APKs).
+
+**`UpdateManager` (data/update)** — orchestrates for the UI: `StateFlow<UpdateUiState>` (`Idle, Checking, UpToDate(at), Available(release, asset), Downloading(done, total), Verifying, Ready(file), Error(code, msg)`), `check(force)`, `downloadAndInstall()`, `cancel()`, `install()`; persists `update_last_check_ms`, `update_auto_check` (default true), `update_include_pre` (false), `update_dismissed_tag`. Startup check is invoked from `MainActivity` via `lifecycleScope` once per process, throttled to 6 h (`force=false`).
+
+**Unit tests (`core.update`, JVM):** `SemanticVersionTest` (parse table, ordering, pre-release < release, debug suffix, garbage → null), `ReleaseParserTest` (latest object, list fallback skipping drafts/pre-releases, asset priority `minifile-*-release.apk` > `*.apk`, non-https asset ignored, unknown keys ignored), `AppUpdaterTest` with a loopback `com.sun.net.httpserver.HttpServer`: 200 happy path, 404→list fallback, 403 rate limit, redirect chain of 5 ok / 6 fails, redirect to `http://` rejected, oversize JSON rejected, download size mismatch → `.tmp` deleted, non-zip body rejected, cancellation mid-stream deletes `.tmp`, validator failure deletes `.tmp`, progress callbacks monotonic.
+
+### 11.2 Release build configuration (`app/build.gradle.kts`)
+```kotlin
+signingConfigs {
+    create("release") {
+        val ksPath = System.getenv("MINIFILE_KEYSTORE")
+        if (ksPath != null) { storeFile = file(ksPath); storePassword = System.getenv("MINIFILE_KEYSTORE_PASSWORD"); keyAlias = System.getenv("MINIFILE_KEY_ALIAS"); keyPassword = System.getenv("MINIFILE_KEY_PASSWORD") }
+    }
+}
+buildTypes {
+    release {
+        isMinifyEnabled = false                       // keep stack traces readable for v1; R8 rules deferred
+        signingConfig = if (System.getenv("MINIFILE_KEYSTORE") != null) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
+    }
+    debug { versionNameSuffix = "-DEBUG" }
+}
+```
+`./gradlew --offline assembleRelease` therefore always yields an installable, consistently signed APK (`app/build/outputs/apk/release/app-release.apk`). The debug keystore is the de-facto release key for v1 unless `MINIFILE_KEYSTORE` is provided; the same keystore **must** be used for every release or the in-app updater's signature check will (correctly) refuse the update. CI uses a repository secret `MINIFILE_DEBUG_KEYSTORE_B64` (base64 of `~/.android/debug.keystore` from the publishing machine) written to `~/.android/debug.keystore` before building, so CI-built APKs match locally built ones.
+
+### 11.3 Companion updater (`companion/minifile_companion/updater.py`)
+```python
+__version__ = "1.0.0"                       # in minifile_companion/__init__.py; must equal the release tag without "v"
+GITHUB_LATEST = "https://api.github.com/repos/codescv/minifile/releases/latest"
+GITHUB_LIST   = "https://api.github.com/repos/codescv/minifile/releases?per_page=5"
+
+def parse_version(s) -> tuple[int,int,int,str|None]            # same grammar as Kotlin SemanticVersion
+def is_newer(current, candidate) -> bool
+def check_latest(current=__version__, include_pre=False, timeout=15, opener=None) -> UpdateCheck   # UpdateCheck(current, latest_tag, name, notes, html_url, asset_url, asset_size, published_at, available)
+def download_asset(url, dest_dir, expected_size=-1, sha256=None, progress=None, opener=None) -> Path  # writes .tmp, verifies, renames
+def verify_companion_zip(path) -> str                           # returns version from minifile_companion/__init__.py inside; raises on zip-slip-unsafe names or missing files
+def stage_and_apply(zip_path, install_dir, apply=False) -> Path  # extracts to install_dir.parent/"companion-v<ver>" (safe extraction), optional swap
+```
+Rules mirror §11.1: `urllib.request` with a custom `HTTPRedirectHandler` that counts hops (≤ 5), rejects non-`https` `Location`s, and forwards `User-Agent: MiniFile-Companion/<version>`; JSON cap 2 MiB; `Content-Length` must match `size`; SHA-256 compared against the `SHA256SUMS.txt` asset when present (fetch it, find the line for the asset name) — mismatch is fatal; extraction uses the §5.2 segment rules (`..`, absolute, drive letters, backslashes, NUL → abort the whole update, not skip); never overwrite the running tree (stage dir + optional swap; refuse swap when `.git` exists or the dir is not writable). Update checks are cached in `config.json` (`update_last_check`, `update_latest_tag`) and never block CLI commands (hint printed from cache only).
+
+CLI: `update [--check] [--pre] [--apply] [--json] [--dest DIR]`; exit codes `0` current/applied, `10` update available (with `--check`), `3` network, `1` verify/apply failure. Web: `GET /api/update?force=0|1` → `{current, latest, available, notes, html_url, asset_url, checked_at}`; the SPA shows the badge; downloads go through the browser to the GitHub asset URL (not proxied).
+
+Tests (`companion/tests/test_updater.py`, against a `ThreadingHTTPServer` mock on 127.0.0.1): version grammar/order, latest + list fallback, pre-release filtering, redirect limit & http downgrade refusal, size and SHA-256 mismatch → `.tmp` removed, zip-slip zip aborts, happy-path stage into sibling dir, `--apply` swap refused in a git checkout, CLI `update --check` exit code `10`, `/api/update` schema & caching, hint throttling.
+
+### 11.4 GitHub Actions release workflow (`.github/workflows/release.yml`, owned by `coder-android`)
+- Trigger: `push: tags: ['v*']` (plus `workflow_dispatch` with a `tag` input).
+- Jobs:
+  1. `verify-version` — `TAG=${GITHUB_REF_NAME#v}`; assert `grep -q "versionName = \"$TAG\"" app/build.gradle.kts` and `grep -q "__version__ = \"$TAG\"" companion/minifile_companion/__init__.py`; fail otherwise.
+  2. `android` — `ubuntu-latest`, `actions/setup-java@v4` (temurin 21), `android-actions/setup-android@v3` (platform 35, build-tools 35.0.0), restore debug keystore from secret if present, `./gradlew assembleRelease testDebugUnitTest --no-daemon`, rename to `minifile-v$TAG-release.apk`, upload artifact.
+  3. `companion` — `actions/setup-python@v5` (3.12+), `python -m unittest discover -s companion/tests`, `zip -r minifile-companion-v$TAG.zip companion -x 'companion/tests/*' '*/__pycache__/*'`.
+  4. `release` — needs both; `sha256sum *.apk *.zip > SHA256SUMS.txt`; `softprops/action-gh-release@v2` with `tag_name`, `name: MiniFile v$TAG`, `generate_release_notes: true`, `prerelease: false`, `draft: false`, files = APK, ZIP, `SHA256SUMS.txt`.
+- The workflow must also succeed offline-locally in spirit: every step corresponds to a documented local command (§1.1, §11.2).
+
+### 11.5 Initial publication procedure (`tester`, after merge)
+1. `main` clean: `feat/android-app` + `feat/pc-companion` + `TEST_REPORT.md` merged, `.worktrees/` removed, `git status` empty.
+2. Local artefacts: `./gradlew --offline assembleRelease` → copy to `dist/minifile-v1.0.0-release.apk` (git-ignored `dist/` or `/tmp`); `cd companion && zip -r ../dist/minifile-companion-v1.0.0.zip . -x 'tests/*' '*/__pycache__/*'`; `sha256sum` both → `SHA256SUMS.txt`.
+3. `gh repo create codescv/minifile --public --source=/usr/local/google/home/chii/Developer/minifile --remote=origin --push` (gh is logged in as `codescv`).
+4. `git tag -a v1.0.0 -m "MiniFile v1.0.0"` && `git push origin v1.0.0`.
+5. `gh release create v1.0.0 dist/minifile-v1.0.0-release.apk dist/minifile-companion-v1.0.0.zip dist/SHA256SUMS.txt --title "MiniFile v1.0.0" --notes-file <notes> --latest` (CI may also build; whichever finishes first owns the release — CI must use `fail_on_unmatched_files` and *update* an existing release rather than fail).
+6. Smoke: `curl -s https://api.github.com/repos/codescv/minifile/releases/latest | python3 -c 'import json,sys; r=json.load(sys.stdin); print(r["tag_name"], [a["name"] for a in r["assets"]])'`; on the emulator, Tools → Updates → *Check now* must report "up to date" for v1.0.0; `python3 -m minifile_companion update --check` exits `0`.
+
+---
+
+## 12. ACID Emulator End-to-End Test Specification (`tester`)
+
+### 12.1 Environment & invocation rules
+- Emulator: ACID (`/google/bin/releases/mobile-devx-platform/acid/acid`). **Always** `export PATH="/usr/local/google/home/chii/Android/Sdk/platform-tools:$PATH"` and run `acid …` **and** the dependent `adb -s localhost:<PORT> …` commands **inside one `run_command` shell invocation** (background `acid_daemon`/`adb` processes are reaped when the command exits). Put each scenario in a script under `tools/e2e/` (e.g. `tools/e2e/run_acid_e2e.sh`) that: starts/connects the emulator, resolves `<PORT>`, runs the steps, collects artefacts into `tools/e2e/out/<timestamp>/` (git-ignored), and tears down.
+- Preferred image: API 34 or 35 (`google_apis`, x86_64). Record `adb shell getprop ro.build.version.sdk` and `ro.build.fingerprint` in the report.
+- Helper conventions: `SERIAL=localhost:<PORT>`; `A="adb -s $SERIAL"`; `PKG=com.minifile.explorer`; UI assertions via `$A shell uiautomator dump /sdcard/ui.xml && $A pull /sdcard/ui.xml` + `grep`/`python3 -c` on `text=`/`content-desc=`; screenshots via `$A exec-out screencap -p > step-N.png`; crash detection via `$A logcat -d -b crash` (must be empty for `$PKG`) and `$A shell dumpsys activity processes | grep -i anr`.
+
+### 12.2 Setup steps
+```bash
+$A install -r app/build/outputs/apk/debug/app-debug.apk          # or the release APK; record which
+$A shell appops set $PKG MANAGE_EXTERNAL_STORAGE allow
+$A shell pm grant $PKG android.permission.POST_NOTIFICATIONS      # API 33+
+$A shell appops set $PKG REQUEST_INSTALL_PACKAGES allow            # for the update-install path (best effort)
+$A shell mkdir -p /sdcard/MiniFileE2E/src/sub /sdcard/MiniFileE2E/dst
+$A shell 'printf "hello\nworld\n" > /sdcard/MiniFileE2E/src/notes.txt; dd if=/dev/urandom of=/sdcard/MiniFileE2E/src/blob.bin bs=1k count=512'
+$A shell am start -n $PKG/.MainActivity -W
+```
+`$A shell` is the oracle for on-device state (`ls -la`, `md5sum`, `cat`, `stat`).
+
+### 12.3 Scenarios (each: action → UI assertion → filesystem/logcat assertion)
+| # | Area | Steps (driven by `uiautomator`/`input tap` on nodes located by `content-desc`/`text`, or by deep-link intents where provided) | Pass criteria |
+|---|------|-------|---------------|
+| E1 | Launch & tabs | Start; dump UI; tap each `NavigationBar` item (`Browse`, `Favorites`, `Wireless`, `Tools`) | All 4 destinations render their title; no crash/ANR; screenshots saved |
+| E2 | Browse & breadcrumbs | Navigate Internal → `MiniFileE2E` → `src`; dump | Breadcrumb shows `Internal › MiniFileE2E › src`; entries `sub`, `notes.txt`, `blob.bin` with sizes |
+| E3 | Sort/view/search/hidden | Toggle grid, sort by Size desc, type `blob` in search, enable hidden files after `$A shell touch …/src/.hidden` | Order changes; filter leaves one row; `.hidden` appears only after toggle; preference persists after `am force-stop` + relaunch |
+| E4 | Create folder/file | FAB → New folder `E2E Folder`; New file `made.txt` (editor opens) | `ls` shows both; `made.txt` size 0 |
+| E5 | Text editor | Open `notes.txt`, append a line via `input text`, Save; reopen | `$A shell cat` shows the new line; status bar shows `UTF-8 · LF` |
+| E6 | Copy / Move / Paste | Select `notes.txt`+`blob.bin` → Copy → navigate to `dst` → Paste here; then Cut `made.txt` → Paste in `dst` | `dst` contains copies with identical `md5sum`; `made.txt` moved (absent in `src`) |
+| E7 | Favorites + Copy/Move-to-Favorite | Star `dst` as `Target`; in `src` select `sub` → More → *Copy to Favorite…* → `Target` | `dst/sub` exists; snackbar "Copied … to Target"; Favorites tab lists `Target` |
+| E8 | Rename / Delete | Rename `blob.bin` → `blob2.bin`; Delete it (confirm dialog appears) | Dialog text contains "Delete"; file absent afterwards |
+| E9 | Properties & checksum | Properties of `dst/notes.txt` → Compute SHA-256 | Shown hash equals `$A shell sha256sum` |
+| E10 | `.nomedia` | Toggle *Hide from gallery* on `dst`; badge visible; toggle off | `.nomedia` created then removed; `content-desc="Hidden from gallery"` present then absent |
+| E11 | Zip / Unzip | Select `src` → Compress → `e2e.zip`; open it → Extract to new folder; push a crafted zip (`tools/e2e/evil.zip` with `../evil.txt`) and extract | Extracted tree matches; `evil.txt` **not** created outside the destination; UI reports "1 unsafe entry skipped" |
+| E12 | App Data / Volumes | Storage Home shows Internal with free/total; tap `Android/data` → system picker appears (`com.android.documentsui` in `dumpsys activity top`); press back | Picker launched; app returns without crash; Installed Apps list shows `MiniFile` entry; *Export APK* of MiniFile to `dst` produces a valid zip/apk |
+| E13 | FTP server | Wireless → Start (grant notification if prompted) → UI shows `ftp://…:2121`; `$A forward tcp:12121 tcp:2121`; on PC: `python3 -m minifile_companion -H 127.0.0.1 -P 12121 ls /MiniFileE2E`, `put`, `get`, `sync --to-pc`, `cat`, `nomedia --on /MiniFileE2E/dst`, `mkdir`, `rm`; Stop from notification | Every command exits 0; files match by hash; live log in the Wireless tab lists the commands; foreground notification present while running and gone after Stop; `$A shell dumpsys activity services $PKG` shows no service afterwards |
+| E14 | Updates card | Tools → Updates → *Check now* (emulator needs network) | State becomes *Up to date* (v1.0.0 is the latest) or *Update available* with a release note body; on no network a readable error, never a crash. Optionally seed a fake newer release via `adb reverse` + a local `HttpServer` and `BuildConfig.UPDATE_API_BASE` override to exercise download + signature verification (expected: debug-signed test APK → verify OK; foreign-signed APK → "not signed by the same key") |
+| E15 | Process death & back stack | While in `src`, `$A shell am kill $PKG` (background) and relaunch | Returns to Browse at the last folder (or Home) with no crash; clipboard cleared gracefully |
+
+### 12.4 Report (`TEST_REPORT.md`, written by `tester`)
+Sections: 1 Build verification (commands, versions, APK sizes, `--offline` status); 2 Unit tests (Android suite counts per class, companion suite counts); 3 JVM interop (Python suite vs Kotlin engine: passed/skipped lists); 4 ACID E2E results table E1–E15 with evidence paths (screenshots, ui dumps, logcat excerpts) and device fingerprint; 5 Security audit (§8.5 + §11 rules, each with how it was verified); 6 Known issues / deviations; 7 Release & publication (repo URL, tag, release URL, asset SHA-256s, live `releases/latest` check).
+

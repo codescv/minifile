@@ -8,7 +8,7 @@
 
 ## 0. Product Summary
 
-**MiniFile** is a minimalist, privacy-respecting Android file manager (package `com.minifile.explorer`, `minSdk 26`, `targetSdk 35`) plus a **PC Companion** (pure-Python 3 CLI + local Web GUI) that talks to the phone over the app's **built-in FTP server**. It has no ads, no analytics, no cloud account, and no network access except the LAN FTP server the user explicitly starts.
+**MiniFile** is a minimalist, privacy-respecting Android file manager (package `com.minifile.explorer`, `minSdk 26`, `targetSdk 35`) plus a **PC Companion** (pure-Python 3 CLI + local Web GUI) that talks to the phone over the app's **built-in FTP server**. It has no ads, no analytics, no cloud account, and no network access except the LAN FTP server the user explicitly starts and an HTTPS update check against GitHub Releases (`codescv/minifile`, §11) that can be switched off.
 
 ### 0.1 Design Principles
 
@@ -290,6 +290,7 @@ Global options: `--host/-H` (or env `MINIFILE_HOST`), `--port/-P` (default 2121)
 | `nomedia` | `nomedia <remote_dir> [--on|--off|--status]` | Creates/removes `.nomedia`, or prints status. |
 | `shell` | `shell` | Interactive REPL (`cd, pwd, ls, lcd, lls, get, put, …`, tab completion via `readline` when available). |
 | `gui` / `web` | `gui [--port 8765] [--no-browser]` | Starts the Web Desktop Companion (§4.4) and opens the browser. `gui` is an alias for `web` (a native Tkinter window is **optional**: only when `tkinter` is importable; otherwise the command transparently launches the web UI — this machine has no `tkinter`). |
+| `update` | `update [--check] [--pre] [--apply] [--dest DIR]` | Checks GitHub Releases for a newer companion; downloads, verifies and stages it (§11.2). `--check` only reports (exit `10` when an update exists). |
 
 Exit codes: `0` ok, `1` generic error, `2` usage, `3` connection/auth failure, `4` partial failure (some items failed; listed on stderr). All commands accept `--json` for scripting.
 
@@ -402,7 +403,8 @@ Sections (M3 settings list):
 - **Behavior**: Confirm before delete (always on; option only for *also confirm overwrite*), Open text files in built-in editor, Editor font size, Remember last folder.
 - **Storage access**: All-files access status + button; granted SAF trees list with revoke; Installed Apps Inspector; Volumes diagnostics (paths, states).
 - **Utilities**: `.nomedia` Overview, Checksum calculator (pick any file), Archive tasks (history of last 20 operations with retry), Favorites export/import (JSON), FTP log export.
-- **About**: version, licenses (none third-party except AndroidX/Kotlin/optional Coil), privacy statement ("No network access except the FTP server you start").
+- **Updates** (检查更新): current/latest version, release notes, *Check now*, *Update & Install* with progress, *Check automatically (every 6 h)* switch, *Include pre-releases* switch — see §11.1.
+- **About**: version, licenses (none third-party except AndroidX/Kotlin/kotlinx-serialization/optional Coil), privacy statement ("No network access except the FTP server you start and the optional GitHub update check"), link to `github.com/codescv/minifile`.
 
 ---
 
@@ -430,6 +432,7 @@ Sections (M3 settings list):
 6. **Checksum verify**: Properties of `firmware.bin` → SHA-256 *Compute* → paste expected → ✓.
 7. **Text file from scratch**: FAB → New file `todo.md` → editor opens → type → Save → listed with correct size.
 8. **Search**: type "inv" → instant filter; enable "Search subfolders" → results stream with relative paths; tap → navigates and highlights.
+9. **Update**: Tools → Updates → *Check now* → "v1.1.0 available" with notes → *Update & Install* → progress → (first time) "Allow installs from MiniFile" settings hop → system installer → new version runs; a tampered/foreign-signed APK is refused with a clear message. PC: `python3 -m minifile_companion update --check` exits 10 and prints the version line.
 
 Each scenario maps to automated or manual checks in ARCHITECTURE §8.
 
@@ -444,3 +447,61 @@ Each scenario maps to automated or manual checks in ARCHITECTURE §8.
 | D3 | Web GUI is the primary PC GUI; Tkinter optional | Host machine lacks `tkinter`; browser UI is cross-platform and supports drag-and-drop natively. |
 | D4 | FTP (not SFTP/HTTP) as the phone server protocol | Requirement; universal client support; the companion abstracts it. Documented as LAN-only/plaintext with an in-app warning. |
 | D5 | No syntax highlighting in v1 editor | Keeps the editor small and fast; can be added later as a pure-Kotlin tokenizer. |
+
+---
+
+## 11. In-App Auto-Update & Releases (added v1.0 — requirement 6)
+
+MiniFile is distributed from GitHub Releases at **`https://github.com/codescv/minifile`**; both the Android app and the PC Companion can check for and apply updates themselves. No update check happens without the user's knowledge: the first launch shows a one-line notice in the Tools → *Updates* card ("MiniFile checks GitHub for new versions at most every 6 hours. You can turn this off."), and the check is the **only** outbound connection the app makes besides the user-started FTP server.
+
+### 11.1 Android — Update UX
+
+**Silent startup check** (`MainActivity`, after first frame, on `Dispatchers.IO`):
+- Runs only if *Automatic update check* (Tools) is on (default **on**), network is available, and the last check is older than **6 h** (`update_last_check_ms`).
+- Outcome *update available* → a non-intrusive **snackbar** on the current screen: "MiniFile v1.1.0 is available · **View**" (dismissable; same version is not re-announced until the next 6 h window). Never a blocking dialog on launch.
+- Outcome *up to date* / *error* → silent (error is logged and shown only in the Updates card as "Last check failed: …").
+
+**Tools → Updates card** ("Check for Updates" / 检查更新):
+```
+┌──────────────────────────────────────────────┐
+│ Updates                                      │
+│ Current version  1.0.0 (1)                   │
+│ Latest release   v1.1.0 · Oct 30, 2026       │
+│ ──────────────────────────────────────────── │
+│ What's new                                   │
+│ • Favorites picker remembers last target     │
+│ • Fix: EPSV on IPv6-only hotspots            │
+│ ──────────────────────────────────────────── │
+│ ▓▓▓▓▓▓▓▓▓░░░░░░  58%  7.2 / 12.4 MB   [✕]    │
+│                                              │
+│ [Check now]              [Update & Install]  │
+│ ☑ Check automatically (every 6 h)            │
+│ Release page ↗                               │
+└──────────────────────────────────────────────┘
+```
+States: *Idle* (Check now) → *Checking* (spinner) → *Up to date* ("You're on the latest version", timestamp) | *Update available* (notes, size, **Update & Install**) → *Downloading* (progress bar, speed, cancel ✕) → *Verifying* → *Ready to install* (**Install** — re-launches the installer if the user backed out; the verified APK is kept in `cacheDir/updates/` until the app is updated or 7 days pass) | *Error* (human message + *Retry* + *Open release page*).
+
+**Install flow**
+- Tap **Update & Install** → if `packageManager.canRequestPackageInstalls()` is false → explanatory dialog "Allow MiniFile to install updates" → `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` for our package → on return, continue automatically.
+- Then the system package installer opens (`ACTION_VIEW` on a `FileProvider` `content://` URI with MIME `application/vnd.android.package-archive`, `FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK`). The user confirms in the system UI; the app does not auto-restart.
+- Release notes are rendered as plain text (Markdown bullets kept as-is, links stripped) — no WebView.
+
+**Debug builds** (`versionName` suffix `-DEBUG`/`-debug`) compare using the stripped base version so developers see the same behaviour as users.
+
+### 11.2 PC Companion — Update UX
+
+- **CLI**: `python3 -m minifile_companion update --check` prints `Current 1.0.0 · Latest v1.1.0 (2026-10-30) · Update available` (exit code `10` when an update is available, `0` when current, `3` on network error — scripting-friendly, also with `--json`). `update` (no flag) downloads `minifile-companion-v1.1.0.zip` to `~/.cache/minifile/updates/`, verifies it (size, zip integrity, **zip-slip-safe listing**, contains `minifile_companion/__init__.py` with the expected `__version__`), and then:
+  - if the companion runs from a plain directory checkout (`companion/`), extracts into a sibling `companion-v1.1.0/` directory **next to** the current one and prints the `cd`/run instructions — it never overwrites the running code in place;
+  - `--apply` additionally swaps directories (`companion` → `companion-v1.0.0.bak`, new → `companion`) when the current directory is writable and not a git checkout (`.git` absent); otherwise prints what to do.
+  - `--check-only-notify`: used by the Web UI poller.
+- **Web GUI**: top-right **"⬆ v1.1.0 available"** badge (checked at startup and every 6 h via `/api/update`, cached in the config file); clicking opens a small panel with notes, *Download*, and *Open release page* — the download lands in the user's Downloads folder (through the normal browser download), because applying code updates from inside a browser tab is deliberately not done.
+- Every command prints a one-line hint `(new version v1.1.0 available — run `update`)` on stderr at most once per 24 h when a cached check says so; disable with `--no-update-hint` or config `update_hint: false`.
+
+### 11.3 Release Policy
+- Tags `vX.Y.Z` on `main` publish a GitHub Release (CI, ARCH §11.4) with assets:
+  - `minifile-vX.Y.Z-release.apk` — signed release APK (debug keystore fallback when no release keystore is configured, so the APK is still installable and self-consistent for updates signed by the same key),
+  - `minifile-companion-vX.Y.Z.zip` — the `companion/` tree (no tests/caches),
+  - `SHA256SUMS.txt`.
+- `versionName` in `app/build.gradle.kts` and `__version__` in `companion/minifile_companion/__init__.py` **must equal the tag without `v`**; CI fails the release otherwise.
+- Release notes = the tag's annotated message / `CHANGELOG.md` section; the app displays `body`.
+- Pre-releases (`prerelease: true`) are ignored by the app and companion unless the user enables *Include pre-releases* (Tools / `--pre`).
