@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -14,15 +15,39 @@ android {
         applicationId = "com.minifile.explorer"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
+        versionCode = 10000
         versionName = "1.0.0"
 
         buildConfigField("boolean", "THUMBNAILS", "true")
+        val apiBase = System.getenv("MINIFILE_UPDATE_API_BASE")
+            ?.takeIf { it.isNotBlank() }
+            ?: "https://api.github.com/repos/codescv/minifile"
+        buildConfigField("String", "UPDATE_API_BASE", "\"$apiBase\"")
+    }
+
+    val keystorePath = System.getenv("MINIFILE_KEYSTORE")?.takeIf { it.isNotBlank() && file(it).isFile }
+    signingConfigs {
+        if (keystorePath != null) {
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("MINIFILE_KEYSTORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("MINIFILE_KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("MINIFILE_KEY_PASSWORD") ?: ""
+            }
+        }
     }
 
     buildTypes {
+        debug {
+            versionNameSuffix = "-DEBUG"
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = if (keystorePath != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -76,6 +101,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.service)
     implementation(libs.androidx.documentfile)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.core)

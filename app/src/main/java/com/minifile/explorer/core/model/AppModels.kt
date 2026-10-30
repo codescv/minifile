@@ -1,0 +1,200 @@
+package com.minifile.explorer.core.model
+
+import com.minifile.explorer.core.vfs.PathUtils
+import com.minifile.explorer.core.vfs.VfsNode
+import com.minifile.explorer.core.vfs.VfsPath
+
+enum class SortField {
+    NAME,
+    SIZE,
+    DATE,
+    TYPE,
+}
+
+data class SortSpec(
+    val by: SortField = SortField.NAME,
+    val ascending: Boolean = true,
+    val foldersFirst: Boolean = true,
+) {
+    fun comparator(): Comparator<VfsNode> = Comparator { a, b ->
+        if (foldersFirst && a.isDirectory != b.isDirectory) {
+            return@Comparator if (a.isDirectory) -1 else 1
+        }
+        val raw = when (by) {
+            SortField.NAME -> PathUtils.naturalCompare(a.name, b.name)
+            SortField.SIZE -> {
+                val cmp = a.size.compareTo(b.size)
+                if (cmp != 0) cmp else PathUtils.naturalCompare(a.name, b.name)
+            }
+
+            SortField.DATE -> {
+                val cmp = a.lastModified.compareTo(b.lastModified)
+                if (cmp != 0) cmp else PathUtils.naturalCompare(a.name, b.name)
+            }
+
+            SortField.TYPE -> {
+                val extA = if (a.isDirectory) "" else PathUtils.extensionOf(a.name)
+                val extB = if (b.isDirectory) "" else PathUtils.extensionOf(b.name)
+                val cmp = extA.compareTo(extB)
+                if (cmp != 0) cmp else PathUtils.naturalCompare(a.name, b.name)
+            }
+        }
+        if (ascending) raw else -raw
+    }
+
+    fun toJson(): JsonValue.Obj = MiniJson.obj(
+        "by" to JsonValue.Str(by.name),
+        "asc" to JsonValue.Bool(ascending),
+        "foldersFirst" to JsonValue.Bool(foldersFirst),
+    )
+
+    companion object {
+        fun fromJson(obj: JsonValue.Obj): SortSpec {
+            val field = obj.str("by")?.let { name ->
+                SortField.entries.firstOrNull { it.name == name }
+            } ?: SortField.NAME
+            return SortSpec(
+                by = field,
+                ascending = obj.bool("asc", true),
+                foldersFirst = obj.bool("foldersFirst", true),
+            )
+        }
+    }
+}
+
+enum class ViewMode {
+    LIST,
+    GRID,
+}
+
+enum class ThemeMode {
+    SYSTEM,
+    LIGHT,
+    DARK,
+}
+
+enum class TransferMode {
+    COPY,
+    MOVE,
+}
+
+data class ClipboardState(
+    val items: List<VfsPath>,
+    val mode: TransferMode,
+)
+
+data class Favorite(
+    val id: String,
+    val name: String,
+    val path: VfsPath,
+    val createdAt: Long,
+    val lastUsedAt: Long,
+    val order: Int,
+    val color: Int? = null,
+) {
+    fun toJson(): JsonValue.Obj {
+        val pairs = mutableListOf<Pair<String, JsonValue>>(
+            "id" to JsonValue.Str(id),
+            "name" to JsonValue.Str(name),
+            "path" to JsonValue.Str(path.serialize()),
+            "createdAt" to JsonValue.Num(createdAt),
+            "lastUsedAt" to JsonValue.Num(lastUsedAt),
+            "order" to JsonValue.Num(order),
+        )
+        if (color != null) {
+            pairs.add("color" to JsonValue.Num(color))
+        }
+        return MiniJson.obj(*pairs.toTypedArray())
+    }
+
+    companion object {
+        fun fromJson(obj: JsonValue.Obj): Favorite? {
+            val id = obj.str("id") ?: return null
+            val name = obj.str("name") ?: return null
+            val rawPath = obj.str("path") ?: return null
+            val path = runCatching { VfsPath.parse(rawPath) }.getOrNull() ?: return null
+            return Favorite(
+                id = id,
+                name = name,
+                path = path,
+                createdAt = obj.long("createdAt", 0L),
+                lastUsedAt = obj.long("lastUsedAt", 0L),
+                order = obj.int("order", 0),
+                color = obj.intOrNull("color"),
+            )
+        }
+    }
+}
+
+data class AppSettings(
+    val showHidden: Boolean = false,
+    val viewMode: ViewMode = ViewMode.LIST,
+    val sort: SortSpec = SortSpec(),
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val dynamicColor: Boolean = true,
+    val showThumbnails: Boolean = true,
+    val confirmOverwrite: Boolean = true,
+    val openTextInBuiltInEditor: Boolean = true,
+    val editorFontSp: Int = 14,
+    val editorWrap: Boolean = false,
+    val editorLineNumbers: Boolean = true,
+    val rememberLastFolder: Boolean = false,
+    val lastFolder: String? = null,
+    val onboardingDone: Boolean = false,
+    val ftpPort: Int = 2121,
+    val ftpRoot: String? = null,
+    val ftpAnonymous: Boolean = true,
+    val ftpUsername: String = "minifile",
+    val ftpPassword: String = "",
+    val ftpReadOnly: Boolean = false,
+    val ftpPasvStart: Int = 50000,
+    val ftpPasvEnd: Int = 50100,
+    val ftpIdleTimeoutSec: Int = 300,
+    val ftpKeepScreenOn: Boolean = true,
+)
+
+enum class OperationKind {
+    COPY,
+    MOVE,
+    DELETE,
+    COMPRESS,
+    EXTRACT,
+    EXPORT_APK,
+    COMPUTE_SIZE,
+}
+
+data class OperationProgress(
+    val id: String,
+    val kind: OperationKind,
+    val title: String,
+    val currentItem: String = "",
+    val processedItems: Int = 0,
+    val totalItems: Int = 0,
+    val processedBytes: Long = 0L,
+    val totalBytes: Long = -1L,
+    val bytesPerSecond: Long = 0L,
+    val finished: Boolean = false,
+    val cancelled: Boolean = false,
+    val errorSummary: String? = null,
+    val unsafeSkipped: Int = 0,
+) {
+    val fraction: Float?
+        get() = when {
+            totalBytes > 0L -> (processedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+            totalItems > 0 -> (processedItems.toFloat() / totalItems.toFloat()).coerceIn(0f, 1f)
+            else -> null
+        }
+}
+
+data class OperationResult(
+    val succeeded: Int,
+    val skipped: Int,
+    val failed: List<Pair<VfsPath, String>>,
+    val cancelled: Boolean,
+)
+
+data class FolderStats(
+    val totalBytes: Long,
+    val fileCount: Int,
+    val dirCount: Int,
+)
