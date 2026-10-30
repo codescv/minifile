@@ -65,10 +65,8 @@ jobs:
           java-version: '21'
           cache: gradle
       - uses: android-actions/setup-android@v3
-      - name: Install SDK platform 35 and build-tools 35.0.0
-        run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
       - name: Restore consistent signing keystore (fail fast if missing)
         env:
           KS_B64: ${{ secrets.MINIFILE_DEBUG_KEYSTORE_B64 }}
