@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!--MF_TOKEN_META-->
+  <title>MiniFile Companion</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-logo" aria-hidden="true">📁</span>
+      <span class="brand-title">MiniFile Companion</span>
+      <span id="app-version" class="badge-muted">v1.0.0</span>
+    </div>
+
+    <div class="connection-bar">
+      <span id="conn-indicator" class="status-pill disconnected" role="status">
+        <span class="dot"></span>
+        <span id="conn-label">Disconnected</span>
+      </span>
+      <button id="btn-connect-modal" class="btn btn-tonal" type="button">Connect…</button>
+      <button id="btn-disconnect" class="btn btn-ghost hidden" type="button">Disconnect</button>
+      <button id="btn-scan-modal" class="btn btn-ghost" type="button" title="Scan Wi-Fi LAN for MiniFile FTP">📡 Scan LAN</button>
+      <button id="btn-update-badge" class="btn btn-update hidden" type="button" title="New MiniFile release available">⬆ Update</button>
+      <button id="btn-update-check" class="btn btn-icon" type="button" title="Check for updates" aria-label="Check for updates">⟳</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <!-- LEFT PANE: LOCAL PC -->
+    <section id="pane-local" class="pane" tabindex="0" aria-label="Local PC Files">
+      <div class="pane-header">
+        <div class="pane-title-row">
+          <div class="pane-heading">
+            <span aria-hidden="true">💻</span>
+            <h2>This PC</h2>
+            <select id="local-roots" class="select-compact" aria-label="Local root"></select>
+          </div>
+          <div class="pane-transfer-cta">
+            <button id="btn-transfer-up" class="btn btn-primary btn-sm" type="button" disabled title="Upload selected PC items to Phone current folder">
+              Upload Selected ⟶
+            </button>
+          </div>
+        </div>
+
+        <div class="pane-toolbar">
+          <button id="local-up" class="btn btn-icon" type="button" title="Parent directory (Backspace)" aria-label="Up">↑</button>
+          <button id="local-home" class="btn btn-icon" type="button" title="Home folder" aria-label="Home">⌂</button>
+          <button id="local-refresh" class="btn btn-icon" type="button" title="Refresh" aria-label="Refresh">↻</button>
+          <button id="local-mkdir" class="btn btn-ghost btn-sm" type="button">+ Folder</button>
+          <button id="local-newfile" class="btn btn-ghost btn-sm" type="button">+ File</button>
+          <button id="local-hidden" class="btn btn-chip" type="button" aria-pressed="false" title="Toggle hidden dotfiles">👁 .*</button>
+          <input id="local-filter" class="filter-input" type="search" placeholder="Filter PC files…" aria-label="Filter PC files">
+        </div>
+
+        <nav id="local-crumbs" class="breadcrumbs" aria-label="Local path breadcrumbs"></nav>
+      </div>
+
+      <div class="table-head">
+        <button class="col-name sort-btn" data-pane="local" data-col="name" type="button">Name <span class="sort-ind">▲</span></button>
+        <button class="col-size sort-btn" data-pane="local" data-col="size" type="button">Size <span class="sort-ind"></span></button>
+        <button class="col-mtime sort-btn" data-pane="local" data-col="mtime" type="button">Modified <span class="sort-ind"></span></button>
+        <span class="col-actions">Actions</span>
+      </div>
+
+      <div id="local-list" class="file-list" role="listbox" aria-multiselectable="true"></div>
+      <footer id="local-footer" class="pane-footer">0 items</footer>
+    </section>
+
+    <!-- RIGHT PANE: ANDROID PHONE -->
+    <section id="pane-phone" class="pane" tabindex="0" aria-label="Android Phone Files">
+      <div id="phone-drop-overlay" class="drop-overlay hidden">
+        <div class="drop-box">📤 Drop files or folders to upload to <strong id="drop-target-label">/</strong></div>
+      </div>
+
+      <div class="pane-header">
+        <div class="pane-title-row">
+          <div class="pane-heading">
+            <span aria-hidden="true">📱</span>
+            <h2>Phone</h2>
+            <div class="fav-dropdown-wrap">
+              <button id="btn-fav-menu" class="btn btn-ghost btn-sm" type="button">★ Favorites ▾</button>
+              <div id="fav-menu" class="dropdown-menu hidden" role="menu"></div>
+            </div>
+          </div>
+          <div class="pane-transfer-cta">
+            <label class="btn btn-tonal btn-sm upload-picker-label" title="Upload files from browser">
+              📤 Upload…
+              <input id="file-upload-input" type="file" multiple hidden>
+            </label>
+            <button id="btn-transfer-down" class="btn btn-primary btn-sm" type="button" disabled title="Download selected Phone items to PC current folder">
+              ⟵ Download Selected
+            </button>
+          </div>
+        </div>
+
+        <div class="pane-toolbar">
+          <button id="phone-up" class="btn btn-icon" type="button" title="Parent directory (Backspace)" aria-label="Up">↑</button>
+          <button id="phone-root" class="btn btn-icon" type="button" title="Phone FTP Root (/)" aria-label="Root">⌂</button>
+          <button id="phone-refresh" class="btn btn-icon" type="button" title="Refresh" aria-label="Refresh">↻</button>
+          <button id="phone-mkdir" class="btn btn-ghost btn-sm" type="button">+ Folder</button>
+          <button id="phone-newfile" class="btn btn-ghost btn-sm" type="button">+ File</button>
+          <button id="phone-nomedia" class="btn btn-chip" type="button" aria-pressed="false" title="Toggle .nomedia in current phone folder">🚫 .nomedia</button>
+          <button id="phone-hidden" class="btn btn-chip" type="button" aria-pressed="false" title="Toggle hidden dotfiles">👁 .*</button>
+          <input id="phone-filter" class="filter-input" type="search" placeholder="Filter phone files…" aria-label="Filter phone files">
+        </div>
+
+        <nav id="phone-crumbs" class="breadcrumbs" aria-label="Phone path breadcrumbs"></nav>
+      </div>
+
+      <div class="table-head">
+        <button class="col-name sort-btn" data-pane="phone" data-col="name" type="button">Name <span class="sort-ind">▲</span></button>
+        <button class="col-size sort-btn" data-pane="phone" data-col="size" type="button">Size <span class="sort-ind"></span></button>
+        <button class="col-mtime sort-btn" data-pane="phone" data-col="mtime" type="button">Modified <span class="sort-ind"></span></button>
+        <span class="col-actions">Actions</span>
+      </div>
+
+      <div id="phone-list" class="file-list" role="listbox" aria-multiselectable="true">
+        <div class="empty-state">
+          <p>Connect to your phone's MiniFile FTP server to browse files wirelessly.</p>
+          <div class="empty-actions">
+            <button id="btn-empty-connect" class="btn btn-primary" type="button">Connect to Phone</button>
+            <button id="btn-empty-scan" class="btn btn-tonal" type="button">Scan Wi-Fi</button>
+          </div>
+        </div>
+      </div>
+      <footer id="phone-footer" class="pane-footer">Not connected</footer>
+    </section>
+  </main>
+
+  <!-- TRANSFER QUEUE PANEL -->
+  <section id="transfer-bar" class="transfer-bar hidden" aria-label="Active Transfers">
+    <div class="transfer-bar-header">
+      <strong id="transfer-summary">Transfers</strong>
+      <button id="btn-toggle-transfers" class="btn btn-ghost btn-sm" type="button">Hide</button>
+    </div>
+    <div id="transfer-items" class="transfer-items"></div>
+  </section>
+
+  <!-- CONTEXT MENU -->
+  <div id="context-menu" class="context-menu hidden" role="menu"></div>
+
+  <!-- TOAST -->
+  <div id="toast" class="toast hidden" role="alert"></div>
+
+  <!-- MODAL: CONNECT -->
+  <div id="modal-connect" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="connect-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="connect-title">Connect to MiniFile FTP</h3>
+        <button class="btn btn-icon modal-close" data-close="modal-connect" type="button" aria-label="Close">✕</button>
+      </div>
+      <form id="form-connect" class="modal-body form-grid">
+        <label>Phone IP / Host
+          <input id="inp-host" type="text" placeholder="192.168.1.42" required>
+        </label>
+        <label>Port
+          <input id="inp-port" type="number" min="1" max="65535" value="2121" required>
+        </label>
+        <label>Username
+          <input id="inp-user" type="text" value="anonymous">
+        </label>
+        <label>Password
+          <input id="inp-pass" type="password" value="minifile@">
+        </label>
+        <label class="checkbox-row">
+          <input id="inp-remember" type="checkbox" checked>
+          <span>Remember connection settings</span>
+        </label>
+        <div class="modal-footer">
+          <button class="btn btn-ghost modal-close" data-close="modal-connect" type="button">Cancel</button>
+          <button class="btn btn-primary" type="submit">Connect</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: LAN SCAN -->
+  <div id="modal-scan" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="scan-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="scan-title">Discover Phone on Wi-Fi</h3>
+        <button class="btn btn-icon modal-close" data-close="modal-scan" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="scan-controls">
+          <input id="inp-scan-subnet" type="text" placeholder="Auto subnet (e.g. 192.168.1.0/24)">
+          <input id="inp-scan-port" type="number" value="2121" min="1" max="65535" style="width:92px">
+          <button id="btn-run-scan" class="btn btn-primary" type="button">Scan</button>
+        </div>
+        <div id="scan-results" class="scan-results">
+          <p class="muted">Click Scan to search your local subnet for MiniFile FTP servers.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: INLINE TEXT EDITOR -->
+  <div id="modal-editor" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+    <div class="modal-card modal-editor-card">
+      <div class="modal-header">
+        <div class="editor-title-wrap">
+          <h3 id="editor-title">untitled.txt</h3>
+          <span id="editor-dirty" class="dirty-dot hidden" title="Unsaved changes">●</span>
+        </div>
+        <div class="editor-controls">
+          <input id="editor-find" class="filter-input" type="search" placeholder="Find in file…">
+          <button id="btn-editor-find-next" class="btn btn-ghost btn-sm" type="button">Next</button>
+          <select id="editor-encoding" class="select-compact" aria-label="Text encoding">
+            <option value="utf-8">UTF-8</option>
+            <option value="utf-16-le">UTF-16LE</option>
+            <option value="utf-16-be">UTF-16BE</option>
+            <option value="iso-8859-1">ISO-8859-1</option>
+            <option value="cp1252">Windows-1252</option>
+            <option value="gbk">GBK</option>
+            <option value="shift_jis">Shift_JIS</option>
+          </select>
+          <button id="btn-editor-save" class="btn btn-primary btn-sm" type="button">💾 Save</button>
+          <button id="btn-editor-close" class="btn btn-icon" type="button" aria-label="Close">✕</button>
+        </div>
+      </div>
+      <div class="editor-surface">
+        <pre id="editor-gutter" class="editor-gutter" aria-hidden="true">1</pre>
+        <textarea id="editor-textarea" class="editor-textarea" spellcheck="false"></textarea>
+      </div>
+      <div id="editor-status" class="editor-statusbar">UTF-8 · Ln 1, Col 1</div>
+    </div>
+  </div>
+
+  <!-- MODAL: UPDATES -->
+  <div id="modal-update" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="update-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="update-title">MiniFile Companion Updates</h3>
+        <button class="btn btn-icon modal-close" data-close="modal-update" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="update-summary" class="update-meta">Checking release information…</div>
+        <pre id="update-notes" class="update-notes hidden"></pre>
+        <div class="modal-footer">
+          <button id="btn-force-update-check" class="btn btn-tonal" type="button">Check Now</button>
+          <a id="link-release-page" class="btn btn-ghost" href="https://github.com/codescv/minifile/releases" target="_blank" rel="noopener noreferrer">Release Page ↗</a>
+          <a id="link-download-update" class="btn btn-primary hidden" href="#" target="_blank" rel="noopener noreferrer">⬇ Download ZIP</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
