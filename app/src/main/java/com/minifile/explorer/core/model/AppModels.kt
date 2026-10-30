@@ -151,6 +151,11 @@ data class AppSettings(
     val ftpPasvEnd: Int = 50100,
     val ftpIdleTimeoutSec: Int = 300,
     val ftpKeepScreenOn: Boolean = true,
+    val favoritePickerSortByRecency: Boolean = true,
+    val updateAutoCheck: Boolean = true,
+    val updateIncludePre: Boolean = false,
+    val updateLastCheckMs: Long = 0L,
+    val updateDismissedTag: String? = null,
 )
 
 enum class OperationKind {
