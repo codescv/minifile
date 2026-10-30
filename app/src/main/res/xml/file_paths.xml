@@ -2,6 +2,5 @@
 <paths>
     <external-path name="external" path="." />
     <cache-path name="updates" path="updates/" />
-    <files-path name="files" path="." />
     <root-path name="root" path="." />
 </paths>

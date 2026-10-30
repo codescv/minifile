@@ -563,8 +563,10 @@ class ZipArchiver(
     }
 
     private fun openZipFileWithFallback(file: File): ZipFile {
+        var utf8Zip: ZipFile? = null
         return try {
             val zf = ZipFile(file, Charsets.UTF_8)
+            utf8Zip = zf
             // Eagerly iterate names so malformed UTF-8 triggers fallback before use
             val e = zf.entries()
             while (e.hasMoreElements()) {
@@ -572,6 +574,7 @@ class ZipArchiver(
             }
             zf
         } catch (_: IllegalArgumentException) {
+            runCatching { utf8Zip?.close() }
             ZipFile(file, Charset.forName("CP437"))
         }
     }
