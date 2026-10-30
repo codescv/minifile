@@ -269,6 +269,25 @@ class TestCli(FtpServerTestCase):
         with self.make_client() as cli:
             self.assertIsNone(cli.stat("/ReplDir"))
 
+    def test_version_flag_and_pyproject_metadata_sync(self) -> None:
+        import minifile_companion
+
+        code, out, _ = self.run_cli("--version")
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn(minifile_companion.__version__, out)
+        self.assertEqual(minifile_companion.__version__, "1.0.1")
+
+        repo_root = Path(_COMPANION_ROOT).parent
+        comp_pyproject = Path(_COMPANION_ROOT) / "pyproject.toml"
+        root_pyproject = repo_root / "pyproject.toml"
+        for pyproj in (comp_pyproject, root_pyproject):
+            if pyproj.is_file():
+                raw = pyproj.read_text(encoding="utf-8")
+                self.assertIn(f'version = "{minifile_companion.__version__}"', raw)
+                self.assertIn('minifile = "minifile_companion.cli:main"', raw)
+                self.assertIn('minifile-companion = "minifile_companion.cli:main"', raw)
+                self.assertIn('minifile_companion = ["static/*"]', raw)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -49,6 +49,14 @@ jobs:
             echo "companion/minifile_companion/__init__.py __version__ does not match $VERSION"
             exit 1
           }
+          grep -q "^version = \"$VERSION\"" pyproject.toml || {
+            echo "pyproject.toml version does not match $VERSION"
+            exit 1
+          }
+          grep -q "^version = \"$VERSION\"" companion/pyproject.toml || {
+            echo "companion/pyproject.toml version does not match $VERSION"
+            exit 1
+          }
 
           echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -99,7 +107,7 @@ jobs:
         run: |
           python3 -m unittest discover -s companion/tests -v
           mkdir -p dist
-          zip -r "dist/minifile-companion-${{ needs.verify-version.outputs.tag }}.zip" companion -x 'companion/tests/*' '*/__pycache__/*' '*.pyc'
+          zip -r "dist/minifile-companion-${{ needs.verify-version.outputs.tag }}.zip" companion -x 'companion/tests/*' '*/__pycache__/*' '*.pyc' 'companion/build/*' 'companion/dist/*' 'companion/*.egg-info/*'
       - uses: actions/upload-artifact@v4
         with:
           name: companion-zip

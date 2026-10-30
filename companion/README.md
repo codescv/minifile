@@ -2,7 +2,23 @@
 
 Pure-Python 3 desktop & command-line companion for **MiniFile** (zero third-party pip dependencies; runs on Python 3.10+ including Python 3.13).
 
-## Quick Start
+## Install with `uv` (Recommended)
+
+```bash
+# Install directly from GitHub (provides `minifile` and `minifile-companion`)
+uv tool install git+https://github.com/codescv/minifile.git
+
+# Or install from a local clone (root or ./companion)
+uv tool install /path/to/minifile
+
+# Run from anywhere
+minifile --help
+minifile scan --save
+minifile web
+minifile gui
+```
+
+## Quick Start (Without Installing)
 
 ```bash
 cd companion

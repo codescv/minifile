@@ -8,6 +8,7 @@ import http.client
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -25,15 +26,20 @@ from minifile_companion.cli import EXIT_OK, EXIT_UPDATE_AVAILABLE, main  # noqa:
 from minifile_companion.config import ConfigStore  # noqa: E402
 from minifile_companion.updater import (  # noqa: E402
     SemanticVersion,
+    UpdateCheck,
     UpdateError,
     UpdateNetworkError,
     UpdateSecurityError,
     _open_with_redirects,
+    apply_update,
     check_latest,
     check_with_cache,
     download_asset,
     fetch_sha256_for_asset,
+    format_uv_upgrade_command,
     is_newer,
+    is_source_tree,
+    is_uv_tool_env,
     maybe_emit_cached_update_hint,
     parse_version,
     stage_and_apply,
@@ -599,6 +605,158 @@ class TestUpdater(unittest.TestCase):
                 conn.close()
             finally:
                 web.shutdown()
+
+    def test_uv_tool_env_detection_apply_update_and_zip_fallback(self) -> None:
+        # 1. Source tree vs site-packages / uv tool detection
+        self.assertTrue(is_source_tree())
+        fake_site_pkg = (
+            self.tmp
+            / "venv"
+            / "lib"
+            / "python3.12"
+            / "site-packages"
+            / "minifile_companion"
+            / "updater.py"
+        )
+        fake_site_pkg.parent.mkdir(parents=True)
+        fake_site_pkg.write_text("# installed\n", encoding="utf-8")
+        self.assertFalse(is_source_tree(fake_site_pkg))
+
+        # Prefix inside `/uv/tools/` detected even without `uv` on PATH
+        self.assertTrue(
+            is_uv_tool_env(
+                prefix="/home/user/.local/share/uv/tools/minifile-companion",
+                pkg_file=fake_site_pkg,
+                which_fn=lambda _: None,
+            )
+        )
+        # Non-source-tree + `uv` available on PATH detected
+        self.assertTrue(
+            is_uv_tool_env(
+                prefix=self.tmp / "venv",
+                pkg_file=fake_site_pkg,
+                which_fn=lambda name: "/usr/local/bin/uv" if name == "uv" else None,
+            )
+        )
+        # Source tree checkout is NOT treated as a uv tool install even when `uv` is on PATH
+        self.assertFalse(
+            is_uv_tool_env(
+                prefix="/usr",
+                which_fn=lambda name: "/usr/local/bin/uv" if name == "uv" else None,
+            )
+        )
+
+        # 2. Unsafe git tags rejected before running subprocess
+        self.assertEqual(
+            format_uv_upgrade_command("v1.2.0"),
+            "uv tool install --force git+https://github.com/codescv/minifile.git@v1.2.0",
+        )
+        for bad_tag in ("--help", "v1.0.0;rm -rf /", "v1.0.0@evil", ""):
+            with self.assertRaises(UpdateSecurityError):
+                format_uv_upgrade_command(bad_tag)
+
+        # 3. `apply_update()` in uv tool env runs `uv tool install --force git+...@<tag>`
+        recorded_cmds: list[list[str]] = []
+
+        def _mock_uv_ok(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            recorded_cmds.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="Installed minifile", stderr="")
+
+        uv_prefix = self.tmp / "uv" / "tools" / "minifile-companion"
+        uv_prefix.mkdir(parents=True)
+        chk_120 = UpdateCheck(
+            current="1.0.1",
+            latest_tag="v1.2.0",
+            name="MiniFile v1.2.0",
+            notes="uv update",
+            html_url="https://github.com/codescv/minifile/releases/tag/v1.2.0",
+            asset_url=None,
+            asset_name=None,
+            asset_size=-1,
+            checksums_url=None,
+            published_at="2026-10-30T22:00:00Z",
+            available=True,
+        )
+        res_uv = apply_update(
+            chk_120,
+            apply=True,
+            prefix=uv_prefix,
+            pkg_file=fake_site_pkg,
+            which_fn=lambda name: "/usr/local/bin/uv" if name == "uv" else None,
+            run_cmd=_mock_uv_ok,
+        )
+        self.assertTrue(res_uv.updated)
+        self.assertTrue(res_uv.applied_in_place)
+        self.assertEqual(res_uv.method, "uv")
+        self.assertEqual(res_uv.version, "1.2.0")
+        self.assertEqual(
+            recorded_cmds,
+            [
+                [
+                    "/usr/local/bin/uv",
+                    "tool",
+                    "install",
+                    "--force",
+                    "git+https://github.com/codescv/minifile.git@v1.2.0",
+                ]
+            ],
+        )
+        self.assertIn("uv tool install --force", res_uv.instructions)
+
+        # 4. Fallback to verified release ZIP staging when `uv` fails (without touching site-packages)
+        zip_bytes = _make_companion_zip_bytes("1.2.0", with_prefix=True)
+        sha_hex = hashlib.sha256(zip_bytes).hexdigest()
+        sums_body = f"{sha_hex}  minifile-companion-v1.2.0.zip\n".encode("utf-8")
+
+        def _mock_uv_fail(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="offline network failure")
+
+        with _MockReleaseServer() as srv:
+            srv.routes["/dl/minifile-companion-v1.2.0.zip"] = (
+                200,
+                {"Content-Type": "application/zip"},
+                zip_bytes,
+            )
+            srv.routes["/dl/SHA256SUMS.txt"] = (
+                200,
+                {"Content-Type": "text/plain"},
+                sums_body,
+            )
+            chk_with_zip = UpdateCheck(
+                current="1.0.1",
+                latest_tag="v1.2.0",
+                name="MiniFile v1.2.0",
+                notes="notes",
+                html_url="https://github.com/codescv/minifile/releases/tag/v1.2.0",
+                asset_url=f"{srv.base_url}/dl/minifile-companion-v1.2.0.zip",
+                asset_name="minifile-companion-v1.2.0.zip",
+                asset_size=len(zip_bytes),
+                checksums_url=f"{srv.base_url}/dl/SHA256SUMS.txt",
+                published_at="2026-10-30T22:00:00Z",
+                available=True,
+            )
+            fb_dest = self.tmp / "uv_fallback_cache"
+            res_fb = apply_update(
+                chk_with_zip,
+                apply=True,
+                dest_dir=fb_dest,
+                allow_http_loopback=True,
+                prefix=uv_prefix,
+                pkg_file=fake_site_pkg,
+                which_fn=lambda name: "/usr/local/bin/uv" if name == "uv" else None,
+                run_cmd=_mock_uv_fail,
+            )
+            self.assertTrue(res_fb.updated)
+            self.assertFalse(res_fb.applied_in_place)
+            self.assertEqual(res_fb.method, "zip")
+            self.assertEqual(res_fb.path, (fb_dest / "companion-v1.2.0").resolve())
+            self.assertTrue((res_fb.path / "minifile_companion" / "__init__.py").is_file())
+            # Fake site-packages untouched
+            self.assertEqual(fake_site_pkg.read_text(encoding="utf-8"), "# installed\n")
+            self.assertIn(
+                "uv tool install --force git+https://github.com/codescv/minifile.git@v1.2.0",
+                res_fb.instructions,
+            )
 
 
 if __name__ == "__main__":

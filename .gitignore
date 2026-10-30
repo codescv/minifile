@@ -28,6 +28,8 @@ __pycache__/
 venv/
 env/
 .pytest_cache/
+dist/
+*.egg-info/
 companion/dist/
 companion/build/
 companion/*.egg-info/

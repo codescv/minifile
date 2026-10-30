@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minifile-companion"
+version = "1.0.1"
+description = "MiniFile PC Companion — Wireless FTP CLI & Local Web Desktop GUI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/codescv/minifile"
+Repository = "https://github.com/codescv/minifile"
+Releases = "https://github.com/codescv/minifile/releases"
+
+[project.scripts]
+minifile = "minifile_companion.cli:main"
+minifile-companion = "minifile_companion.cli:main"
+
+[tool.setuptools]
+packages = ["minifile_companion"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+minifile_companion = ["static/*"]

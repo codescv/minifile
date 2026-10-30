@@ -995,7 +995,10 @@
 
       relLink.href = data.html_url || "https://github.com/codescv/minifile/releases";
       if (data.available) {
-        summary.textContent = `Current v${data.current} · Latest ${data.latest} — Update available!`;
+        const uvHint = data.uv_command
+          ? ` — Run \`minifile update --apply\` or \`${data.uv_command}\``
+          : "";
+        summary.textContent = `Current v${data.current} · Latest ${data.latest} — Update available!${uvHint}`;
         if (data.notes) {
           notes.textContent = data.notes;
           notes.classList.remove("hidden");

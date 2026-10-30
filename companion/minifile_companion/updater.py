@@ -7,8 +7,10 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -46,6 +48,7 @@ _SEMVER_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.\-]+))?$")
 _COMPANION_ZIP_RE = re.compile(r"^minifile-companion-.*\.zip$", re.IGNORECASE)
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _INIT_VERSION_RE = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+_SAFE_GIT_TAG_RE = re.compile(r"^v?\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.\-]+)?$")
 
 
 class UpdateError(MiniFileError):
@@ -867,6 +870,291 @@ def stage_and_apply(
     return live_dir
 
 
+def is_source_tree(pkg_file: Path | str | None = None) -> bool:
+    """Return True when running from a git checkout or standalone companion folder (not site-packages)."""
+    here = Path(pkg_file or __file__).resolve()
+    pkg_parent = here.parent.parent
+    if pkg_parent.name.lower() in ("site-packages", "dist-packages"):
+        return False
+    for anc in (pkg_parent, *pkg_parent.parents):
+        if (anc / ".git").exists():
+            return True
+    if (pkg_parent / "minifile.py").is_file() or (pkg_parent / "pyproject.toml").is_file():
+        return True
+    return False
+
+
+def is_uv_tool_env(
+    prefix: Path | str | None = None,
+    pkg_file: Path | str | None = None,
+    which_fn: Callable[[str], str | None] = shutil.which,
+) -> bool:
+    """Return True if installed inside a `uv tool` environment or non-source install with `uv`."""
+    pfx_str = str(prefix if prefix is not None else sys.prefix)
+    norm_pfx = pfx_str.replace("\\", "/").rstrip("/") + "/"
+    if "/uv/tools/" in norm_pfx:
+        return True
+    try:
+        if (Path(pfx_str) / "uv-receipt.toml").is_file():
+            return True
+    except OSError:
+        pass
+    if not is_source_tree(pkg_file) and which_fn("uv") is not None:
+        return True
+    return False
+
+
+def _validate_release_tag_for_git(tag: str) -> str:
+    clean = tag.strip()
+    if (
+        not clean
+        or not _SAFE_GIT_TAG_RE.match(clean)
+        or SemanticVersion.parse(clean) is None
+    ):
+        raise UpdateSecurityError(f"Unsafe or invalid release tag for git install: {tag!r}")
+    return clean
+
+
+def format_uv_upgrade_command(tag: str, repo: str = DEFAULT_GITHUB_REPO) -> str:
+    """Build a validated `uv tool install --force` command string for the given release tag."""
+    safe_tag = _validate_release_tag_for_git(tag)
+    return f"uv tool install --force git+https://github.com/{repo}.git@{safe_tag}"
+
+
+@dataclass(frozen=True)
+class UpdateResult:
+    """Outcome of staging or applying a PC Companion update."""
+
+    updated: bool
+    applied_in_place: bool
+    method: str  # "uv" | "zip" | "none"
+    version: str
+    tag: str
+    path: Path
+    archive: Path | None = None
+    uv_command: str | None = None
+    fallback_reason: str | None = None
+    instructions: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "updated": self.updated,
+            "applied_in_place": self.applied_in_place,
+            "method": self.method,
+            "version": self.version,
+            "tag": self.tag,
+            "path": str(self.path),
+            "archive": str(self.archive) if self.archive is not None else None,
+        }
+        if self.uv_command:
+            data["uv_command"] = self.uv_command
+        if self.fallback_reason:
+            data["fallback_reason"] = self.fallback_reason
+        if self.instructions:
+            data["instructions"] = self.instructions
+        return data
+
+
+def apply_update(
+    check: UpdateCheck | None = None,
+    *,
+    apply: bool = True,
+    dest_dir: Path | str | None = None,
+    install_dir: Path | str | None = None,
+    current_version: str = __version__,
+    include_pre: bool = False,
+    progress: Callable[[int, int], None] | None = None,
+    opener: urllib.request.OpenerDirector | None = None,
+    allow_http_loopback: bool = False,
+    repo: str = DEFAULT_GITHUB_REPO,
+    prefix: Path | str | None = None,
+    pkg_file: Path | str | None = None,
+    which_fn: Callable[[str], str | None] = shutil.which,
+    run_cmd: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+) -> UpdateResult:
+    """Apply or stage a PC Companion update (via `uv tool install --force` or verified release ZIP)."""
+    if check is None:
+        check = check_latest(
+            current=current_version,
+            include_pre=include_pre,
+            opener=opener,
+            allow_http_loopback=allow_http_loopback,
+        )
+
+    default_root = Path(pkg_file or __file__).resolve().parent.parent
+    if not check.available:
+        return UpdateResult(
+            updated=False,
+            applied_in_place=False,
+            method="none",
+            version=check.current,
+            tag=check.latest_tag,
+            path=Path(install_dir).expanduser().resolve() if install_dir else default_root,
+            instructions=f"Already up to date (v{check.current}).",
+        )
+
+    uv_env = install_dir is None and is_uv_tool_env(
+        prefix=prefix, pkg_file=pkg_file, which_fn=which_fn
+    )
+    uv_cmd_str: str | None = None
+    uv_fallback_reason: str | None = None
+
+    if uv_env:
+        uv_cmd_str = format_uv_upgrade_command(check.latest_tag, repo=repo)
+        if apply:
+            uv_bin = which_fn("uv")
+            if uv_bin:
+                safe_tag = _validate_release_tag_for_git(check.latest_tag)
+                cmd_args = [
+                    uv_bin,
+                    "tool",
+                    "install",
+                    "--force",
+                    f"git+https://github.com/{repo}.git@{safe_tag}",
+                ]
+                runner = run_cmd or subprocess.run
+                try:
+                    proc = runner(
+                        cmd_args,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=120,
+                    )
+                    if proc.returncode == 0:
+                        target_pfx = Path(prefix if prefix is not None else sys.prefix)
+                        msg = (
+                            f"Updated MiniFile Companion in place to v{check.latest_version} via uv.\n"
+                            f"Ran: {uv_cmd_str}\n"
+                            f"Verify with: minifile --version"
+                        )
+                        return UpdateResult(
+                            updated=True,
+                            applied_in_place=True,
+                            method="uv",
+                            version=check.latest_version,
+                            tag=check.latest_tag,
+                            path=target_pfx,
+                            archive=None,
+                            uv_command=uv_cmd_str,
+                            instructions=msg,
+                        )
+                    err_out = (proc.stderr or proc.stdout or "").strip()
+                    last_line = err_out.splitlines()[-1] if err_out else f"exit {proc.returncode}"
+                    uv_fallback_reason = (
+                        f"uv tool install exited with {proc.returncode}: {last_line}"
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    uv_fallback_reason = f"uv tool install failed: {exc}"
+            else:
+                uv_fallback_reason = "`uv` executable not found on PATH"
+
+    if not check.asset_url or not check.asset_name:
+        if uv_cmd_str:
+            detail = f" ({uv_fallback_reason})" if uv_fallback_reason else ""
+            raise UpdateError(
+                f"Release {check.latest_tag} has no downloadable companion .zip asset{detail}.\n"
+                f"Upgrade manually with: {uv_cmd_str}"
+            )
+        raise UpdateError(
+            f"Release {check.latest_tag} has no downloadable companion .zip asset"
+        )
+
+    from .config import default_cache_dir
+
+    cache_dest = (
+        Path(dest_dir).expanduser()
+        if dest_dir is not None
+        else (default_cache_dir() / "updates")
+    )
+    expected_sha: str | None = None
+    if check.checksums_url:
+        expected_sha = fetch_sha256_for_asset(
+            check.checksums_url,
+            check.asset_name,
+            opener=opener,
+            allow_http_loopback=allow_http_loopback,
+        )
+
+    zip_path = download_asset(
+        check.asset_url,
+        dest_dir=cache_dest,
+        expected_size=check.asset_size,
+        sha256=expected_sha,
+        progress=progress,
+        opener=opener,
+        allow_http_loopback=allow_http_loopback,
+        filename=check.asset_name,
+    )
+    verified_ver = verify_companion_zip(zip_path)
+    if verified_ver != check.latest_version:
+        raise UpdateError(
+            f"Archive version ({verified_ver}) does not match release tag ({check.latest_tag})"
+        )
+
+    # Never overwrite site-packages directly; stage into cache_dest for uv / installed packages
+    if install_dir is not None:
+        effective_install_dir = Path(install_dir).expanduser().resolve()
+        effective_apply = apply
+    elif uv_env or not is_source_tree(pkg_file):
+        effective_install_dir = (cache_dest / "companion").resolve()
+        effective_apply = False
+    else:
+        effective_install_dir = default_root
+        effective_apply = apply
+
+    result_path = stage_and_apply(
+        zip_path,
+        install_dir=effective_install_dir,
+        apply=effective_apply,
+        current_version=current_version,
+    )
+
+    if uv_env and uv_cmd_str:
+        quoted_stage = shlex.quote(str(result_path))
+        if uv_fallback_reason:
+            instructions = (
+                f"Automatic uv upgrade did not complete ({uv_fallback_reason}).\n"
+                f"Staged verified MiniFile Companion v{verified_ver} at: {result_path}\n"
+                f"Upgrade your uv tool installation from GitHub:\n"
+                f"  {uv_cmd_str}\n"
+                f"Or install offline from the verified staged directory:\n"
+                f"  uv tool install --force {quoted_stage}"
+            )
+        else:
+            instructions = (
+                f"Staged verified MiniFile Companion v{verified_ver} at: {result_path}\n"
+                f"Apply the update in place with:\n"
+                f"  minifile update --apply\n"
+                f"Or upgrade directly via uv:\n"
+                f"  {uv_cmd_str}\n"
+                f"Or install from the verified staged directory:\n"
+                f"  uv tool install --force {quoted_stage}"
+            )
+    elif effective_apply:
+        instructions = (
+            f"Updated MiniFile Companion in place to v{verified_ver} at {result_path}"
+        )
+    else:
+        instructions = (
+            f"Staged MiniFile Companion v{verified_ver} at: {result_path}\n"
+            f"Run it with: cd {shlex.quote(str(result_path))} && python3 -m minifile_companion --help"
+        )
+
+    return UpdateResult(
+        updated=True,
+        applied_in_place=effective_apply,
+        method="zip",
+        version=verified_ver,
+        tag=check.latest_tag,
+        path=result_path,
+        archive=zip_path,
+        uv_command=uv_cmd_str,
+        fallback_reason=uv_fallback_reason,
+        instructions=instructions,
+    )
+
+
 def record_check_in_config(store: ConfigStore, result: UpdateCheck, forced: bool = False) -> None:
     """Persist latest update check metadata into config.json."""
     now = time.time()
@@ -900,10 +1188,18 @@ def check_with_cache(
 
     def _cached_dict(throttled: bool) -> dict[str, Any]:
         avail = is_newer(current, cfg.update_latest_tag)
+        latest_tag = cfg.update_latest_tag or f"v{current}"
+        uv_env = is_uv_tool_env()
+        uv_cmd: str | None = None
+        if uv_env and cfg.update_latest_tag:
+            try:
+                uv_cmd = format_uv_upgrade_command(cfg.update_latest_tag)
+            except UpdateError:
+                uv_cmd = None
         return {
             "current": current,
-            "latest": cfg.update_latest_tag or f"v{current}",
-            "name": cfg.update_name or cfg.update_latest_tag or f"v{current}",
+            "latest": latest_tag,
+            "name": cfg.update_name or latest_tag,
             "available": avail,
             "notes": cfg.update_notes,
             "html_url": cfg.update_html_url or DEFAULT_RELEASE_HTML_URL,
@@ -912,6 +1208,8 @@ def check_with_cache(
             "published_at": cfg.update_published_at or None,
             "checked_at": cfg.update_last_check,
             "throttled": throttled,
+            "uv_install": uv_env,
+            "uv_command": uv_cmd,
         }
 
     if force:
@@ -966,8 +1264,9 @@ def maybe_emit_cached_update_hint(
         return False
 
     out = stream if stream is not None else sys.stderr
+    cmd_hint = "minifile update --apply" if is_uv_tool_env() else "minifile update"
     print(
-        f"(new version {cfg.update_latest_tag} available — run `update`)",
+        f"(new version {cfg.update_latest_tag} available — run `{cmd_hint}`)",
         file=out,
     )
     cfg.update_last_hint = now

@@ -25,20 +25,17 @@ from .client import (
     RemoteEntry,
     normalize_remote_path,
 )
-from .config import ConfigStore, default_cache_dir
+from .config import ConfigStore
 from .gui import run_gui
 from .scanner import discover
 from .textutil import decode_text
 from .updater import (
     UpdateError,
     UpdateNetworkError,
+    apply_update,
     check_latest,
-    download_asset,
-    fetch_sha256_for_asset,
     maybe_emit_cached_update_hint,
     record_check_in_config,
-    stage_and_apply,
-    verify_companion_zip,
 )
 from .webui import run_webui
 
@@ -432,11 +429,15 @@ def build_parser() -> argparse.ArgumentParser:
             p_ui.add_argument("--tk", action="store_true", help="Prefer native Tkinter window when available")
 
     # update
-    p_upd = sub.add_parser("update", parents=[sub_globals], help="Check for or download PC Companion updates from GitHub")
+    p_upd = sub.add_parser("update", parents=[sub_globals], help="Check for or apply PC Companion updates from GitHub")
     p_upd.add_argument("--check", action="store_true", help="Check latest GitHub release (exit 10 if update available)")
     p_upd.add_argument("--check-only-notify", action="store_true", help="Refresh cached release check quietly")
     p_upd.add_argument("--pre", action="store_true", help="Include pre-release versions")
-    p_upd.add_argument("--apply", action="store_true", help="Swap staged companion directory in place (non-git checkouts only)")
+    p_upd.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply update in place (via `uv tool install --force` for uv installs, or swap non-git directory)",
+    )
     p_upd.add_argument("--dest", default=None, help="Directory to store downloaded release ZIP")
     p_upd.add_argument("--install-dir", default=None, help="Companion root directory to stage/apply next to")
     p_upd.add_argument("--allow-http-loopback", action="store_true", help=argparse.SUPPRESS)
@@ -582,72 +583,21 @@ def _cmd_update(args: argparse.Namespace, store: ConfigStore) -> int:
             print(f"Already up to date (v{res.current}).")
         return EXIT_OK
 
-    if not res.asset_url or not res.asset_name:
-        raise UpdateError(
-            f"Release {res.latest_tag} has no downloadable companion .zip asset"
-        )
-
-    cache_dest = (
-        Path(args.dest).expanduser()
-        if args.dest
-        else (default_cache_dir() / "updates")
-    )
-    expected_sha: str | None = None
-    if res.checksums_url:
-        expected_sha = fetch_sha256_for_asset(
-            res.checksums_url,
-            res.asset_name,
-            allow_http_loopback=allow_loop,
-        )
-
-    zip_path = download_asset(
-        res.asset_url,
-        dest_dir=cache_dest,
-        expected_size=res.asset_size,
-        sha256=expected_sha,
+    outcome = apply_update(
+        res,
+        apply=bool(args.apply),
+        dest_dir=args.dest,
+        install_dir=args.install_dir,
+        current_version=__version__,
+        include_pre=bool(args.pre),
         progress=_make_progress_printer(not args.json and sys.stderr.isatty()),
         allow_http_loopback=allow_loop,
-        filename=res.asset_name,
-    )
-    verified_ver = verify_companion_zip(zip_path)
-    if verified_ver != res.latest_version:
-        raise UpdateError(
-            f"Archive version ({verified_ver}) does not match release tag ({res.latest_tag})"
-        )
-
-    install_root = (
-        Path(args.install_dir).expanduser().resolve()
-        if args.install_dir
-        else Path(__file__).resolve().parent.parent
-    )
-    result_path = stage_and_apply(
-        zip_path,
-        install_dir=install_root,
-        apply=bool(args.apply),
-        current_version=__version__,
     )
 
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "updated": True,
-                    "applied_in_place": bool(args.apply),
-                    "version": verified_ver,
-                    "path": str(result_path),
-                    "archive": str(zip_path),
-                },
-                ensure_ascii=False,
-            )
-        )
+        print(json.dumps(outcome.to_dict(), ensure_ascii=False))
     else:
-        if args.apply:
-            print(f"Updated MiniFile Companion in place to v{verified_ver} at {result_path}")
-        else:
-            print(
-                f"Staged MiniFile Companion v{verified_ver} at: {result_path}\n"
-                f"Run it with: cd {shlex.quote(str(result_path))} && python3 -m minifile_companion --help"
-            )
+        print(outcome.instructions)
     return EXIT_OK
 
 

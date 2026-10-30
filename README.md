@@ -12,7 +12,7 @@ Minimalist, offline-first **Android File Manager** with a built-in **RFC 959 / R
   - Non-blocking foreground file operations (`Copy`, `Move`/`Cut`, `Delete`, `Rename`, `Create Folder/File`) with live byte throughput, cancellation, and interactive conflict resolution (`Skip`, `Overwrite`, `Keep both`, `Apply to all`).
 - **Wireless FTP Server & PC Companion**:
   - Built-in Android foreground FTP server (`MLSD`, `MLST`, `UTF8`, `SIZE`, `MDTM`, `PASV` / `EPSV`, `REST STREAM`, `RNFR` / `RNTO`) supporting Anonymous or Username/Password authentication, Read-Only mode, bounded passive port windows, peer-IP data-channel validation, and live activity logs.
-  - Zero-dependency Python 3.10+ PC Companion (`companion/minifile.py` / `python3 -m minifile_companion`):
+  - Zero-dependency Python 3.10+ PC Companion (`minifile` / `minifile-companion` via `uv tool install`, or standalone `python3 -m minifile_companion`):
     - **CLI**: `scan`, `ls`, `tree`, `get`, `put`, `sync` (`--to-phone`, `--to-pc`, `--both`, `--delete`, `--dry-run`), `cat`, `edit`, `mkdir`, `rm`, `mv`, `nomedia`, `shell`, `update`.
     - **Desktop GUI**: Localhost-bound dual-pane Web UI (`127.0.0.1` with CSRF token & DNS-rebinding guards) + optional Tkinter launcher (`--tk`).
 - **Power Tools**:
@@ -34,39 +34,73 @@ Minimalist, offline-first **Android File Manager** with a built-in **RFC 959 / R
 
 ## Download & Install
 
+### Android App & Release Archives
+
 Grab the latest release from [**GitHub Releases**](https://github.com/codescv/minifile/releases/latest):
 
 | Asset | Description |
 |-------|-------------|
-| `minifile-v1.0.0-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
-| `minifile-companion-v1.0.0.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
+| `minifile-v1.0.1-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
+| `minifile-companion-v1.0.1.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
 | `SHA256SUMS.txt` | SHA-256 checksums for release assets |
+
+### Install PC Companion with `uv` (Recommended)
+
+Install the `minifile` (and `minifile-companion`) command globally in an isolated environment using [`uv`](https://docs.astral.sh/uv/) — zero third-party Python dependencies required:
+
+```bash
+# Install directly from GitHub
+uv tool install git+https://github.com/codescv/minifile.git
+
+# Or install from a local clone
+uv tool install /path/to/minifile
+```
+
+Run the CLI or Web/Desktop GUI from anywhere once installed:
+
+```bash
+minifile --help
+minifile scan --save
+minifile web
+minifile gui
+
+# Check for or apply updates directly via uv
+minifile update --check
+minifile update --apply
+```
 
 ---
 
 ## PC Companion Quick Start
 
-Requires Python 3.10+ (stdlib only — no `pip install` needed):
+With `minifile` installed via `uv tool install`:
 
 ```bash
-cd companion
-
 # Discover your phone running MiniFile -> Wireless -> Start on the same Wi-Fi LAN
-python3 -m minifile_companion scan --save
+minifile scan --save
 
 # List, transfer, or synchronize folders
-python3 -m minifile_companion ls /Download -la
-python3 -m minifile_companion put ./slides.pdf /Documents/
-python3 -m minifile_companion get /DCIM/Camera ./Camera -r --resume
-python3 -m minifile_companion sync ./Notes /Documents/Notes --both
+minifile ls /Download -la
+minifile put ./slides.pdf /Documents/
+minifile get /DCIM/Camera ./Camera -r --resume
+minifile sync ./Notes /Documents/Notes --both
 
 # Launch the localhost Dual-Pane Web Desktop GUI
-python3 -m minifile_companion gui
+minifile web
+minifile gui
 
 # Over USB (ADB port forwarding with passive range 50000-50004):
 adb forward tcp:12121 tcp:2121
 for p in $(seq 50000 50004); do adb forward tcp:$p tcp:$p; done
-python3 -m minifile_companion -H 127.0.0.1 -P 12121 ls /
+minifile -H 127.0.0.1 -P 12121 ls /
+```
+
+Or run directly from source without installing (Python 3.10+ stdlib only):
+
+```bash
+cd companion
+python3 -m minifile_companion scan --save
+python3 -m minifile_companion gui
 ```
 
 See [`companion/README.md`](companion/README.md) for the full CLI & Web API reference.
