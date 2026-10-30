@@ -433,6 +433,8 @@ class AcidE2ERunner:
             "dd if=/dev/urandom of=/sdcard/MiniFileE2E/src/blob.bin bs=1k count=512 status=none"
         )
         self.adb("logcat", "-c")
+        self.shell(f"am start -n {MAIN_ACTIVITY} -W")
+        time.sleep(1.5)
 
         info = {
             "sdk": sdk,

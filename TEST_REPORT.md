@@ -170,6 +170,6 @@ All steps asserted server-side filesystem state and SHA-256 digests directly on 
 
 ### 7.2 Live Post-Publication Smoke Verification
 
-- **GitHub Releases API (`/repos/codescv/minifile/releases/latest`):** _(verified upon publication)_
-- **PC Companion Live Update Check (`python3 -m minifile_companion update --check`):** _(verified upon publication)_
-- **Android Emulator Live Update Check (`Tools -> Updates -> Check now` on API 35 Pixel 9 Pro):** _(verified upon publication)_
+- **GitHub Releases API (`/repos/codescv/minifile/releases/latest`):** **PASS** — returned `tag_name = "v1.0.0"` (`https://github.com/codescv/minifile/releases/tag/v1.0.0`) with all 3 expected assets (`minifile-v1.0.0-release.apk`, `minifile-companion-v1.0.0.zip`, `SHA256SUMS.txt`).
+- **PC Companion Live Update Check (`python3 -m minifile_companion update --check`):** **PASS** — exited `0` (`Current 1.0.0 · Latest v1.0.0 (2026-10-30) · Up to date`, `"available": false`, verified `asset_url` and `checksums_url`).
+- **Android Emulator Live Update Check (`Tools -> Updates -> Check now` on API 35 Pixel 9 Pro with `app-release.apk`):** **PASS** (`19.5s`) — UI displayed `Current version: 1.0.0 (10000)` and **`Up to date — you're on the latest version (0 min. ago).`** (`tools/e2e/out/v1.0.0-live-update/e14_updates_check.{png,xml}`).
