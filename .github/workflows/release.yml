@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  verify-version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      version: ${{ steps.check.outputs.version }}
+      code: ${{ steps.check.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify versionName, versionCode, and companion __version__
+        id: check
+        run: |
+          RAW_TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${RAW_TAG#v}"
+          if ! [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Tag '$RAW_TAG' does not match vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[3]}"
+          CODE=$((10#$MAJOR * 10000 + 10#$MINOR * 100 + 10#$PATCH))
+
+          grep -q "versionName = \"$VERSION\"" app/build.gradle.kts || {
+            echo "app/build.gradle.kts versionName does not match $VERSION"
+            exit 1
+          }
+          grep -q "versionCode = $CODE" app/build.gradle.kts || {
+            echo "app/build.gradle.kts versionCode does not match $CODE"
+            exit 1
+          }
+          grep -q "__version__ = \"$VERSION\"" companion/minifile_companion/__init__.py || {
+            echo "companion/minifile_companion/__init__.py __version__ does not match $VERSION"
+            exit 1
+          }
+
+          echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: verify-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - name: Install SDK platform 35 and build-tools 35.0.0
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Restore consistent signing keystore (fail fast if missing)
+        env:
+          KS_B64: ${{ secrets.MINIFILE_DEBUG_KEYSTORE_B64 }}
+        run: |
+          test -n "$KS_B64" || {
+            echo "Missing MINIFILE_DEBUG_KEYSTORE_B64 secret; refusing to publish differently-signed APK"
+            exit 1
+          }
+          mkdir -p "$HOME/.android"
+          printf '%s' "$KS_B64" | base64 -d > "$HOME/.android/debug.keystore"
+      - name: Build and unit-test Android app
+        run: |
+          ./gradlew assembleRelease testDebugUnitTest --no-daemon
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/minifile-${{ needs.verify-version.outputs.tag }}-release.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/minifile-${{ needs.verify-version.outputs.tag }}-release.apk
+
+  companion:
+    needs: verify-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test and package PC Companion
+        run: |
+          python3 -m unittest discover -s companion/tests -v
+          mkdir -p dist
+          zip -r "dist/minifile-companion-${{ needs.verify-version.outputs.tag }}.zip" companion -x 'companion/tests/*' '*/__pycache__/*' '*.pyc'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: companion-zip
+          path: dist/minifile-companion-${{ needs.verify-version.outputs.tag }}.zip
+
+  release:
+    needs: [verify-version, android, companion]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Compute SHA256SUMS.txt with basenames
+        run: |
+          cd dist
+          sha256sum *.apk *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Create or idempotently populate GitHub Release without clobbering existing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify-version.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          cd dist
+          if gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            EXISTING=$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name')
+            for f in minifile-"$TAG"-release.apk minifile-companion-"$TAG".zip SHA256SUMS.txt; do
+              if echo "$EXISTING" | grep -Fxq "$f"; then
+                echo "Skipping already-uploaded asset: $f"
+              else
+                echo "Uploading missing asset: $f"
+                gh release upload "$TAG" "$f" --repo "$REPO"
+              fi
+            done
+          else
+            gh release create "$TAG" \
+              minifile-"$TAG"-release.apk \
+              minifile-companion-"$TAG".zip \
+              SHA256SUMS.txt \
+              --repo "$REPO" \
+              --title "MiniFile $TAG" \
+              --generate-notes \
+              --latest
+          fi
