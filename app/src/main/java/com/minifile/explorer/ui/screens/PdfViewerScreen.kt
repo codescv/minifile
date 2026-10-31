@@ -247,7 +247,7 @@ private suspend fun openPdfSession(
             }
         }
 
-        is VfsPath.Ftp -> {
+        is VfsPath.Ftp, is VfsPath.GDrive -> {
             val cacheDir = File(context.cacheDir, "pdf_viewer").apply { mkdirs() }
             val tempFile = File.createTempFile("doc_", ".pdf", cacheDir)
             var fallbackPfd: ParcelFileDescriptor? = null

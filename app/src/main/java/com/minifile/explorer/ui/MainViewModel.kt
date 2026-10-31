@@ -1,5 +1,6 @@
 package com.minifile.explorer.ui
 
+import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
@@ -11,9 +12,13 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
+import com.minifile.explorer.core.gdrive.GDriveAuthException
+import com.minifile.explorer.core.gdrive.revokeOAuthTokenBestEffort
 import com.minifile.explorer.core.model.AppSettings
 import com.minifile.explorer.core.model.Favorite
 import com.minifile.explorer.core.model.FtpServerBookmark
+import com.minifile.explorer.core.model.GDriveAuthMode
+import com.minifile.explorer.core.model.GDriveServerBookmark
 import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.model.SortSpec
 import com.minifile.explorer.core.model.TransferMode
@@ -34,6 +39,8 @@ import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.vfs.Volume
+import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
+import com.minifile.explorer.data.gdrive.GDriveSignInState
 import com.minifile.explorer.di.AppContainer
 import com.minifile.explorer.service.OperationCompletionEvent
 import com.minifile.explorer.service.OperationRunOutcome
@@ -136,10 +143,15 @@ class MainViewModel(
     val settings: StateFlow<AppSettings> = container.settingsRepository.settings
     val favorites: StateFlow<List<Favorite>> = container.favoritesRepository.favorites
     val ftpServers: StateFlow<List<FtpServerBookmark>> = container.ftpServersRepository.servers
+    val gdriveServers: StateFlow<List<GDriveServerBookmark>> = container.gdriveServersRepository.servers
+    val gdriveSignInState: StateFlow<GDriveSignInState> = container.gdriveSignInController.state
     val volumes: StateFlow<List<Volume>> = container.volumeProvider.volumes
     val clipboard = ClipboardHolder.state
     val peers: StateFlow<List<PeerInfo>> = container.peerDiscoveryHolder.peers
     val isScanningPeers: StateFlow<Boolean> = container.peerDiscoveryHolder.isScanning
+
+    private val _reauthGDriveBookmark = MutableStateFlow<GDriveServerBookmark?>(null)
+    val reauthGDriveBookmark: StateFlow<GDriveServerBookmark?> = _reauthGDriveBookmark.asStateFlow()
 
     private var directoryLoadJob: Job? = null
     private var recursiveSearchJob: Job? = null
@@ -217,6 +229,10 @@ class MainViewModel(
             val cur = _browser.value.currentDir
             if (cur is VfsPath.Ftp) {
                 if (container.ftpServersRepository.findById(cur.serverId) == null) {
+                    navigateToStorageHome()
+                }
+            } else if (cur is VfsPath.GDrive) {
+                if (container.gdriveServersRepository.findById(cur.serverId) == null) {
                     navigateToStorageHome()
                 }
             } else if (cur != null) {
@@ -322,6 +338,148 @@ class MainViewModel(
                 emitSimpleMessage("Removed FTP server '${existing.name}'")
             }
         }
+    }
+
+    fun openGDriveServer(server: GDriveServerBookmark) {
+        _overlay.value = null
+        _activeTab.value = MainTab.BROWSE
+        savedStateHandle[STATE_TAB] = MainTab.BROWSE.name
+        val root = server.rootPath
+        navigateToDirectory(
+            dir = root,
+            rootVolumeName = server.name,
+            rootVolumeBase = root,
+        )
+    }
+
+    fun addGDriveServer(bookmark: GDriveServerBookmark, openAfterAdd: Boolean = true) {
+        viewModelScope.launch {
+            val created = container.gdriveServersRepository.add(bookmark)
+            container.googleDriveFileSystem.invalidateServer(created.id)
+            emitSimpleMessage("Added Google Drive '${created.name}'")
+            if (openAfterAdd) {
+                openGDriveServer(created)
+            }
+        }
+    }
+
+    fun updateGDriveServer(server: GDriveServerBookmark) {
+        viewModelScope.launch {
+            container.gdriveServersRepository.update(server)
+            container.googleDriveFileSystem.invalidateServer(server.id)
+            emitSimpleMessage("Updated Google Drive '${server.name}'")
+            val cur = _browser.value.currentDir
+            if (cur is VfsPath.GDrive && cur.serverId == server.id) {
+                val root = server.rootPath
+                navigateToDirectory(
+                    dir = root,
+                    rootVolumeName = server.name,
+                    rootVolumeBase = root,
+                )
+            }
+        }
+    }
+
+    fun removeGDriveServer(id: String) {
+        val existing = container.gdriveServersRepository.findById(id)
+        val cachedToken = container.googleDriveFileSystem.peekCachedToken(id)
+        viewModelScope.launch {
+            container.gdriveServersRepository.remove(id)
+            container.googleDriveFileSystem.invalidateServer(id)
+            val cur = _browser.value.currentDir
+            if (cur is VfsPath.GDrive && cur.serverId == id) {
+                navigateToStorageHome()
+            }
+            if (existing != null) {
+                emitSimpleMessage("Removed Google Drive '${existing.name}'")
+                withContext(Dispatchers.IO) {
+                    if (existing.authMode == GDriveAuthMode.SYSTEM_ACCOUNT) {
+                        AndroidAccountTokenProvider.invalidateTokenBestEffort(
+                            container.appContext,
+                            cachedToken,
+                        )
+                    } else {
+                        val tokenToRevoke = existing.refreshToken.ifBlank { existing.accessToken }
+                        revokeOAuthTokenBestEffort(tokenToRevoke)
+                    }
+                }
+            }
+        }
+    }
+
+    fun startGDriveBrowserSignIn(
+        clientId: String,
+        clientSecret: String,
+        displayName: String = "",
+        initialPath: String = "/",
+        existingBookmark: GDriveServerBookmark? = null,
+    ) {
+        container.gdriveSignInController.startBrowserSignIn(
+            scope = viewModelScope,
+            clientId = clientId,
+            clientSecret = clientSecret,
+            displayName = displayName,
+            initialPath = initialPath,
+            existingBookmark = existingBookmark,
+        )
+    }
+
+    fun cancelGDriveSignIn() {
+        container.gdriveSignInController.cancel()
+    }
+
+    fun resetGDriveSignIn() {
+        container.gdriveSignInController.reset()
+    }
+
+    fun submitGDrivePastedCredentials(
+        rawText: String,
+        overrideClientId: String = "",
+        overrideClientSecret: String = "",
+        displayName: String = "",
+        initialPath: String = "/",
+        existingBookmark: GDriveServerBookmark? = null,
+    ) {
+        container.gdriveSignInController.submitPastedCredentials(
+            scope = viewModelScope,
+            rawText = rawText,
+            overrideClientId = overrideClientId,
+            overrideClientSecret = overrideClientSecret,
+            displayName = displayName,
+            initialPath = initialPath,
+            existingBookmark = existingBookmark,
+        )
+    }
+
+    fun completeGDriveSystemAccount(
+        activity: Activity,
+        accountName: String,
+        displayName: String = "",
+        initialPath: String = "/",
+        existingBookmark: GDriveServerBookmark? = null,
+    ) {
+        container.gdriveSignInController.completeSystemAccountSignIn(
+            scope = viewModelScope,
+            activity = activity,
+            accountName = accountName,
+            displayName = displayName,
+            initialPath = initialPath,
+            existingBookmark = existingBookmark,
+        )
+    }
+
+    fun openReauthGDriveDialog(serverId: String) {
+        _reauthGDriveBookmark.value = container.gdriveServersRepository.findById(serverId)
+    }
+
+    fun dismissReauthGDriveDialog() {
+        container.gdriveSignInController.cancel()
+        _reauthGDriveBookmark.value = null
+    }
+
+    override fun onCleared() {
+        container.gdriveSignInController.cancel()
+        super.onCleared()
     }
 
     fun openFavoriteInBrowse(fav: Favorite, context: Context? = null) {
@@ -447,6 +605,9 @@ class MainViewModel(
 
     fun reloadCurrentDirectory(silent: Boolean = false) {
         val dir = _browser.value.currentDir ?: return
+        if (!silent && dir is VfsPath.GDrive) {
+            container.googleDriveFileSystem.invalidate(dir)
+        }
         loadDirectoryInternal(dir, showSpinner = !silent)
     }
 
@@ -476,6 +637,17 @@ class MainViewModel(
                 recomputeVisibleEntries(settings.value)
             } catch (e: Exception) {
                 val msg = e.message ?: "Unable to read folder"
+                if (e is GDriveAuthException && e.needsInteraction && dir is VfsPath.GDrive) {
+                    _snackbarMessages.tryEmit(
+                        OperationCompletionEvent(
+                            id = "gdrive-auth-${System.currentTimeMillis()}",
+                            kind = OperationKind.COPY,
+                            title = "Google Drive",
+                            snackbarMessage = "Google Drive sign-in expired",
+                            reauthGDriveServerId = dir.serverId,
+                        ),
+                    )
+                }
                 val needsPerm = dir is VfsPath.Local &&
                     (msg.contains("Permission", ignoreCase = true) || msg.contains("Cannot list", ignoreCase = true))
                 _browser.value = _browser.value.copy(
@@ -557,6 +729,26 @@ class MainViewModel(
                     }
                 }
             }
+
+            is VfsPath.GDrive -> {
+                val baseGd = (rootBase as? VfsPath.GDrive)?.takeIf { it.serverId == dir.serverId }
+                    ?: container.gdriveServersRepository.findById(dir.serverId)?.rootPath
+                    ?: VfsPath.GDrive(dir.serverId, "/")
+                val baseNorm = baseGd.normalizedRemotePath
+                val dirNorm = dir.normalizedRemotePath
+                val prefix = if (baseNorm == "/") "/" else "$baseNorm/"
+                if (dirNorm == baseNorm || (baseNorm != "/" && !dirNorm.startsWith(prefix))) {
+                    crumbs.add(BreadcrumbCrumb(rootName, dir))
+                } else {
+                    crumbs.add(BreadcrumbCrumb(rootName, baseGd))
+                    val rel = if (baseNorm == "/") dirNorm.removePrefix("/") else dirNorm.removePrefix(prefix)
+                    var running = if (baseNorm == "/") "" else baseNorm
+                    for (seg in rel.split('/').filter { it.isNotEmpty() }) {
+                        running = "$running/$seg"
+                        crumbs.add(BreadcrumbCrumb(seg, VfsPath.GDrive(dir.serverId, running)))
+                    }
+                }
+            }
         }
         return crumbs
     }
@@ -565,6 +757,9 @@ class MainViewModel(
         if (path == null) return "Internal"
         if (path is VfsPath.Ftp) {
             return container.ftpServersRepository.findById(path.serverId)?.name ?: "FTP (${path.serverId})"
+        }
+        if (path is VfsPath.GDrive) {
+            return container.gdriveServersRepository.findById(path.serverId)?.name ?: "Google Drive (${path.serverId})"
         }
         for (v in volumes.value) {
             val r = v.root ?: continue
@@ -590,6 +785,8 @@ class MainViewModel(
             is VfsPath.Saf -> container.persistedTreeStore.findGrantByTreeUri(path.treeUri)?.toVfsPath() ?: path
             is VfsPath.Ftp -> container.ftpServersRepository.findById(path.serverId)?.rootPath
                 ?: VfsPath.Ftp(path.serverId, "/")
+            is VfsPath.GDrive -> container.gdriveServersRepository.findById(path.serverId)?.rootPath
+                ?: VfsPath.GDrive(path.serverId, "/")
         }
     }
 
@@ -851,16 +1048,33 @@ class MainViewModel(
             } else if (clearClipboardOnComplete && mode == TransferMode.COPY) {
                 ClipboardHolder.clear()
             }
-            val summary = buildString {
-                append("$verbPast ${res.succeeded} item${if (res.succeeded == 1) "" else "s"} to $destinationLabel")
-                if (res.skipped > 0) append(" (${res.skipped} skipped)")
-                if (res.failed.isNotEmpty()) append(" · ${res.failed.size} failed: ${res.failed.first().second}")
+            val firstFailed = res.failed.firstOrNull()
+            val expiredGDriveServerId = when {
+                firstFailed?.second?.contains("sign-in expired", ignoreCase = true) == true -> {
+                    (firstFailed.first as? VfsPath.GDrive)?.serverId
+                        ?: (destinationDir as? VfsPath.GDrive)?.serverId
+                }
+                else -> null
+            }
+            val summary = if (expiredGDriveServerId != null && res.succeeded == 0) {
+                "Google Drive sign-in expired"
+            } else {
+                buildString {
+                    append("$verbPast ${res.succeeded} item${if (res.succeeded == 1) "" else "s"} to $destinationLabel")
+                    if (res.skipped > 0) append(" (${res.skipped} skipped)")
+                    if (res.failed.isNotEmpty()) append(" · ${res.failed.size} failed: ${res.failed.first().second}")
+                }
             }
             OperationRunOutcome(
                 message = summary,
-                destinationToOpen = if (destinationDir != _browser.value.currentDir) destinationDir else null,
+                destinationToOpen = if (expiredGDriveServerId == null && destinationDir != _browser.value.currentDir) {
+                    destinationDir
+                } else {
+                    null
+                },
                 openLabel = "Open",
-                errorSummary = res.failed.firstOrNull()?.second,
+                errorSummary = firstFailed?.second,
+                reauthGDriveServerId = expiredGDriveServerId,
             )
         }
     }
@@ -959,20 +1173,36 @@ class MainViewModel(
     fun deleteItems(context: Context, items: List<VfsPath>) {
         if (items.isEmpty()) return
         clearSelection()
+        val allGDrive = items.all { it is VfsPath.GDrive }
         val label = if (items.size == 1) items.first().displayName else "${items.size} items"
         container.operationRegistry.enqueue(
             context = context,
             kind = OperationKind.DELETE,
-            title = "Deleting $label",
+            title = if (allGDrive) "Moving $label to trash" else "Deleting $label",
         ) { _, sink ->
             val res = container.fileOperations.delete(items, sink)
-            val msg = buildString {
-                append("Deleted ${res.succeeded} item${if (res.succeeded == 1) "" else "s"}")
-                if (res.failed.isNotEmpty()) append(" (${res.failed.size} failed)")
+            val firstFailed = res.failed.firstOrNull()
+            val expiredServerId = if (firstFailed?.second?.contains("sign-in expired", ignoreCase = true) == true) {
+                (firstFailed.first as? VfsPath.GDrive)?.serverId
+            } else {
+                null
+            }
+            val msg = when {
+                expiredServerId != null && res.succeeded == 0 -> "Google Drive sign-in expired"
+                allGDrive && res.succeeded > 0 -> buildString {
+                    append("Moved to Google Drive trash")
+                    if (items.size > 1) append(" (${res.succeeded} items)")
+                    if (res.failed.isNotEmpty()) append(" (${res.failed.size} failed)")
+                }
+                else -> buildString {
+                    append("Deleted ${res.succeeded} item${if (res.succeeded == 1) "" else "s"}")
+                    if (res.failed.isNotEmpty()) append(" (${res.failed.size} failed)")
+                }
             }
             OperationRunOutcome(
                 message = msg,
-                errorSummary = res.failed.firstOrNull()?.second,
+                errorSummary = firstFailed?.second,
+                reauthGDriveServerId = expiredServerId,
             )
         }
     }

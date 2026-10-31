@@ -1,7 +1,10 @@
 package com.minifile.explorer
 
 import android.Manifest
+import android.accounts.AccountManager
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -64,8 +67,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.model.GDriveServerBookmark
 import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.vfs.PathUtils
+import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
+import com.minifile.explorer.data.gdrive.GDriveSignInState
 import com.minifile.explorer.data.update.UpdateUiState
 import com.minifile.explorer.service.FtpServerHolder
 import com.minifile.explorer.service.HttpServerHolder
@@ -77,6 +83,7 @@ import com.minifile.explorer.ui.components.ActiveOperationsSheet
 import com.minifile.explorer.ui.components.ConflictDialog
 import com.minifile.explorer.ui.screens.ArchivePreviewScreen
 import com.minifile.explorer.ui.screens.BrowserScreen
+import com.minifile.explorer.ui.screens.EditGDriveServerDialog
 import com.minifile.explorer.ui.screens.FavoritesScreen
 import com.minifile.explorer.ui.screens.PdfViewerScreen
 import com.minifile.explorer.ui.screens.TextEditorScreen
@@ -92,6 +99,18 @@ private data class SafMountRequest(
     val label: String?,
     val navigateOnMount: Boolean,
 )
+
+private data class GoogleAccountPickRequest(
+    val displayName: String,
+    val initialPath: String,
+    val existingBookmark: GDriveServerBookmark?,
+)
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -209,7 +228,10 @@ private fun MiniFileRoot(
     val activeTab by viewModel.activeTab.collectAsState()
     val overlay by viewModel.overlay.collectAsState()
     val browser by viewModel.browser.collectAsState()
+    val settings by viewModel.settings.collectAsState()
     val conflictPrompt by viewModel.conflictPrompt.collectAsState()
+    val reauthGDriveBookmark by viewModel.reauthGDriveBookmark.collectAsState()
+    val gdriveSignInState by viewModel.gdriveSignInState.collectAsState()
     val activeOps by container.operationRegistry.active.collectAsState()
     val ftpState by FtpServerHolder.state.collectAsState()
     val httpState by HttpServerHolder.state.collectAsState()
@@ -217,6 +239,7 @@ private fun MiniFileRoot(
 
     val snackbarHostState = remember { SnackbarHostState() }
     var pendingSafMount by remember { mutableStateOf<SafMountRequest?>(null) }
+    var pendingGoogleAccountPick by remember { mutableStateOf<GoogleAccountPickRequest?>(null) }
     var unknownSourcesIntent by remember { mutableStateOf<Intent?>(null) }
 
     var showActiveOpsSheet by remember { mutableStateOf(false) }
@@ -262,9 +285,11 @@ private fun MiniFileRoot(
     // Operation completion & general UI snackbars
     LaunchedEffect(Unit) {
         viewModel.snackbarMessages.collect { event ->
+            val reauthServerId = event.reauthGDriveServerId
             val dest = event.destinationToOpen
             val canRetry = event.error != null && container.operationRegistry.canRetry(event.id)
             val actionLabel = when {
+                reauthServerId != null -> "Sign in"
                 dest != null -> event.openLabel
                 canRetry -> "Retry"
                 else -> null
@@ -272,10 +297,12 @@ private fun MiniFileRoot(
             val result = snackbarHostState.showSnackbar(
                 message = event.snackbarMessage,
                 actionLabel = actionLabel,
-                duration = SnackbarDuration.Short,
+                duration = if (reauthServerId != null) SnackbarDuration.Long else SnackbarDuration.Short,
             )
             if (result == SnackbarResult.ActionPerformed) {
-                if (dest != null) {
+                if (reauthServerId != null) {
+                    viewModel.openReauthGDriveDialog(reauthServerId)
+                } else if (dest != null) {
                     if (event.kind == OperationKind.COMPRESS &&
                         PathUtils.extensionOf(dest.displayName) == "zip"
                     ) {
@@ -288,6 +315,18 @@ private fun MiniFileRoot(
                 } else if (canRetry) {
                     container.operationRegistry.retry(event.id)
                 }
+            }
+        }
+    }
+
+    LaunchedEffect(reauthGDriveBookmark?.id, gdriveSignInState) {
+        val success = gdriveSignInState as? GDriveSignInState.Success
+        if (reauthGDriveBookmark != null && success != null) {
+            viewModel.dismissReauthGDriveDialog()
+            viewModel.resetGDriveSignIn()
+            viewModel.emitSimpleMessage("Signed in to Google Drive '${success.bookmark.name}'")
+            if (browser.currentDir != null) {
+                viewModel.reloadCurrentDirectory(silent = false)
             }
         }
     }
@@ -344,6 +383,40 @@ private fun MiniFileRoot(
                     rootVolumeBase = vfsRoot,
                 )
             }
+        }
+    }
+
+    val googleAccountLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) { res ->
+        val req = pendingGoogleAccountPick
+        pendingGoogleAccountPick = null
+        if (req != null && res.resultCode == Activity.RESULT_OK) {
+            val accountName = res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)?.trim().orEmpty()
+            val activity = context.findActivity()
+            if (accountName.isNotEmpty() && activity != null) {
+                viewModel.completeGDriveSystemAccount(
+                    activity = activity,
+                    accountName = accountName,
+                    displayName = req.displayName,
+                    initialPath = req.initialPath,
+                    existingBookmark = req.existingBookmark,
+                )
+            }
+        }
+    }
+
+    val pickGoogleAccount: (String, String, GDriveServerBookmark?) -> Unit = { dispName, startFolder, existing ->
+        pendingGoogleAccountPick = GoogleAccountPickRequest(
+            displayName = dispName,
+            initialPath = startFolder,
+            existingBookmark = existing,
+        )
+        runCatching {
+            googleAccountLauncher.launch(AndroidAccountTokenProvider.newChooseGoogleAccountIntent())
+        }.onFailure {
+            pendingGoogleAccountPick = null
+            viewModel.emitSimpleMessage(AndroidAccountTokenProvider.UNAVAILABLE_MESSAGE)
         }
     }
 
@@ -500,6 +573,7 @@ private fun MiniFileRoot(
                                         viewModel.emitSimpleMessage("Could not open system folder picker: ${e.message}")
                                     }
                                 },
+                                onPickGoogleAccount = pickGoogleAccount,
                             )
                         }
 
@@ -532,6 +606,39 @@ private fun MiniFileRoot(
             onResolve = { resolution, applyAll ->
                 viewModel.answerConflict(resolution, applyAll)
             },
+        )
+    }
+
+    reauthGDriveBookmark?.let { target ->
+        EditGDriveServerDialog(
+            bookmark = target,
+            startInReauthMode = true,
+            hasGoogleAccountAuthenticator = remember(context) {
+                AndroidAccountTokenProvider.hasGoogleAccountAuthenticator(context)
+            },
+            signInState = gdriveSignInState,
+            defaultClientId = settings.gdriveLastClientId,
+            defaultClientSecret = settings.gdriveLastClientSecret,
+            onSaveMetadata = { updated ->
+                viewModel.updateGDriveServer(updated)
+                viewModel.dismissReauthGDriveDialog()
+            },
+            onRemove = {
+                viewModel.removeGDriveServer(target.id)
+                viewModel.dismissReauthGDriveDialog()
+            },
+            onPickGoogleAccount = { dispName, startFolder ->
+                pickGoogleAccount(dispName, startFolder, target)
+            },
+            onStartBrowserSignIn = { cid, csec, dispName, startFolder ->
+                viewModel.startGDriveBrowserSignIn(cid, csec, dispName, startFolder, target)
+            },
+            onSubmitPastedToken = { raw, cid, csec, dispName, startFolder ->
+                viewModel.submitGDrivePastedCredentials(raw, cid, csec, dispName, startFolder, target)
+            },
+            onCancelSignIn = { viewModel.cancelGDriveSignIn() },
+            onCopiedMessage = { viewModel.emitSimpleMessage(it) },
+            onDismiss = { viewModel.dismissReauthGDriveDialog() },
         )
     }
 

@@ -215,7 +215,12 @@ class FileOperations(
                 if (deleteSource) {
                     val createdStat = fs.stat(outcome.targetPath)
                         ?: throw IOException("Verification failed: destination missing after copy")
-                    if (!srcNode.isDirectory && srcNode.size >= 0 && createdStat.size >= 0 &&
+                    val isExportedWorkspaceDoc = src is VfsPath.GDrive &&
+                        srcNode.size == 0L &&
+                        !srcNode.canWrite &&
+                        createdStat.size > 0L
+                    if (!srcNode.isDirectory && !isExportedWorkspaceDoc &&
+                        srcNode.size >= 0 && createdStat.size >= 0 &&
                         createdStat.size != srcNode.size
                     ) {
                         throw IOException("Verification failed: size mismatch (${createdStat.size} != ${srcNode.size})")
@@ -399,6 +404,9 @@ class FileOperations(
 
     private suspend fun deleteSingleRecursive(path: VfsPath, sink: ProgressSink): Boolean {
         if (sink.isCancelled()) return false
+        if (path is VfsPath.GDrive) {
+            return fs.delete(path)
+        }
         val node = fs.stat(path) ?: return false
         if (node.isDirectory && !node.isSymlink) {
             val children = fs.list(path, includeHidden = true)

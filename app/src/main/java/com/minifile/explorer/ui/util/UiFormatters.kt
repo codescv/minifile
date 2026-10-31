@@ -165,7 +165,7 @@ object UiFormatters {
                         }
                     }
 
-                    is VfsPath.Ftp -> null
+                    is VfsPath.Ftp, is VfsPath.GDrive -> null
                 }
             }.getOrNull()
 
@@ -195,6 +195,13 @@ object UiFormatters {
         return File(dir, "${hash}_$safeName")
     }
 
+    private fun gdriveCacheFile(context: Context, path: VfsPath.GDrive): File {
+        val dir = File(context.cacheDir, "gdrive_cache").apply { mkdirs() }
+        val safeName = path.displayName.replace('/', '_').ifBlank { "file" }
+        val hash = "${path.serverId}:${path.normalizedRemotePath}".hashCode().toUInt().toString(16)
+        return File(dir, "${hash}_$safeName")
+    }
+
     fun toShareableUri(context: Context, safFs: SafFileSystem, path: VfsPath, fs: FileSystem? = null): Uri {
         return when (path) {
             is VfsPath.Local -> FileProvider.getUriForFile(
@@ -215,6 +222,24 @@ object UiFormatters {
                     }
                 } else if (!target.isFile) {
                     throw IllegalArgumentException("Remote FTP file must be downloaded first before sharing.")
+                }
+                FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    target,
+                )
+            }
+
+            is VfsPath.GDrive -> {
+                val target = gdriveCacheFile(context, path)
+                if (fs != null) {
+                    fs.openInput(path).use { ins ->
+                        target.outputStream().use { outs ->
+                            ins.copyTo(outs, bufferSize = 64 * 1024)
+                        }
+                    }
+                } else if (!target.isFile) {
+                    throw IllegalArgumentException("Google Drive file must be downloaded first before sharing.")
                 }
                 FileProvider.getUriForFile(
                     context,

@@ -254,6 +254,7 @@ fun DeleteConfirmDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val allGDrive = nodes.isNotEmpty() && nodes.all { it.path is VfsPath.GDrive }
     val title = if (nodes.size == 1) {
         "Delete '${nodes.first().name}'?"
     } else {
@@ -264,7 +265,14 @@ fun DeleteConfirmDialog(
         title = { Text(title) },
         text = {
             Column {
-                Text("This can't be undone.", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    if (allGDrive) {
+                        "Selected items will be moved to Google Drive trash."
+                    } else {
+                        "This can't be undone."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
                 Spacer(Modifier.height(8.dp))
                 val shown = nodes.take(5)
                 for (n in shown) {
@@ -734,6 +742,7 @@ fun PropertiesSheet(
                 is VfsPath.Local -> p.normalized
                 is VfsPath.Saf -> "${p.treeUri} (${p.documentId})"
                 is VfsPath.Ftp -> p.serialize()
+                is VfsPath.GDrive -> p.serialize()
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,

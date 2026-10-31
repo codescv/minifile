@@ -23,8 +23,13 @@ object PathUtils {
     fun normalizeLocalPath(raw: String): String {
         if (raw.isEmpty()) return "/"
         val replaced = raw.replace('\\', '/')
+        return normalizePosixPath(replaced)
+    }
+
+    fun normalizePosixPath(raw: String): String {
+        if (raw.isEmpty()) return "/"
         val segments = ArrayDeque<String>()
-        for (part in replaced.split('/')) {
+        for (part in raw.split('/')) {
             when (part) {
                 "", "." -> Unit
                 ".." -> if (segments.isNotEmpty()) segments.removeLast()
@@ -127,6 +132,15 @@ object PathUtils {
             }
 
             ancestor is VfsPath.Ftp && candidate is VfsPath.Ftp -> {
+                if (ancestor.serverId != candidate.serverId) return false
+                val a = ancestor.normalizedRemotePath
+                val c = candidate.normalizedRemotePath
+                if (a == c) false
+                else if (a == "/") c.startsWith("/") && c != "/"
+                else c.startsWith("$a/")
+            }
+
+            ancestor is VfsPath.GDrive && candidate is VfsPath.GDrive -> {
                 if (ancestor.serverId != candidate.serverId) return false
                 val a = ancestor.normalizedRemotePath
                 val c = candidate.normalizedRemotePath

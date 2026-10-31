@@ -15,14 +15,19 @@ android {
         applicationId = "com.minifile.explorer"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10006
-        versionName = "1.0.6"
+        versionCode = 10007
+        versionName = "1.0.7"
 
         buildConfigField("boolean", "THUMBNAILS", "true")
         val apiBase = System.getenv("MINIFILE_UPDATE_API_BASE")
             ?.takeIf { it.isNotBlank() }
             ?: "https://api.github.com/repos/codescv/minifile"
         buildConfigField("String", "UPDATE_API_BASE", "\"$apiBase\"")
+        val gdriveClientId = (System.getenv("MINIFILE_GDRIVE_CLIENT_ID") ?: "")
+            .trim()
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+        buildConfigField("String", "GDRIVE_DEFAULT_CLIENT_ID", "\"$gdriveClientId\"")
     }
 
     val keystorePath = System.getenv("MINIFILE_KEYSTORE")?.takeIf { it.isNotBlank() && file(it).isFile }

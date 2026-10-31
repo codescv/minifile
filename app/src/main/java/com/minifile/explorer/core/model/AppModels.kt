@@ -189,6 +189,89 @@ data class FtpServerBookmark(
     }
 }
 
+enum class GDriveAuthMode {
+    SYSTEM_ACCOUNT,
+    BROWSER_PKCE,
+    PASTED_TOKEN,
+}
+
+data class GDriveServerBookmark(
+    val id: String,
+    val name: String,
+    val email: String = "",
+    val authMode: GDriveAuthMode,
+    val accountName: String = "",
+    val accessToken: String = "",
+    val refreshToken: String = "",
+    val expiresAtMs: Long = 0L,
+    val clientId: String = "",
+    val clientSecret: String = "",
+    val initialPath: String = "/",
+    val createdAt: Long = 0L,
+) {
+    val rootPath: VfsPath.GDrive
+        get() = VfsPath.GDrive(id, PathUtils.normalizeLocalPath(initialPath.ifBlank { "/" }))
+
+    val displayUrl: String
+        get() {
+            val normPath = PathUtils.normalizeLocalPath(initialPath.ifBlank { "/" })
+            val who = email.ifBlank { accountName.ifBlank { "…" } }
+            return "gdrive://$who$normPath"
+        }
+
+    fun toJson(): JsonValue.Obj {
+        val persistTokens = authMode != GDriveAuthMode.SYSTEM_ACCOUNT
+        return MiniJson.obj(
+            "id" to JsonValue.Str(id),
+            "name" to JsonValue.Str(name),
+            "email" to JsonValue.Str(email),
+            "authMode" to JsonValue.Str(authMode.name),
+            "accountName" to JsonValue.Str(accountName),
+            "accessToken" to JsonValue.Str(if (persistTokens) accessToken else ""),
+            "refreshToken" to JsonValue.Str(if (persistTokens) refreshToken else ""),
+            "expiresAtMs" to JsonValue.Num(if (persistTokens) expiresAtMs else 0L),
+            "clientId" to JsonValue.Str(clientId),
+            "clientSecret" to JsonValue.Str(clientSecret),
+            "initialPath" to JsonValue.Str(PathUtils.normalizeLocalPath(initialPath.ifBlank { "/" })),
+            "createdAt" to JsonValue.Num(createdAt),
+        )
+    }
+
+    companion object {
+        fun fromJson(obj: JsonValue.Obj): GDriveServerBookmark? {
+            val id = obj.str("id")?.takeIf { it.isNotBlank() } ?: return null
+            val authModeRaw = obj.str("authMode") ?: return null
+            val authMode = GDriveAuthMode.entries.firstOrNull { it.name == authModeRaw } ?: return null
+            val email = obj.str("email")?.trim() ?: ""
+            val accountName = obj.str("accountName")?.trim() ?: ""
+            val fallbackName = email.ifEmpty { accountName.ifEmpty { "Google Drive" } }
+            val name = obj.str("name")?.trim()?.takeIf { it.isNotEmpty() } ?: fallbackName
+            val persistTokens = authMode != GDriveAuthMode.SYSTEM_ACCOUNT
+            val accessToken = if (persistTokens) obj.str("accessToken") ?: "" else ""
+            val refreshToken = if (persistTokens) obj.str("refreshToken") ?: "" else ""
+            val expiresAtMs = if (persistTokens) obj.long("expiresAtMs", 0L) else 0L
+            val clientId = obj.str("clientId")?.trim() ?: ""
+            val clientSecret = obj.str("clientSecret")?.trim() ?: ""
+            val initialPath = PathUtils.normalizeLocalPath(obj.str("initialPath")?.ifBlank { "/" } ?: "/")
+            val createdAt = obj.long("createdAt", 0L)
+            return GDriveServerBookmark(
+                id = id,
+                name = name,
+                email = email,
+                authMode = authMode,
+                accountName = accountName,
+                accessToken = accessToken,
+                refreshToken = refreshToken,
+                expiresAtMs = expiresAtMs,
+                clientId = clientId,
+                clientSecret = clientSecret,
+                initialPath = initialPath,
+                createdAt = createdAt,
+            )
+        }
+    }
+}
+
 data class AppSettings(
     val showHidden: Boolean = false,
     val viewMode: ViewMode = ViewMode.LIST,
@@ -224,6 +307,8 @@ data class AppSettings(
     val updateIncludePre: Boolean = false,
     val updateLastCheckMs: Long = 0L,
     val updateDismissedTag: String? = null,
+    val gdriveLastClientId: String = "",
+    val gdriveLastClientSecret: String = "",
 )
 
 enum class OperationKind {

@@ -50,6 +50,19 @@ class PathUtilsTest {
         assertTrue(PathUtils.isStrictDescendant(ftpShare, ftpNested))
         assertFalse(PathUtils.isStrictDescendant(ftpShare, ftpShare))
         assertFalse(PathUtils.isAncestor(ftpShare, ftpOtherSrv))
+
+        val gdRoot = VfsPath.GDrive("gd-1", "/")
+        val gdDocs = VfsPath.GDrive("gd-1", "/Projects")
+        val gdDocsSimilar = VfsPath.GDrive("gd-1", "/ProjectsArchive")
+        val gdNested = VfsPath.GDrive("gd-1", "/Projects/2026")
+        val gdOtherSrv = VfsPath.GDrive("gd-2", "/Projects/2026")
+
+        assertTrue(PathUtils.isAncestor(gdRoot, gdRoot))
+        assertTrue(PathUtils.isStrictDescendant(gdRoot, gdDocs))
+        assertTrue(PathUtils.isStrictDescendant(gdDocs, gdNested))
+        assertFalse(PathUtils.isStrictDescendant(gdDocs, gdDocs))
+        assertFalse(PathUtils.isAncestor(gdDocs, gdDocsSimilar))
+        assertFalse(PathUtils.isAncestor(gdDocs, gdOtherSrv))
     }
 
     @Test
@@ -112,5 +125,16 @@ class PathUtilsTest {
         assertEquals("/media/movies/clip.mp4", ftpDeep.normalizedRemotePath)
         assertEquals("clip.mp4", ftpDeep.displayName)
         assertEquals(ftpDeep, VfsPath.parse(ftpDeep.serialize()))
+
+        val gdRoot = VfsPath.GDrive("drive-abc", "/")
+        assertEquals("gdrive://drive-abc/", gdRoot.serialize())
+        assertEquals("/", gdRoot.displayName)
+        assertEquals(gdRoot, VfsPath.parse(gdRoot.serialize()))
+        assertEquals(gdRoot, VfsPath.parse("gdrive://drive-abc"))
+
+        val gdDeep = VfsPath.GDrive("drive-abc", "/Work/back\\slash/Report.pdf/")
+        assertEquals("/Work/back\\slash/Report.pdf", gdDeep.normalizedRemotePath)
+        assertEquals("Report.pdf", gdDeep.displayName)
+        assertEquals(gdDeep, VfsPath.parse(gdDeep.serialize()))
     }
 }

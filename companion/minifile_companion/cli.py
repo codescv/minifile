@@ -26,6 +26,7 @@ from .client import (
     normalize_remote_path,
 )
 from .config import ConfigStore
+from .gdrive_auth import run_gdrive_auth
 from .gui import run_gui
 from .scanner import discover
 from .textutil import decode_text
@@ -442,6 +443,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_upd.add_argument("--install-dir", default=None, help="Companion root directory to stage/apply next to")
     p_upd.add_argument("--allow-http-loopback", action="store_true", help=argparse.SUPPRESS)
 
+    # gdrive-auth
+    p_gdrive = sub.add_parser(
+        "gdrive-auth",
+        parents=[sub_globals],
+        conflict_handler="resolve",
+        help="Authorize Google Drive via browser PKCE and output token JSON for the phone app",
+    )
+    p_gdrive.add_argument("--client-id", default=None, help="Google OAuth Desktop Client ID")
+    p_gdrive.add_argument("--client-secret", default=None, help="Google OAuth Desktop Client secret")
+    p_gdrive.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Local loopback port for OAuth redirect (default: 0 = random ephemeral port)",
+    )
+    p_gdrive.add_argument("--no-browser", action="store_true", help="Do not launch browser automatically")
+    p_gdrive.add_argument(
+        "--json-only",
+        action="store_true",
+        help="Print compact JSON only (suppress instructional text)",
+    )
+
     return parser
 
 
@@ -623,8 +646,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "update":
             return _cmd_update(args, store)
 
-        if not args.json and not args.no_update_hint:
+        if (
+            not args.json
+            and not getattr(args, "json_only", False)
+            and not args.no_update_hint
+        ):
             maybe_emit_cached_update_hint(store, current=__version__)
+
+        if args.command == "gdrive-auth":
+            listen_port = int(args.port) if args.port is not None else 0
+            run_gdrive_auth(
+                client_id=args.client_id,
+                client_secret=args.client_secret,
+                port=listen_port,
+                open_browser=not bool(args.no_browser),
+                json_only=bool(args.json_only or args.json),
+            )
+            return EXIT_OK
 
         if args.command == "scan":
             port_to_scan = int(args.port) if args.port is not None else int(store.load().port or 2121)

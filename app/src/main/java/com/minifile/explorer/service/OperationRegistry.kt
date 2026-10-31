@@ -32,6 +32,7 @@ data class OperationCompletionEvent(
     val openLabel: String = "Open",
     val cancelled: Boolean = false,
     val error: String? = null,
+    val reauthGDriveServerId: String? = null,
 )
 
 data class OperationRunOutcome(
@@ -40,6 +41,7 @@ data class OperationRunOutcome(
     val openLabel: String = "Open",
     val unsafeSkipped: Int = 0,
     val errorSummary: String? = null,
+    val reauthGDriveServerId: String? = null,
 )
 
 class OperationRegistry {
@@ -134,6 +136,7 @@ class OperationRegistry {
                         openLabel = outcome.openLabel,
                         cancelled = cancelled,
                         error = outcome.errorSummary,
+                        reauthGDriveServerId = outcome.reauthGDriveServerId,
                     ),
                 )
             } catch (_: CancellationException) {

@@ -47,10 +47,26 @@ sealed interface VfsPath {
         override fun hashCode(): Int = 31 * serverId.hashCode() + normalizedRemotePath.hashCode()
     }
 
+    data class GDrive(val serverId: String, val remotePath: String = "/") : VfsPath {
+        val normalizedRemotePath: String = PathUtils.normalizePosixPath(remotePath)
+
+        override val displayName: String
+            get() {
+                if (normalizedRemotePath == "/") return "/"
+                return normalizedRemotePath.substringAfterLast('/')
+            }
+
+        override fun equals(other: Any?): Boolean =
+            other is GDrive && serverId == other.serverId && normalizedRemotePath == other.normalizedRemotePath
+
+        override fun hashCode(): Int = 31 * serverId.hashCode() + normalizedRemotePath.hashCode()
+    }
+
     fun serialize(): String = when (this) {
         is Local -> "file://$normalized"
         is Saf -> "saf:$treeUri#$documentId"
         is Ftp -> "ftp://$serverId$normalizedRemotePath"
+        is GDrive -> "gdrive://$serverId$normalizedRemotePath"
     }
 
     companion object {
@@ -82,6 +98,20 @@ sealed interface VfsPath {
                         require(serverId.isNotEmpty()) { "Invalid FTP serverId in serialized path: $serialized" }
                         val remote = rest.substring(slash)
                         Ftp(serverId = serverId, remotePath = PathUtils.normalizeLocalPath(remote))
+                    }
+                }
+
+                serialized.startsWith("gdrive://") -> {
+                    val rest = serialized.removePrefix("gdrive://")
+                    require(rest.isNotEmpty()) { "Invalid Google Drive serialized path: $serialized" }
+                    val slash = rest.indexOf('/')
+                    if (slash < 0) {
+                        GDrive(serverId = rest, remotePath = "/")
+                    } else {
+                        val serverId = rest.substring(0, slash)
+                        require(serverId.isNotEmpty()) { "Invalid Google Drive serverId in serialized path: $serialized" }
+                        val remote = rest.substring(slash)
+                        GDrive(serverId = serverId, remotePath = PathUtils.normalizePosixPath(remote))
                     }
                 }
 

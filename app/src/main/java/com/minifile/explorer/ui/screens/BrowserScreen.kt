@@ -65,6 +65,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.model.GDriveServerBookmark
 import com.minifile.explorer.core.model.TransferMode
 import com.minifile.explorer.core.model.ViewMode
 import com.minifile.explorer.core.vfs.PathUtils
@@ -116,6 +117,7 @@ fun BrowserScreen(
     viewModel: MainViewModel,
     onGrantAllFilesAccess: () -> Unit,
     onMountVolumeSaf: (Volume) -> Unit,
+    onPickGoogleAccount: (String, String, GDriveServerBookmark?) -> Unit = { _, _, _ -> },
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -124,6 +126,8 @@ fun BrowserScreen(
     val settings by viewModel.settings.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
     val ftpServers by viewModel.ftpServers.collectAsState()
+    val gdriveServers by viewModel.gdriveServers.collectAsState()
+    val gdriveSignInState by viewModel.gdriveSignInState.collectAsState()
     val volumes by viewModel.volumes.collectAsState()
     val clipboard by viewModel.clipboard.collectAsState()
 
@@ -150,6 +154,10 @@ fun BrowserScreen(
             volumes = volumes,
             favorites = favorites,
             ftpServers = ftpServers,
+            gdriveServers = gdriveServers,
+            gdriveSignInState = gdriveSignInState,
+            defaultGDriveClientId = settings.gdriveLastClientId,
+            defaultGDriveClientSecret = settings.gdriveLastClientSecret,
             hasAllFilesAccess = AndroidVolumeProvider.hasAllFilesAccess(context),
             onboardingDismissed = settings.onboardingDone,
             clipboard = clipboard,
@@ -165,6 +173,28 @@ fun BrowserScreen(
             },
             onUpdateFtpServer = { viewModel.updateFtpServer(it) },
             onRemoveFtpServer = { viewModel.removeFtpServer(it) },
+            onOpenGDriveServer = { viewModel.openGDriveServer(it) },
+            onUpdateGDriveServer = { viewModel.updateGDriveServer(it) },
+            onRemoveGDriveServer = { viewModel.removeGDriveServer(it) },
+            onPickGoogleAccount = onPickGoogleAccount,
+            onStartGDriveBrowserSignIn = { cid, csec, dispName, startFolder, existing ->
+                viewModel.startGDriveBrowserSignIn(cid, csec, dispName, startFolder, existing)
+            },
+            onSubmitGDrivePastedToken = { raw, cid, csec, dispName, startFolder, existing ->
+                viewModel.submitGDrivePastedCredentials(raw, cid, csec, dispName, startFolder, existing)
+            },
+            onCancelGDriveSignIn = { viewModel.cancelGDriveSignIn() },
+            onGDriveSignedInSuccess = { bookmark, isReauth ->
+                viewModel.resetGDriveSignIn()
+                if (isReauth) {
+                    viewModel.emitSimpleMessage("Signed in to Google Drive '${bookmark.name}'")
+                    viewModel.reloadCurrentDirectory(silent = false)
+                } else {
+                    viewModel.emitSimpleMessage("Added Google Drive '${bookmark.name}'")
+                    viewModel.openGDriveServer(bookmark)
+                }
+            },
+            onCopiedMessage = { viewModel.emitSimpleMessage(it) },
             onOpenQuickPath = { path, rootLabel ->
                 viewModel.navigateToDirectory(path, rootVolumeName = rootLabel)
             },
@@ -651,6 +681,7 @@ fun BrowserScreen(
                         is VfsPath.Local -> target.normalized
                         is VfsPath.Saf -> target.documentId
                         is VfsPath.Ftp -> target.serialize()
+                        is VfsPath.GDrive -> target.serialize()
                     }
                     UiFormatters.copyToSystemClipboard(context, "Path", raw)
                     viewModel.emitSimpleMessage("Copied path: $raw")

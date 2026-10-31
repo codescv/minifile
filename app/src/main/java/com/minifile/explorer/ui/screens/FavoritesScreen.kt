@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddToDrive
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Cloud
@@ -209,6 +210,14 @@ fun FavoritesScreen(
                                         modifier = Modifier.size(15.dp),
                                     )
                                 }
+                                if (fav.path is VfsPath.GDrive) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Icon(
+                                        Icons.Filled.AddToDrive,
+                                        contentDescription = "Google Drive",
+                                        modifier = Modifier.size(15.dp),
+                                    )
+                                }
                             }
                         },
                         supportingContent = {
@@ -216,6 +225,7 @@ fun FavoritesScreen(
                                 is VfsPath.Local -> p.normalized
                                 is VfsPath.Saf -> p.documentId
                                 is VfsPath.Ftp -> p.serialize()
+                                is VfsPath.GDrive -> p.serialize()
                             }
                             Text(
                                 text = if (isAvailable) sub else "Unavailable · $sub",

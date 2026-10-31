@@ -54,6 +54,7 @@ Global options (usable before or after the subcommand):
 | `nomedia` | `python3 -m minifile_companion nomedia /Pictures/Work --on` | Toggle, enable, disable, or query `.nomedia` |
 | `shell` | `python3 -m minifile_companion shell` | Interactive FTP REPL (`cd`, `ls`, `lcd`, `get`, `put`, `cat`, …) |
 | `gui` / `web` | `python3 -m minifile_companion gui --no-browser` | Localhost dual-pane Web Desktop Companion (or `--tk` when Tkinter is installed) |
+| `gdrive-auth` | `python3 -m minifile_companion gdrive-auth --client-id YOUR_CLIENT_ID.apps.googleusercontent.com --client-secret YOUR_CLIENT_SECRET` | Run OAuth 2.0 loopback + PKCE (`S256`) in browser and print Google Drive token JSON to paste into the phone app (`--no-browser`, `--json-only`, `--port N`) |
 | `update` | `python3 -m minifile_companion update --check` | Check/stage updates from `https://github.com/codescv/minifile/releases` |
 
 Exit codes: `0` success, `1` generic error, `2` usage error, `3` connection/auth/network failure, `4` partial failure, `10` update available (`update --check`).

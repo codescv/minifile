@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddToDrive
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
@@ -590,6 +591,14 @@ fun FavoritePickerSheet(
                                             modifier = Modifier.size(14.dp),
                                         )
                                     }
+                                    if (fav.path is VfsPath.GDrive) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Icon(
+                                            Icons.Filled.AddToDrive,
+                                            contentDescription = "Google Drive",
+                                            modifier = Modifier.size(14.dp),
+                                        )
+                                    }
                                 }
                             },
                             supportingContent = {
@@ -597,6 +606,7 @@ fun FavoritePickerSheet(
                                     is VfsPath.Local -> p.normalized
                                     is VfsPath.Saf -> p.documentId
                                     is VfsPath.Ftp -> p.serialize()
+                                    is VfsPath.GDrive -> p.serialize()
                                 }
                                 Text(
                                     text = if (reason != null) "$reason · $pathLabel" else pathLabel,

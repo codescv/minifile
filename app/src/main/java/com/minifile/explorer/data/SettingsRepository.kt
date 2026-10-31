@@ -55,6 +55,9 @@ class SettingsRepository(
         const val KEY_UPDATE_INCLUDE_PRE = "update_include_pre"
         const val KEY_UPDATE_LAST_CHECK_MS = "update_last_check_ms"
         const val KEY_UPDATE_DISMISSED_TAG = "update_dismissed_tag"
+
+        const val KEY_GDRIVE_LAST_CLIENT_ID = "gdrive_last_client_id"
+        const val KEY_GDRIVE_LAST_CLIENT_SECRET = "gdrive_last_client_secret"
     }
 
     private data class DebugFtpOverrides(
@@ -138,6 +141,8 @@ class SettingsRepository(
             updateIncludePre = store.getBoolean(KEY_UPDATE_INCLUDE_PRE, false),
             updateLastCheckMs = store.getLong(KEY_UPDATE_LAST_CHECK_MS, 0L),
             updateDismissedTag = store.getString(KEY_UPDATE_DISMISSED_TAG, null),
+            gdriveLastClientId = store.getString(KEY_GDRIVE_LAST_CLIENT_ID, "") ?: "",
+            gdriveLastClientSecret = store.getString(KEY_GDRIVE_LAST_CLIENT_SECRET, "") ?: "",
         )
     }
 
@@ -239,5 +244,8 @@ class SettingsRepository(
         store.putBoolean(KEY_UPDATE_INCLUDE_PRE, s.updateIncludePre)
         store.putLong(KEY_UPDATE_LAST_CHECK_MS, s.updateLastCheckMs)
         store.putString(KEY_UPDATE_DISMISSED_TAG, s.updateDismissedTag)
+
+        store.putString(KEY_GDRIVE_LAST_CLIENT_ID, s.gdriveLastClientId)
+        store.putString(KEY_GDRIVE_LAST_CLIENT_SECRET, s.gdriveLastClientSecret)
     }
 }
