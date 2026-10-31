@@ -91,6 +91,7 @@ data class Favorite(
     val lastUsedAt: Long,
     val order: Int,
     val color: Int? = null,
+    val isDirectory: Boolean = true,
 ) {
     fun toJson(): JsonValue.Obj {
         val pairs = mutableListOf<Pair<String, JsonValue>>(
@@ -100,6 +101,7 @@ data class Favorite(
             "createdAt" to JsonValue.Num(createdAt),
             "lastUsedAt" to JsonValue.Num(lastUsedAt),
             "order" to JsonValue.Num(order),
+            "isDirectory" to JsonValue.Bool(isDirectory),
         )
         if (color != null) {
             pairs.add("color" to JsonValue.Num(color))
@@ -121,6 +123,67 @@ data class Favorite(
                 lastUsedAt = obj.long("lastUsedAt", 0L),
                 order = obj.int("order", 0),
                 color = obj.intOrNull("color"),
+                isDirectory = obj.bool("isDirectory", true),
+            )
+        }
+    }
+}
+
+data class FtpServerBookmark(
+    val id: String,
+    val name: String,
+    val host: String,
+    val port: Int = 21,
+    val anonymous: Boolean = true,
+    val username: String = "anonymous",
+    val password: String = "",
+    val initialPath: String = "/",
+    val createdAt: Long = 0L,
+) {
+    val rootPath: VfsPath.Ftp
+        get() = VfsPath.Ftp(id, PathUtils.normalizeLocalPath(initialPath.ifBlank { "/" }))
+
+    val displayUrl: String
+        get() {
+            val normPath = PathUtils.normalizeLocalPath(initialPath.ifBlank { "/" })
+            val userPart = if (anonymous) "" else "${username.ifBlank { "anonymous" }}@"
+            val hostPart = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
+            return "ftp://$userPart$hostPart:$port$normPath"
+        }
+
+    fun toJson(): JsonValue.Obj = MiniJson.obj(
+        "id" to JsonValue.Str(id),
+        "name" to JsonValue.Str(name),
+        "host" to JsonValue.Str(host),
+        "port" to JsonValue.Num(port),
+        "anonymous" to JsonValue.Bool(anonymous),
+        "username" to JsonValue.Str(username),
+        "password" to JsonValue.Str(password),
+        "initialPath" to JsonValue.Str(PathUtils.normalizeLocalPath(initialPath.ifBlank { "/" })),
+        "createdAt" to JsonValue.Num(createdAt),
+    )
+
+    companion object {
+        fun fromJson(obj: JsonValue.Obj): FtpServerBookmark? {
+            val id = obj.str("id")?.takeIf { it.isNotBlank() } ?: return null
+            val host = obj.str("host")?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val name = obj.str("name")?.trim()?.takeIf { it.isNotEmpty() } ?: host
+            val port = obj.int("port", 21).coerceIn(1, 65535)
+            val anonymous = obj.bool("anonymous", true)
+            val username = obj.str("username") ?: "anonymous"
+            val password = obj.str("password") ?: ""
+            val initialPath = PathUtils.normalizeLocalPath(obj.str("initialPath")?.ifBlank { "/" } ?: "/")
+            val createdAt = obj.long("createdAt", 0L)
+            return FtpServerBookmark(
+                id = id,
+                name = name,
+                host = host,
+                port = port,
+                anonymous = anonymous,
+                username = username,
+                password = password,
+                initialPath = initialPath,
+                createdAt = createdAt,
             )
         }
     }

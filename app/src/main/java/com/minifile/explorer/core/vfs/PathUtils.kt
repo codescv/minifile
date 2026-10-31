@@ -126,6 +126,15 @@ object PathUtils {
                 }
             }
 
+            ancestor is VfsPath.Ftp && candidate is VfsPath.Ftp -> {
+                if (ancestor.serverId != candidate.serverId) return false
+                val a = ancestor.normalizedRemotePath
+                val c = candidate.normalizedRemotePath
+                if (a == c) false
+                else if (a == "/") c.startsWith("/") && c != "/"
+                else c.startsWith("$a/")
+            }
+
             else -> false
         }
     }

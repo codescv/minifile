@@ -2,6 +2,7 @@ package com.minifile.explorer.di
 
 import android.content.Context
 import android.os.Environment
+import com.minifile.explorer.core.ftp.FtpClientFileSystem
 import com.minifile.explorer.core.model.Clock
 import com.minifile.explorer.core.ops.ChecksumCalculator
 import com.minifile.explorer.core.ops.FileOperations
@@ -12,7 +13,9 @@ import com.minifile.explorer.core.vfs.LocalFileSystem
 import com.minifile.explorer.data.AndroidMediaScanNotifier
 import com.minifile.explorer.data.AndroidVolumeProvider
 import com.minifile.explorer.data.DefaultFavoritesRepository
+import com.minifile.explorer.data.DefaultFtpServersRepository
 import com.minifile.explorer.data.FavoritesRepository
+import com.minifile.explorer.data.FtpServersRepository
 import com.minifile.explorer.data.LanAddressResolver
 import com.minifile.explorer.data.PersistedTreeStore
 import com.minifile.explorer.data.SafFileSystem
@@ -27,10 +30,17 @@ class AppContainer(context: Context) {
     val keyValueStore = SharedPrefsKeyValueStore(appContext)
     val settingsRepository = SettingsRepository(keyValueStore)
     val persistedTreeStore = PersistedTreeStore(appContext, keyValueStore)
+    val ftpServersRepository: FtpServersRepository = DefaultFtpServersRepository(
+        store = keyValueStore,
+        clock = Clock.SYSTEM,
+    )
 
     val localFileSystem = LocalFileSystem()
     val safFileSystem = SafFileSystem(appContext)
-    val fileSystem = FileSystemRepository(listOf(localFileSystem, safFileSystem))
+    val ftpClientFileSystem = FtpClientFileSystem(
+        serverLookup = { id -> ftpServersRepository.findById(id) },
+    )
+    val fileSystem = FileSystemRepository(listOf(localFileSystem, safFileSystem, ftpClientFileSystem))
 
     val favoritesRepository: FavoritesRepository = DefaultFavoritesRepository(
         store = keyValueStore,

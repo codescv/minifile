@@ -164,6 +164,8 @@ object UiFormatters {
                             context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
                         }
                     }
+
+                    is VfsPath.Ftp -> null
                 }
             }.getOrNull()
 
@@ -186,7 +188,14 @@ object UiFormatters {
         return BitmapFactory.decodeFile(path, decodeOpts)
     }
 
-    fun toShareableUri(context: Context, safFs: SafFileSystem, path: VfsPath): Uri {
+    private fun ftpCacheFile(context: Context, path: VfsPath.Ftp): File {
+        val dir = File(context.cacheDir, "ftp_cache").apply { mkdirs() }
+        val safeName = path.displayName.replace('/', '_').ifBlank { "file" }
+        val hash = "${path.serverId}:${path.normalizedRemotePath}".hashCode().toUInt().toString(16)
+        return File(dir, "${hash}_$safeName")
+    }
+
+    fun toShareableUri(context: Context, safFs: SafFileSystem, path: VfsPath, fs: FileSystem? = null): Uri {
         return when (path) {
             is VfsPath.Local -> FileProvider.getUriForFile(
                 context,
@@ -195,6 +204,87 @@ object UiFormatters {
             )
 
             is VfsPath.Saf -> safFs.buildDocumentUri(path)
+
+            is VfsPath.Ftp -> {
+                val target = ftpCacheFile(context, path)
+                if (fs != null) {
+                    fs.openInput(path).use { ins ->
+                        target.outputStream().use { outs ->
+                            ins.copyTo(outs, bufferSize = 64 * 1024)
+                        }
+                    }
+                } else if (!target.isFile) {
+                    throw IllegalArgumentException("Remote FTP file must be downloaded first before sharing.")
+                }
+                FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    target,
+                )
+            }
+        }
+    }
+
+    suspend fun openExternallyAsync(
+        context: Context,
+        safFs: SafFileSystem,
+        fs: FileSystem,
+        node: VfsNode,
+        forceChooser: Boolean = false,
+    ): Result<Unit> = runCatching {
+        val uri = withContext(Dispatchers.IO) {
+            toShareableUri(context, safFs, node.path, fs)
+        }
+        val mime = if (PathUtils.extensionOf(node.name) == "apk") {
+            "application/vnd.android.package-archive"
+        } else {
+            node.resolvedMimeType
+        }
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mime)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val toStart = if (forceChooser) {
+            Intent.createChooser(viewIntent, "Open ${node.name}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        } else {
+            viewIntent
+        }
+        context.startActivity(toStart)
+    }
+
+    suspend fun shareItemsAsync(
+        context: Context,
+        safFs: SafFileSystem,
+        fs: FileSystem,
+        nodes: List<VfsNode>,
+    ): Result<Unit> = runCatching {
+        val filesOnly = nodes.filterNot { it.isDirectory }
+        require(filesOnly.isNotEmpty()) { "Select at least one file to share (compress folders to ZIP first)." }
+        if (filesOnly.size == 1) {
+            val single = filesOnly.first()
+            val uri = withContext(Dispatchers.IO) {
+                toShareableUri(context, safFs, single.path, fs)
+            }
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = single.resolvedMimeType
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(send, "Share ${single.name}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } else {
+            val uris = withContext(Dispatchers.IO) {
+                val list = ArrayList<Uri>(filesOnly.size)
+                for (n in filesOnly) {
+                    list.add(toShareableUri(context, safFs, n.path, fs))
+                }
+                list
+            }
+            val send = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "*/*"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(send, "Share ${filesOnly.size} files").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
     }
 

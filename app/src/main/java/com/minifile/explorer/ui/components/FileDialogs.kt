@@ -461,7 +461,7 @@ fun CompressZipDialog(
                                 destExpanded = false
                             },
                         )
-                        for (fav in favorites) {
+                        for (fav in favorites.filter { it.isDirectory }) {
                             DropdownMenuItem(
                                 text = { Text("★ ${fav.name}") },
                                 onClick = {
@@ -553,7 +553,7 @@ fun ExtractZipDialog(
                                 destExpanded = false
                             },
                         )
-                        for (fav in favorites) {
+                        for (fav in favorites.filter { it.isDirectory }) {
                             DropdownMenuItem(
                                 text = { Text("★ ${fav.name}") },
                                 onClick = {
@@ -700,7 +700,9 @@ fun PropertiesSheet(
             if (!node.isDirectory && PathUtils.extensionOf(node.name) == "apk") {
                 Button(
                     onClick = {
-                        UiFormatters.openExternally(context, safFs, node)
+                        scope.launch {
+                            UiFormatters.openExternallyAsync(context, safFs, fileOps.fileSystem, node)
+                        }
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
@@ -731,6 +733,7 @@ fun PropertiesSheet(
             val fullLoc = when (val p = node.path) {
                 is VfsPath.Local -> p.normalized
                 is VfsPath.Saf -> "${p.treeUri} (${p.documentId})"
+                is VfsPath.Ftp -> p.serialize()
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -776,8 +779,21 @@ fun PropertiesSheet(
                 PropertyRow("Symlink target", node.symlinkTarget)
             }
 
+            HorizontalDivider()
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Favorite")
+                Switch(
+                    checked = isFavorite,
+                    onCheckedChange = {
+                        onToggleFavorite()
+                    },
+                )
+            }
             if (node.isDirectory) {
-                HorizontalDivider()
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -789,19 +805,6 @@ fun PropertiesSheet(
                         onCheckedChange = {
                             onToggleNomedia()
                             onDismiss()
-                        },
-                    )
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Favorite")
-                    Switch(
-                        checked = isFavorite,
-                        onCheckedChange = {
-                            onToggleFavorite()
                         },
                     )
                 }

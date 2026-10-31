@@ -2,5 +2,6 @@
 <paths>
     <external-path name="external" path="." />
     <cache-path name="updates" path="updates/" />
+    <cache-path name="ftp_cache" path="ftp_cache/" />
     <root-path name="root" path="." />
 </paths>

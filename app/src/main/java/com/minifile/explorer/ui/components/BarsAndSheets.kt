@@ -228,7 +228,7 @@ fun SelectionBottomBar(
                             },
                         )
                     }
-                    if (single != null && single.isDirectory) {
+                    if (single != null) {
                         DropdownMenuItem(
                             text = { Text("Add to Favorites") },
                             onClick = {
@@ -491,10 +491,11 @@ fun FavoritePickerSheet(
     val scope = rememberCoroutineScope()
 
     val orderedFavorites = remember(favorites, sortByRecency) {
+        val folderFavorites = favorites.filter { it.isDirectory }
         if (sortByRecency) {
-            favorites.sortedByDescending { it.lastUsedAt }
+            folderFavorites.sortedByDescending { it.lastUsedAt }
         } else {
-            favorites.sortedBy { it.order }
+            folderFavorites.sortedBy { it.order }
         }
     }
 
@@ -587,6 +588,7 @@ fun FavoritePickerSheet(
                                 val pathLabel = when (val p = fav.path) {
                                     is VfsPath.Local -> p.normalized
                                     is VfsPath.Saf -> p.documentId
+                                    is VfsPath.Ftp -> p.serialize()
                                 }
                                 Text(
                                     text = if (reason != null) "$reason · $pathLabel" else pathLabel,

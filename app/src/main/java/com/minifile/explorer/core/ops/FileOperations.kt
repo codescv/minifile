@@ -50,6 +50,7 @@ class FileOperations(
     private val fs: FileSystem,
     private val clock: Clock = Clock.SYSTEM,
 ) {
+    val fileSystem: FileSystem get() = fs
     private val bufferSize = 64 * 1024
 
     suspend fun copy(

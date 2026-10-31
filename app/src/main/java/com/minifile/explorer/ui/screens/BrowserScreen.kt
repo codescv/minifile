@@ -103,6 +103,12 @@ private data class FavoriteTransferRequest(
     val fromClipboard: Boolean,
 )
 
+private data class PendingFavorite(
+    val defaultName: String,
+    val path: VfsPath,
+    val isDirectory: Boolean,
+)
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun BrowserScreen(
@@ -116,6 +122,7 @@ fun BrowserScreen(
     val browser by viewModel.browser.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
+    val ftpServers by viewModel.ftpServers.collectAsState()
     val volumes by viewModel.volumes.collectAsState()
     val clipboard by viewModel.clipboard.collectAsState()
 
@@ -125,7 +132,7 @@ fun BrowserScreen(
     var renameTarget by remember { mutableStateOf<VfsNode?>(null) }
     var deleteTargets by remember { mutableStateOf<List<VfsNode>?>(null) }
     var propertiesTarget by remember { mutableStateOf<VfsNode?>(null) }
-    var addFavoriteTarget by remember { mutableStateOf<Pair<String, VfsPath>?>(null) }
+    var addFavoriteTarget by remember { mutableStateOf<PendingFavorite?>(null) }
     var compressTargets by remember { mutableStateOf<List<VfsNode>?>(null) }
     var extractTarget by remember { mutableStateOf<VfsPath?>(null) }
     var favoritePickerRequest by remember { mutableStateOf<FavoriteTransferRequest?>(null) }
@@ -140,6 +147,7 @@ fun BrowserScreen(
         StorageHomeScreen(
             volumes = volumes,
             favorites = favorites,
+            ftpServers = ftpServers,
             hasAllFilesAccess = AndroidVolumeProvider.hasAllFilesAccess(context),
             onboardingDismissed = settings.onboardingDone,
             clipboard = clipboard,
@@ -149,10 +157,16 @@ fun BrowserScreen(
             },
             onMountVolumeSaf = onMountVolumeSaf,
             onOpenVolume = { viewModel.openVolume(it) },
+            onOpenFtpServer = { viewModel.openFtpServer(it) },
+            onAddFtpServer = { name, host, port, anon, user, pass, path ->
+                viewModel.addFtpServer(name, host, port, anon, user, pass, path)
+            },
+            onUpdateFtpServer = { viewModel.updateFtpServer(it) },
+            onRemoveFtpServer = { viewModel.removeFtpServer(it) },
             onOpenQuickPath = { path, rootLabel ->
                 viewModel.navigateToDirectory(path, rootVolumeName = rootLabel)
             },
-            onOpenFavorite = { viewModel.openFavoriteInBrowse(it) },
+            onOpenFavorite = { viewModel.openFavoriteInBrowse(it, context) },
             onSeeAllFavorites = { viewModel.selectTab(MainTab.FAVORITES) },
             onClipboardToFavorite = {
                 val clip = clipboard ?: return@StorageHomeScreen
@@ -244,10 +258,14 @@ fun BrowserScreen(
                     if (isText) {
                         viewModel.openOverlay(OverlayScreen.TextEditor(node.path))
                     } else {
-                        UiFormatters.openExternally(context, viewModel.container.safFileSystem, node)
-                            .onFailure { err ->
-                                viewModel.emitSimpleMessage("Cannot open ${node.name}: ${err.message}")
-                            }
+                        UiFormatters.openExternallyAsync(
+                            context = context,
+                            safFs = viewModel.container.safFileSystem,
+                            fs = viewModel.container.fileSystem,
+                            node = node,
+                        ).onFailure { err ->
+                            viewModel.emitSimpleMessage("Cannot open ${node.name}: ${err.message}")
+                        }
                     }
                 }
             }
@@ -257,8 +275,15 @@ fun BrowserScreen(
     fun handleRowAction(node: VfsNode, action: RowAction) {
         when (action) {
             RowAction.OPEN_WITH -> {
-                UiFormatters.openExternally(context, viewModel.container.safFileSystem, node, forceChooser = true)
-                    .onFailure { viewModel.emitSimpleMessage("No app found: ${it.message}") }
+                scope.launch {
+                    UiFormatters.openExternallyAsync(
+                        context = context,
+                        safFs = viewModel.container.safFileSystem,
+                        fs = viewModel.container.fileSystem,
+                        node = node,
+                        forceChooser = true,
+                    ).onFailure { viewModel.emitSimpleMessage("No app found: ${it.message}") }
+                }
             }
 
             RowAction.OPEN_AS_TEXT -> {
@@ -289,7 +314,7 @@ fun BrowserScreen(
                 if (node.path in favoritePaths) {
                     viewModel.removeFavoriteByPath(node.path)
                 } else {
-                    addFavoriteTarget = node.name to node.path
+                    addFavoriteTarget = PendingFavorite(node.name, node.path, node.isDirectory)
                 }
             }
 
@@ -371,7 +396,7 @@ fun BrowserScreen(
                                     if (isCurrentDirFavorite) {
                                         viewModel.removeFavoriteByPath(curDir)
                                     } else {
-                                        addFavoriteTarget = titleLabel to curDir
+                                        addFavoriteTarget = PendingFavorite(titleLabel, curDir, true)
                                     }
                                 },
                             ) {
@@ -453,7 +478,7 @@ fun BrowserScreen(
                                             if (isCurrentDirFavorite) {
                                                 viewModel.removeFavoriteByPath(curDir)
                                             } else {
-                                                addFavoriteTarget = titleLabel to curDir
+                                                addFavoriteTarget = PendingFavorite(titleLabel, curDir, true)
                                             }
                                         },
                                     )
@@ -537,8 +562,14 @@ fun BrowserScreen(
                         onCut = { viewModel.copyPathsToClipboard(selectedNodes.map { it.path }, TransferMode.MOVE) },
                         onDelete = { deleteTargets = selectedNodes },
                         onShare = {
-                            UiFormatters.shareItems(context, viewModel.container.safFileSystem, selectedNodes)
-                                .onFailure { viewModel.emitSimpleMessage(it.message ?: "Cannot share selection") }
+                            scope.launch {
+                                UiFormatters.shareItemsAsync(
+                                    context = context,
+                                    safFs = viewModel.container.safFileSystem,
+                                    fs = viewModel.container.fileSystem,
+                                    nodes = selectedNodes,
+                                ).onFailure { viewModel.emitSimpleMessage(it.message ?: "Cannot share selection") }
+                            }
                         },
                         onMoreAction = { action ->
                             when (action) {
@@ -562,7 +593,12 @@ fun BrowserScreen(
                                 SelectionMoreAction.COMPRESS_ZIP -> compressTargets = selectedNodes
                                 SelectionMoreAction.EXTRACT_ZIP -> selectedNodes.singleOrNull()?.let { extractTarget = it.path }
                                 SelectionMoreAction.ADD_TO_FAVORITES -> selectedNodes.singleOrNull()?.let {
-                                    addFavoriteTarget = it.name to it.path
+                                    if (it.path in favoritePaths) {
+                                        viewModel.removeFavoriteByPath(it.path)
+                                    } else {
+                                        addFavoriteTarget = PendingFavorite(it.name, it.path, it.isDirectory)
+                                    }
+                                    viewModel.clearSelection()
                                 }
 
                                 SelectionMoreAction.TOGGLE_NOMEDIA -> {
@@ -610,6 +646,7 @@ fun BrowserScreen(
                     val raw = when (target) {
                         is VfsPath.Local -> target.normalized
                         is VfsPath.Saf -> target.documentId
+                        is VfsPath.Ftp -> target.serialize()
                     }
                     UiFormatters.copyToSystemClipboard(context, "Path", raw)
                     viewModel.emitSimpleMessage("Copied path: $raw")
@@ -845,7 +882,7 @@ fun BrowserScreen(
                 if (node.path in favoritePaths) {
                     viewModel.removeFavoriteByPath(node.path)
                 } else {
-                    addFavoriteTarget = node.name to node.path
+                    addFavoriteTarget = PendingFavorite(node.name, node.path, node.isDirectory)
                 }
             },
             onToggleNomedia = { viewModel.toggleNomedia(node.path) },
@@ -854,10 +891,16 @@ fun BrowserScreen(
         )
     }
 
-    addFavoriteTarget?.let { (defName, path) ->
+    addFavoriteTarget?.let { pending ->
         AddFavoriteDialog(
-            defaultName = defName,
-            onConfirm = { chosenName -> viewModel.addOrUpdateFavorite(chosenName, path) },
+            defaultName = pending.defaultName,
+            onConfirm = { chosenName ->
+                viewModel.addOrUpdateFavorite(
+                    name = chosenName,
+                    path = pending.path,
+                    isDirectory = pending.isDirectory,
+                )
+            },
             onDismiss = { addFavoriteTarget = null },
         )
     }
@@ -930,7 +973,11 @@ fun BrowserScreen(
                 )
             },
             onAddCurrentFolderToFavorites = {
-                addFavoriteTarget = (browser.breadcrumbs.lastOrNull()?.label ?: curDir.displayName) to curDir
+                addFavoriteTarget = PendingFavorite(
+                    defaultName = browser.breadcrumbs.lastOrNull()?.label ?: curDir.displayName,
+                    path = curDir,
+                    isDirectory = true,
+                )
             },
             onDismiss = { favoritePickerRequest = null },
         )

@@ -138,7 +138,12 @@ class HttpFileServerEngine(
         } else {
             InetSocketAddress(InetAddress.getByName(config.bindAddress), config.port)
         }
-        ss.bind(bindSockAddr)
+        try {
+            ss.bind(bindSockAddr)
+        } catch (t: Throwable) {
+            runCatching { ss.close() }
+            throw t
+        }
         boundPort = ss.localPort
         serverSocket = ss
         running.set(true)

@@ -29,8 +29,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
@@ -171,6 +171,9 @@ class MainActivity : ComponentActivity() {
             val matchedTab = when {
                 rawTab.equals("transfer", ignoreCase = true) ||
                     rawTab.equals("wireless", ignoreCase = true) -> MainTab.WIRELESS
+
+                rawTab.equals("settings", ignoreCase = true) ||
+                    rawTab.equals("tools", ignoreCase = true) -> MainTab.TOOLS
 
                 else -> MainTab.entries.firstOrNull {
                     it.name.equals(rawTab, ignoreCase = true) ||
@@ -434,10 +437,10 @@ private fun MiniFileRoot(
                                         }
                                     },
                                 ) {
-                                    Icon(Icons.Filled.Build, contentDescription = "Tools")
+                                    Icon(Icons.Filled.Settings, contentDescription = MainTab.TOOLS.label)
                                 }
                             },
-                            label = { Text("Tools") },
+                            label = { Text(MainTab.TOOLS.label) },
                         )
                     }
                 }

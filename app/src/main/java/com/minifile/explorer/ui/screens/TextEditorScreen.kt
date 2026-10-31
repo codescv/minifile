@@ -688,11 +688,12 @@ fun TextEditorScreen(
     }
 
     if (showSaveAsDialog) {
+        val folderFavorites = remember(favorites) { favorites.filter { it.isDirectory } }
         var newName by remember { mutableStateOf(activePath.displayName) }
         var chosenFolder by remember {
             mutableStateOf(
                 browser.currentDir
-                    ?: favorites.firstOrNull()?.path
+                    ?: folderFavorites.firstOrNull()?.path
                     ?: VfsPath.Local(java.io.File(Environment.getExternalStorageDirectory(), "Download").absolutePath),
             )
         }
@@ -709,7 +710,7 @@ fun TextEditorScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Text("Target folder: ${chosenFolder.displayName}", style = MaterialTheme.typography.bodySmall)
-                    for (fav in favorites.take(4)) {
+                    for (fav in folderFavorites.take(4)) {
                         FilterChip(
                             selected = chosenFolder == fav.path,
                             onClick = { chosenFolder = fav.path },

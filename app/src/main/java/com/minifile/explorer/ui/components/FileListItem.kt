@@ -465,12 +465,12 @@ private fun NodeContextMenu(
             text = { Text("Compress to ZIP") },
             onClick = { onAction(RowAction.COMPRESS_ZIP) },
         )
+        HorizontalDivider()
+        DropdownMenuItem(
+            text = { Text(if (isFavorite) "Remove from Favorites" else "Add to Favorites") },
+            onClick = { onAction(RowAction.TOGGLE_FAVORITE) },
+        )
         if (node.isDirectory) {
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text(if (isFavorite) "Remove from Favorites" else "Add to Favorites") },
-                onClick = { onAction(RowAction.TOGGLE_FAVORITE) },
-            )
             DropdownMenuItem(
                 text = {
                     Row(verticalAlignment = Alignment.CenterVertically) {

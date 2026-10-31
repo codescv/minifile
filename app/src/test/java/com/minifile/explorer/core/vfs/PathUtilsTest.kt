@@ -39,6 +39,17 @@ class PathUtilsTest {
         assertTrue(PathUtils.isStrictDescendant(safRoot, safChild))
         assertFalse(PathUtils.isAncestor(safRoot, safSibling))
         assertFalse(PathUtils.isAncestor(safRoot, safOtherTree))
+
+        val ftpRoot = VfsPath.Ftp("nas1", "/")
+        val ftpShare = VfsPath.Ftp("nas1", "/share")
+        val ftpNested = VfsPath.Ftp("nas1", "/share/photos")
+        val ftpOtherSrv = VfsPath.Ftp("nas2", "/share/photos")
+
+        assertTrue(PathUtils.isAncestor(ftpRoot, ftpRoot))
+        assertTrue(PathUtils.isStrictDescendant(ftpRoot, ftpShare))
+        assertTrue(PathUtils.isStrictDescendant(ftpShare, ftpNested))
+        assertFalse(PathUtils.isStrictDescendant(ftpShare, ftpShare))
+        assertFalse(PathUtils.isAncestor(ftpShare, ftpOtherSrv))
     }
 
     @Test
@@ -91,5 +102,15 @@ class PathUtilsTest {
             "primary:Android/data/com.example",
         )
         assertEquals(saf, VfsPath.parse(saf.serialize()))
+
+        val ftpRoot = VfsPath.Ftp("server-123", "/")
+        assertEquals("ftp://server-123/", ftpRoot.serialize())
+        assertEquals(ftpRoot, VfsPath.parse(ftpRoot.serialize()))
+        assertEquals(ftpRoot, VfsPath.parse("ftp://server-123"))
+
+        val ftpDeep = VfsPath.Ftp("server-123", "/media/movies/clip.mp4/")
+        assertEquals("/media/movies/clip.mp4", ftpDeep.normalizedRemotePath)
+        assertEquals("clip.mp4", ftpDeep.displayName)
+        assertEquals(ftpDeep, VfsPath.parse(ftpDeep.serialize()))
     }
 }

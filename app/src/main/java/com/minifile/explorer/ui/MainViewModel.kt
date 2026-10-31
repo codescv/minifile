@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.minifile.explorer.core.model.AppSettings
 import com.minifile.explorer.core.model.Favorite
+import com.minifile.explorer.core.model.FtpServerBookmark
 import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.model.SortSpec
 import com.minifile.explorer.core.model.TransferMode
@@ -26,6 +27,7 @@ import com.minifile.explorer.core.vfs.Volume
 import com.minifile.explorer.di.AppContainer
 import com.minifile.explorer.service.OperationCompletionEvent
 import com.minifile.explorer.service.OperationRunOutcome
+import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,7 +44,7 @@ enum class MainTab(val label: String) {
     BROWSE("Browse"),
     FAVORITES("Favorites"),
     WIRELESS("Transfer"),
-    TOOLS("Tools"),
+    TOOLS("Settings"),
 }
 
 sealed interface OverlayScreen {
@@ -122,6 +124,7 @@ class MainViewModel(
 
     val settings: StateFlow<AppSettings> = container.settingsRepository.settings
     val favorites: StateFlow<List<Favorite>> = container.favoritesRepository.favorites
+    val ftpServers: StateFlow<List<FtpServerBookmark>> = container.ftpServersRepository.servers
     val volumes: StateFlow<List<Volume>> = container.volumeProvider.volumes
     val clipboard = ClipboardHolder.state
 
@@ -199,7 +202,11 @@ class MainViewModel(
             container.volumeProvider.refresh()
             // If currently browsing an unmounted volume, step back to Storage Home gracefully
             val cur = _browser.value.currentDir
-            if (cur != null) {
+            if (cur is VfsPath.Ftp) {
+                if (container.ftpServersRepository.findById(cur.serverId) == null) {
+                    navigateToStorageHome()
+                }
+            } else if (cur != null) {
                 val stillExists = withContext(Dispatchers.IO) {
                     runCatching { container.fileSystem.exists(cur) }.getOrDefault(false)
                 }
@@ -235,18 +242,145 @@ class MainViewModel(
         )
     }
 
-    fun openFavoriteInBrowse(fav: Favorite) {
-        viewModelScope.launch {
-            container.favoritesRepository.touch(fav.id)
-        }
+    fun openFtpServer(server: FtpServerBookmark) {
         _overlay.value = null
         _activeTab.value = MainTab.BROWSE
         savedStateHandle[STATE_TAB] = MainTab.BROWSE.name
+        val root = server.rootPath
         navigateToDirectory(
-            dir = fav.path,
-            rootVolumeName = inferRootName(fav.path),
-            rootVolumeBase = inferRootBase(fav.path),
+            dir = root,
+            rootVolumeName = server.name,
+            rootVolumeBase = root,
         )
+    }
+
+    fun addFtpServer(
+        name: String,
+        host: String,
+        port: Int,
+        anonymous: Boolean,
+        username: String,
+        password: String,
+        initialPath: String,
+        openAfterAdd: Boolean = true,
+    ) {
+        viewModelScope.launch {
+            val created = container.ftpServersRepository.add(
+                name = name,
+                host = host,
+                port = port,
+                anonymous = anonymous,
+                username = username,
+                password = password,
+                initialPath = initialPath,
+            )
+            emitSimpleMessage("Added FTP server '${created.name}'")
+            if (openAfterAdd) {
+                openFtpServer(created)
+            }
+        }
+    }
+
+    fun updateFtpServer(server: FtpServerBookmark) {
+        viewModelScope.launch {
+            container.ftpServersRepository.update(server)
+            emitSimpleMessage("Updated FTP server '${server.name}'")
+            val cur = _browser.value.currentDir
+            if (cur is VfsPath.Ftp && cur.serverId == server.id) {
+                val root = server.rootPath
+                navigateToDirectory(
+                    dir = root,
+                    rootVolumeName = server.name,
+                    rootVolumeBase = root,
+                )
+            }
+        }
+    }
+
+    fun removeFtpServer(id: String) {
+        val existing = container.ftpServersRepository.findById(id)
+        viewModelScope.launch {
+            container.ftpServersRepository.remove(id)
+            val cur = _browser.value.currentDir
+            if (cur is VfsPath.Ftp && cur.serverId == id) {
+                navigateToStorageHome()
+            }
+            if (existing != null) {
+                emitSimpleMessage("Removed FTP server '${existing.name}'")
+            }
+        }
+    }
+
+    fun openFavoriteInBrowse(fav: Favorite, context: Context? = null) {
+        viewModelScope.launch {
+            container.favoritesRepository.touch(fav.id)
+            val node = withContext(Dispatchers.IO) {
+                runCatching { container.fileSystem.stat(fav.path) }.getOrNull()
+            }
+            if (node != null && node.isDirectory != fav.isDirectory) {
+                container.favoritesRepository.add(
+                    name = fav.name,
+                    path = fav.path,
+                    color = fav.color,
+                    isDirectory = node.isDirectory,
+                )
+            }
+            val isFileFav = if (node != null) !node.isDirectory else !fav.isDirectory
+            if (isFileFav) {
+                val parentDir = withContext(Dispatchers.IO) {
+                    runCatching { container.fileSystem.parent(fav.path) }.getOrNull()
+                }
+                _activeTab.value = MainTab.BROWSE
+                savedStateHandle[STATE_TAB] = MainTab.BROWSE.name
+                if (parentDir != null) {
+                    navigateToDirectory(
+                        dir = parentDir,
+                        rootVolumeName = inferRootName(parentDir),
+                        rootVolumeBase = inferRootBase(parentDir),
+                    )
+                }
+                val targetPath = node?.path ?: fav.path
+                val targetName = node?.name ?: fav.path.displayName
+                val ext = PathUtils.extensionOf(targetName)
+                when {
+                    ext == "pdf" -> {
+                        openOverlay(OverlayScreen.PdfViewer(targetPath))
+                    }
+
+                    ext == "zip" || ext == "jar" -> {
+                        openOverlay(OverlayScreen.ArchivePreview(targetPath))
+                    }
+
+                    node != null && settings.value.openTextInBuiltInEditor &&
+                        withContext(Dispatchers.IO) { UiFormatters.shouldOpenAsText(node, container.fileSystem) } -> {
+                        openOverlay(OverlayScreen.TextEditor(targetPath))
+                    }
+
+                    else -> {
+                        _overlay.value = null
+                        if (context != null && node != null) {
+                            UiFormatters.openExternallyAsync(
+                                context = context,
+                                safFs = container.safFileSystem,
+                                fs = container.fileSystem,
+                                node = node,
+                            ).onFailure { err ->
+                                emitSimpleMessage("Cannot open ${node.name}: ${err.message}")
+                            }
+                        }
+                    }
+                }
+            } else {
+                _overlay.value = null
+                _activeTab.value = MainTab.BROWSE
+                savedStateHandle[STATE_TAB] = MainTab.BROWSE.name
+                navigateToDirectory(
+                    dir = fav.path,
+                    rootVolumeName = inferRootName(fav.path),
+                    rootVolumeBase = inferRootBase(fav.path),
+                )
+            }
+        }
     }
 
     fun navigateToDirectory(
@@ -390,12 +524,35 @@ class MainViewModel(
                     crumbs.add(BreadcrumbCrumb(dir.displayName, dir))
                 }
             }
+
+            is VfsPath.Ftp -> {
+                val baseFtp = (rootBase as? VfsPath.Ftp)?.takeIf { it.serverId == dir.serverId }
+                    ?: container.ftpServersRepository.findById(dir.serverId)?.rootPath
+                    ?: VfsPath.Ftp(dir.serverId, "/")
+                val baseNorm = baseFtp.normalizedRemotePath
+                val dirNorm = dir.normalizedRemotePath
+                val prefix = if (baseNorm == "/") "/" else "$baseNorm/"
+                if (dirNorm == baseNorm || (baseNorm != "/" && !dirNorm.startsWith(prefix))) {
+                    crumbs.add(BreadcrumbCrumb(rootName, dir))
+                } else {
+                    crumbs.add(BreadcrumbCrumb(rootName, baseFtp))
+                    val rel = if (baseNorm == "/") dirNorm.removePrefix("/") else dirNorm.removePrefix(prefix)
+                    var running = if (baseNorm == "/") "" else baseNorm
+                    for (seg in rel.split('/').filter { it.isNotEmpty() }) {
+                        running = "$running/$seg"
+                        crumbs.add(BreadcrumbCrumb(seg, VfsPath.Ftp(dir.serverId, running)))
+                    }
+                }
+            }
         }
         return crumbs
     }
 
     private fun inferRootName(path: VfsPath?): String {
         if (path == null) return "Internal"
+        if (path is VfsPath.Ftp) {
+            return container.ftpServersRepository.findById(path.serverId)?.name ?: "FTP (${path.serverId})"
+        }
         for (v in volumes.value) {
             val r = v.root ?: continue
             if (PathUtils.isAncestor(r, path)) return v.name
@@ -418,6 +575,8 @@ class MainViewModel(
         return when (path) {
             is VfsPath.Local -> VfsPath.Local("/")
             is VfsPath.Saf -> container.persistedTreeStore.findGrantByTreeUri(path.treeUri)?.toVfsPath() ?: path
+            is VfsPath.Ftp -> container.ftpServersRepository.findById(path.serverId)?.rootPath
+                ?: VfsPath.Ftp(path.serverId, "/")
         }
     }
 
@@ -912,11 +1071,25 @@ class MainViewModel(
         }
     }
 
-    fun addOrUpdateFavorite(name: String, path: VfsPath, color: Int? = null) {
+    fun addOrUpdateFavorite(
+        name: String,
+        path: VfsPath,
+        color: Int? = null,
+        isDirectory: Boolean = true,
+    ) {
         viewModelScope.launch {
-            container.favoritesRepository.add(name, path, color)
+            container.favoritesRepository.add(name, path, color, isDirectory = isDirectory)
             emitSimpleMessage("Added '${name.ifBlank { path.displayName }}' to Favorites")
         }
+    }
+
+    fun addFavorite(
+        name: String,
+        path: VfsPath,
+        isDirectory: Boolean = true,
+        color: Int? = null,
+    ) {
+        addOrUpdateFavorite(name = name, path = path, color = color, isDirectory = isDirectory)
     }
 
     fun removeFavoriteByPath(path: VfsPath) {

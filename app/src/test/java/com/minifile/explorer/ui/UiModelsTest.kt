@@ -65,8 +65,9 @@ class UiModelsTest {
     }
 
     @Test
-    fun mainTab_wirelessTabLabelIsTransfer() {
+    fun mainTab_wirelessTabLabelIsTransferAndToolsTabLabelIsSettings() {
         assertEquals("Transfer", MainTab.WIRELESS.label)
-        assertEquals(listOf("Browse", "Favorites", "Transfer", "Tools"), MainTab.entries.map { it.label })
+        assertEquals("Settings", MainTab.TOOLS.label)
+        assertEquals(listOf("Browse", "Favorites", "Transfer", "Settings"), MainTab.entries.map { it.label })
     }
 }

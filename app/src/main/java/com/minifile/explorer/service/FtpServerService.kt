@@ -182,9 +182,11 @@ class FtpServerService : Service() {
     private fun launchFtpEngine() {
         val container = (application as MiniFileApplication).container
         val settings = container.settingsRepository.settings.value
-        val rootPath: VfsPath = settings.ftpRoot
+        val rootRaw = settings.ftpRoot ?: settings.httpRoot
+        val rootPath: VfsPath = rootRaw
             ?.let { runCatching { VfsPath.parse(it) }.getOrNull() }
             ?: VfsPath.Local(Environment.getExternalStorageDirectory().absolutePath)
+        val readOnly = settings.ftpReadOnly || settings.httpReadOnly
 
         val auth = if (settings.ftpAnonymous) {
             FtpAuth.Anonymous
@@ -195,11 +197,11 @@ class FtpServerService : Service() {
             )
         }
         val pasvRange = settings.ftpPasvStart..settings.ftpPasvEnd.coerceAtLeast(settings.ftpPasvStart)
-        val config = FtpConfig(
+        val baseConfig = FtpConfig(
             port = settings.ftpPort,
             bindAddress = "0.0.0.0",
             root = rootPath,
-            readOnly = settings.ftpReadOnly,
+            readOnly = readOnly,
             auth = auth,
             passivePorts = pasvRange,
             idleTimeoutMs = settings.ftpIdleTimeoutSec * 1000L,
@@ -207,26 +209,46 @@ class FtpServerService : Service() {
             serverName = "MiniFile FTP",
         )
 
-        val srv = FtpServerEngine(
-            config = config,
-            fs = container.fileSystem,
-            externalIpProvider = { container.lanAddressResolver.currentIpv4List() },
-        )
-
-        try {
-            srv.start()
-        } catch (_: BindException) {
-            val msg = "Port ${settings.ftpPort} is already in use. Choose another port in Transfer settings."
-            shutdownFtp(errorMessage = msg)
-            if (!isAnyServerActive) {
-                teardownServiceResources(removeNotification = true)
-                stopSelf()
-            } else {
-                refreshRunningNotification()
+        val candidatePorts = buildList {
+            add(settings.ftpPort)
+            for (p in 2122..2130) {
+                if (p != settings.ftpPort) add(p)
             }
-            return
-        } catch (e: Exception) {
-            val msg = "Could not start FTP server: ${e.message ?: "unknown error"}"
+            add(0)
+        }
+
+        var startedSrv: FtpServerEngine? = null
+        var lastBindError: BindException? = null
+        for (candidatePort in candidatePorts) {
+            val srv = FtpServerEngine(
+                config = baseConfig.copy(port = candidatePort),
+                fs = container.fileSystem,
+                externalIpProvider = { container.lanAddressResolver.currentIpv4List() },
+            )
+            try {
+                srv.start()
+                startedSrv = srv
+                break
+            } catch (b: BindException) {
+                lastBindError = b
+                runCatching { srv.stop() }
+            } catch (e: Exception) {
+                runCatching { srv.stop() }
+                val msg = "Could not start FTP server: ${e.message ?: "unknown error"}"
+                shutdownFtp(errorMessage = msg)
+                if (!isAnyServerActive) {
+                    teardownServiceResources(removeNotification = true)
+                    stopSelf()
+                } else {
+                    refreshRunningNotification()
+                }
+                return
+            }
+        }
+
+        val srv = startedSrv
+        if (srv == null) {
+            val msg = "Could not bind FTP server port: ${lastBindError?.message ?: "all ports busy"}"
             shutdownFtp(errorMessage = msg)
             if (!isAnyServerActive) {
                 teardownServiceResources(removeNotification = true)
@@ -261,38 +283,60 @@ class FtpServerService : Service() {
     private fun launchHttpEngine() {
         val container = (application as MiniFileApplication).container
         val settings = container.settingsRepository.settings.value
-        val rootPath: VfsPath = settings.httpRoot
+        val rootRaw = settings.ftpRoot ?: settings.httpRoot
+        val rootPath: VfsPath = rootRaw
             ?.let { runCatching { VfsPath.parse(it) }.getOrNull() }
             ?: VfsPath.Local(Environment.getExternalStorageDirectory().absolutePath)
+        val readOnly = settings.ftpReadOnly || settings.httpReadOnly
 
-        val config = HttpConfig(
+        val baseConfig = HttpConfig(
             port = settings.httpPort,
             bindAddress = "0.0.0.0",
             root = rootPath,
-            readOnly = settings.httpReadOnly,
+            readOnly = readOnly,
             showHidden = settings.showHidden,
             serverName = "Files HTTP",
         )
 
-        val srv = HttpFileServerEngine(
-            config = config,
-            fs = container.fileSystem,
-        )
-
-        try {
-            srv.start()
-        } catch (_: BindException) {
-            val msg = "Port ${settings.httpPort} is already in use. Choose another port in Transfer settings."
-            shutdownHttp(errorMessage = msg)
-            if (!isAnyServerActive) {
-                teardownServiceResources(removeNotification = true)
-                stopSelf()
-            } else {
-                refreshRunningNotification()
+        val candidatePorts = buildList {
+            add(settings.httpPort)
+            for (p in 8081..8090) {
+                if (p != settings.httpPort) add(p)
             }
-            return
-        } catch (e: Exception) {
-            val msg = "Could not start HTTP server: ${e.message ?: "unknown error"}"
+            add(0)
+        }
+
+        var startedSrv: HttpFileServerEngine? = null
+        var lastBindError: BindException? = null
+        for (candidatePort in candidatePorts) {
+            val srv = HttpFileServerEngine(
+                config = baseConfig.copy(port = candidatePort),
+                fs = container.fileSystem,
+            )
+            try {
+                srv.start()
+                startedSrv = srv
+                break
+            } catch (b: BindException) {
+                lastBindError = b
+                runCatching { srv.stop() }
+            } catch (e: Exception) {
+                runCatching { srv.stop() }
+                val msg = "Could not start HTTP server: ${e.message ?: "unknown error"}"
+                shutdownHttp(errorMessage = msg)
+                if (!isAnyServerActive) {
+                    teardownServiceResources(removeNotification = true)
+                    stopSelf()
+                } else {
+                    refreshRunningNotification()
+                }
+                return
+            }
+        }
+
+        val srv = startedSrv
+        if (srv == null) {
+            val msg = "Could not bind HTTP server port: ${lastBindError?.message ?: "all ports busy"}"
             shutdownHttp(errorMessage = msg)
             if (!isAnyServerActive) {
                 teardownServiceResources(removeNotification = true)

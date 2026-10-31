@@ -32,9 +32,25 @@ sealed interface VfsPath {
             }
     }
 
+    data class Ftp(val serverId: String, val remotePath: String = "/") : VfsPath {
+        val normalizedRemotePath: String = PathUtils.normalizeLocalPath(remotePath)
+
+        override val displayName: String
+            get() {
+                if (normalizedRemotePath == "/") return "/"
+                return normalizedRemotePath.substringAfterLast('/')
+            }
+
+        override fun equals(other: Any?): Boolean =
+            other is Ftp && serverId == other.serverId && normalizedRemotePath == other.normalizedRemotePath
+
+        override fun hashCode(): Int = 31 * serverId.hashCode() + normalizedRemotePath.hashCode()
+    }
+
     fun serialize(): String = when (this) {
         is Local -> "file://$normalized"
         is Saf -> "saf:$treeUri#$documentId"
+        is Ftp -> "ftp://$serverId$normalizedRemotePath"
     }
 
     companion object {
@@ -53,6 +69,20 @@ sealed interface VfsPath {
                         treeUri = rest.substring(0, sep),
                         documentId = rest.substring(sep + 1),
                     )
+                }
+
+                serialized.startsWith("ftp://") -> {
+                    val rest = serialized.removePrefix("ftp://")
+                    require(rest.isNotEmpty()) { "Invalid FTP serialized path: $serialized" }
+                    val slash = rest.indexOf('/')
+                    if (slash < 0) {
+                        Ftp(serverId = rest, remotePath = "/")
+                    } else {
+                        val serverId = rest.substring(0, slash)
+                        require(serverId.isNotEmpty()) { "Invalid FTP serverId in serialized path: $serialized" }
+                        val remote = rest.substring(slash)
+                        Ftp(serverId = serverId, remotePath = PathUtils.normalizeLocalPath(remote))
+                    }
                 }
 
                 serialized.startsWith("/") -> Local(PathUtils.normalizeLocalPath(serialized))

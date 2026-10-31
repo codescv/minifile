@@ -13,7 +13,12 @@ import java.util.UUID
 
 interface FavoritesRepository {
     val favorites: StateFlow<List<Favorite>>
-    suspend fun add(name: String, path: VfsPath, color: Int? = null): Favorite
+    suspend fun add(
+        name: String,
+        path: VfsPath,
+        color: Int? = null,
+        isDirectory: Boolean = true,
+    ): Favorite
     suspend fun remove(id: String)
     suspend fun rename(id: String, name: String)
     suspend fun reorder(ids: List<String>)
@@ -88,7 +93,12 @@ class DefaultFavoritesRepository(
         store.putString(PREF_KEY, json)
     }
 
-    override suspend fun add(name: String, path: VfsPath, color: Int?): Favorite = synchronized(lock) {
+    override suspend fun add(
+        name: String,
+        path: VfsPath,
+        color: Int?,
+        isDirectory: Boolean,
+    ): Favorite = synchronized(lock) {
         val current = _favorites.value
         val existing = current.firstOrNull { it.path == path }
         if (existing != null) {
@@ -96,6 +106,7 @@ class DefaultFavoritesRepository(
                 name = name.trim().ifEmpty { path.displayName },
                 lastUsedAt = clock.nowMs(),
                 color = color ?: existing.color,
+                isDirectory = isDirectory,
             )
             val next = current.map { if (it.id == existing.id) updated else it }
             persistList(next)
@@ -111,6 +122,7 @@ class DefaultFavoritesRepository(
             lastUsedAt = now,
             order = current.size,
             color = color,
+            isDirectory = isDirectory,
         )
         val next = current + created
         persistList(next)

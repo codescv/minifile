@@ -162,6 +162,14 @@ class SettingsRepository(
         _settings.value = applyOverrides(next)
     }
 
+    fun setTransferRoot(serialized: String?) {
+        update { it.copy(ftpRoot = serialized, httpRoot = serialized) }
+    }
+
+    fun setTransferReadOnly(ro: Boolean) {
+        update { it.copy(ftpReadOnly = ro, httpReadOnly = ro) }
+    }
+
     private fun persist(s: AppSettings) {
         store.putBoolean(KEY_SHOW_HIDDEN, s.showHidden)
         store.putString(KEY_VIEW_MODE, s.viewMode.name)

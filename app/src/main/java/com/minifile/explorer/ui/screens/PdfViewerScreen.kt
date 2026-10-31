@@ -246,6 +246,26 @@ private suspend fun openPdfSession(
                 throw t
             }
         }
+
+        is VfsPath.Ftp -> {
+            val cacheDir = File(context.cacheDir, "pdf_viewer").apply { mkdirs() }
+            val tempFile = File.createTempFile("doc_", ".pdf", cacheDir)
+            var fallbackPfd: ParcelFileDescriptor? = null
+            try {
+                fs.openInput(path).use { input ->
+                    FileOutputStream(tempFile).use { output ->
+                        input.copyTo(output, bufferSize = 64 * 1024)
+                    }
+                }
+                fallbackPfd = ParcelFileDescriptor.open(tempFile, ParcelFileDescriptor.MODE_READ_ONLY)
+                val renderer = PdfRenderer(fallbackPfd)
+                PdfDocumentSession(pfd = fallbackPfd, renderer = renderer, tempFile = tempFile)
+            } catch (t: Throwable) {
+                fallbackPfd?.let { runCatching { it.close() } }
+                runCatching { tempFile.delete() }
+                throw t
+            }
+        }
     }
 }
 
@@ -345,13 +365,16 @@ fun PdfViewerScreen(
             lastModified = 0L,
             mimeType = "application/pdf",
         )
-        UiFormatters.openExternally(
-            context = context,
-            safFs = viewModel.container.safFileSystem,
-            node = node,
-            forceChooser = true,
-        ).onFailure { err ->
-            viewModel.emitSimpleMessage("Cannot open externally: ${err.message}")
+        scope.launch {
+            UiFormatters.openExternallyAsync(
+                context = context,
+                safFs = viewModel.container.safFileSystem,
+                fs = viewModel.container.fileSystem,
+                node = node,
+                forceChooser = true,
+            ).onFailure { err ->
+                viewModel.emitSimpleMessage("Cannot open externally: ${err.message}")
+            }
         }
     }
 

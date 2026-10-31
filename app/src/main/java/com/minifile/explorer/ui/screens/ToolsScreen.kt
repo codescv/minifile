@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -90,7 +89,7 @@ fun ToolsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Tools", fontWeight = FontWeight.SemiBold) },
+                title = { Text("Settings", fontWeight = FontWeight.SemiBold) },
             )
         },
     ) { innerPadding ->
@@ -104,33 +103,82 @@ fun ToolsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            // 1. Minimalist Updates Card
-            item(key = "updates-card") {
-                SectionLabel("Updates")
+            // 1. Storage Access (All-files access only)
+            item(key = "storage-access") {
+                SectionLabel("Storage access")
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            headlineContent = { Text("All-files access") },
+                            supportingContent = {
+                                Text(if (hasAllFiles) "Granted" else "Not granted")
+                            },
+                            trailingContent = {
+                                OutlinedButton(onClick = onGrantAllFilesAccess) {
+                                    Text(if (hasAllFiles) "Manage" else "Grant")
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+
+            // 2. Utilities (.nomedia Overview only)
+            item(key = "utilities") {
+                SectionLabel("Utilities")
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            headlineContent = { Text(".nomedia Overview") },
+                            supportingContent = { Text("Scan folders hidden from gallery and toggle in bulk") },
+                            modifier = Modifier.clickable { showNomediaScanner = true },
+                        )
+                    }
+                }
+            }
+
+            // 3. About (with integrated Update check & install)
+            item(key = "about") {
+                SectionLabel("About")
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.padding(16.dp),
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Filled.SystemUpdate,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                            Spacer(Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Updates", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    "Current version: ${BuildConfig.VERSION_NAME}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
+                        Text(
+                            "Files ${BuildConfig.VERSION_NAME}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "Minimalist file manager with wireless HTTP/FTP transfer, PDF viewer, and PC Companion.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        TextButton(
+                            onClick = {
+                                val open = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/codescv/minifile"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                runCatching { context.startActivity(open) }
+                            },
+                            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+                        ) {
+                            Text("github.com/codescv/minifile")
+                            Spacer(Modifier.width(4.dp))
+                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
                         }
 
                         when (val st = updateState) {
@@ -224,7 +272,7 @@ fun ToolsScreen(
                                     updateState !is UpdateUiState.Downloading &&
                                     updateState !is UpdateUiState.Verifying,
                             ) {
-                                Text("Check now", maxLines = 1, softWrap = false)
+                                Text("Check for updates", maxLines = 1, softWrap = false)
                             }
 
                             if (updateState is UpdateUiState.Available || updateState is UpdateUiState.Ready) {
@@ -244,92 +292,6 @@ fun ToolsScreen(
                                     Text("Download & Install", maxLines = 1, softWrap = false)
                                 }
                             }
-                        }
-                    }
-                }
-            }
-
-            // 2. Storage Access (All-files access only)
-            item(key = "storage-access") {
-                SectionLabel("Storage access")
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text("All-files access") },
-                            supportingContent = {
-                                Text(if (hasAllFiles) "Granted" else "Not granted")
-                            },
-                            trailingContent = {
-                                OutlinedButton(onClick = onGrantAllFilesAccess) {
-                                    Text(if (hasAllFiles) "Manage" else "Grant")
-                                }
-                            },
-                        )
-                    }
-                }
-            }
-
-            // 3. Utilities (.nomedia Overview only)
-            item(key = "utilities") {
-                SectionLabel("Utilities")
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text(".nomedia Overview") },
-                            supportingContent = { Text("Scan folders hidden from gallery and toggle in bulk") },
-                            modifier = Modifier.clickable { showNomediaScanner = true },
-                        )
-                    }
-                }
-            }
-
-            // 4. About
-            item(key = "about") {
-                SectionLabel("About")
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.padding(16.dp),
-                    ) {
-                        Text("Files ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "Minimalist, offline-first file manager with built-in HTTP QR Share, RFC 959/3659 FTP server, PDF viewer, and PC Companion.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        Text(
-                            "Privacy: No ads, no analytics, and no network access except the LAN HTTP/FTP servers you start and the optional GitHub Releases update check.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            "Open-source libraries: AndroidX, Jetpack Compose Material 3, Kotlin Coroutines & Serialization (Apache 2.0).",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        TextButton(
-                            onClick = {
-                                val open = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/codescv/minifile"))
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                runCatching { context.startActivity(open) }
-                            },
-                        ) {
-                            Text("github.com/codescv/minifile")
-                            Spacer(Modifier.width(4.dp))
-                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
                         }
                     }
                 }

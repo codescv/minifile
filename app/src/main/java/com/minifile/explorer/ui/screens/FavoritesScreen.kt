@@ -18,6 +18,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.MoreVert
@@ -139,7 +141,7 @@ fun FavoritesScreen(
                 Text("No favorites yet", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Tap the ★ icon inside any folder to bookmark it for one-tap access and transfers.",
+                    "Bookmark any folder or file from Browse for one-tap access and quick transfers.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -155,12 +157,17 @@ fun FavoritesScreen(
                 itemsIndexed(favorites, key = { _, f -> f.id }) { idx, fav ->
                     val node = statMap[fav.id]
                     val isAvailable = !statMap.containsKey(fav.id) || node != null
+                    val effectiveIsDir = node?.isDirectory ?: fav.isDirectory
                     var menuOpen by remember { mutableStateOf(false) }
 
                     ListItem(
                         leadingContent = {
                             Icon(
-                                imageVector = if (isAvailable) Icons.Filled.Star else Icons.Filled.Warning,
+                                imageVector = when {
+                                    !isAvailable -> Icons.Filled.Warning
+                                    effectiveIsDir -> Icons.Filled.Star
+                                    else -> Icons.Filled.Description
+                                },
                                 contentDescription = null,
                                 tint = if (isAvailable) {
                                     MaterialTheme.colorScheme.primary
@@ -194,12 +201,21 @@ fun FavoritesScreen(
                                         modifier = Modifier.size(15.dp),
                                     )
                                 }
+                                if (fav.path is VfsPath.Ftp) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Icon(
+                                        Icons.Filled.Cloud,
+                                        contentDescription = "FTP",
+                                        modifier = Modifier.size(15.dp),
+                                    )
+                                }
                             }
                         },
                         supportingContent = {
                             val sub = when (val p = fav.path) {
                                 is VfsPath.Local -> p.normalized
                                 is VfsPath.Saf -> p.documentId
+                                is VfsPath.Ftp -> p.serialize()
                             }
                             Text(
                                 text = if (isAvailable) sub else "Unavailable · $sub",
@@ -274,7 +290,12 @@ fun FavoritesScreen(
                                                         duration = SnackbarDuration.Short,
                                                     )
                                                     if (res == SnackbarResult.ActionPerformed) {
-                                                        viewModel.container.favoritesRepository.add(fav.name, fav.path, fav.color)
+                                                        viewModel.container.favoritesRepository.add(
+                                                            name = fav.name,
+                                                            path = fav.path,
+                                                            color = fav.color,
+                                                            isDirectory = fav.isDirectory,
+                                                        )
                                                     }
                                                 }
                                             },
@@ -287,7 +308,7 @@ fun FavoritesScreen(
                             .fillMaxWidth()
                             .clickable {
                                 if (isAvailable) {
-                                    viewModel.openFavoriteInBrowse(fav)
+                                    viewModel.openFavoriteInBrowse(fav, context)
                                 } else {
                                     unavailablePrompt = fav
                                 }
@@ -335,7 +356,9 @@ fun FavoritesScreen(
             onDismissRequest = { unavailablePrompt = null },
             title = { Text("'${fav.name}' is unavailable") },
             text = {
-                Text("This folder does not exist right now or its external drive is unplugged.")
+                Text(
+                    "This ${if (fav.isDirectory) "folder" else "file"} does not exist right now or its storage/server is unreachable.",
+                )
             },
             confirmButton = {
                 Button(
@@ -356,12 +379,18 @@ fun FavoritesScreen(
     propertiesNode?.let { node ->
         PropertiesSheet(
             node = node,
-            isFavorite = true,
+            isFavorite = favorites.any { it.path == node.path },
             fileOps = viewModel.container.fileOperations,
             checksumCalculator = viewModel.container.checksumCalculator,
             safFs = viewModel.container.safFileSystem,
             onRequestRename = {},
-            onToggleFavorite = { viewModel.removeFavoriteByPath(node.path) },
+            onToggleFavorite = {
+                if (favorites.any { it.path == node.path }) {
+                    viewModel.removeFavoriteByPath(node.path)
+                } else {
+                    viewModel.addOrUpdateFavorite(node.name, node.path, isDirectory = node.isDirectory)
+                }
+            },
             onToggleNomedia = { viewModel.toggleNomedia(node.path) },
             onCopiedMessage = { viewModel.emitSimpleMessage(it) },
             onDismiss = { propertiesNode = null },
