@@ -6,6 +6,8 @@ import com.minifile.explorer.core.ftp.FtpServerEngine
 import com.minifile.explorer.core.model.JsonValue
 import com.minifile.explorer.core.model.MiniJson
 import com.minifile.explorer.core.model.SortSpec
+import com.minifile.explorer.core.peer.PeerConflictPolicy
+import com.minifile.explorer.core.peer.PeerPathPolicy
 import com.minifile.explorer.core.vfs.FileSystem
 import com.minifile.explorer.core.vfs.NameValidation
 import com.minifile.explorer.core.vfs.PathUtils
@@ -19,6 +21,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -37,6 +41,7 @@ import java.util.Collections
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -52,7 +57,16 @@ data class HttpConfig(
     val socketTimeoutMs: Int = 60_000,
     val maxClients: Int = 32,
     val serverName: String = "Files HTTP",
-)
+    val deviceId: String = "local",
+    val deviceName: String = "Files",
+    val appVersion: String = "1.0.6",
+    val peerInboxDir: String = "Received",
+    val freeSpaceReserveBytes: Long = DEFAULT_FREE_SPACE_RESERVE_BYTES,
+) {
+    companion object {
+        const val DEFAULT_FREE_SPACE_RESERVE_BYTES = 64L * 1024L * 1024L
+    }
+}
 
 enum class HttpTransferDirection {
     UPLOAD,
@@ -75,6 +89,36 @@ sealed interface HttpEvent {
         val path: String,
         val bytes: Long,
         val durationMs: Long,
+        val peerSessionId: String? = null,
+    ) : HttpEvent
+
+    data class PeerSessionStart(
+        val sessionId: String,
+        val clientIp: String,
+        val deviceName: String,
+        val totalFiles: Int,
+        val totalBytes: Long,
+    ) : HttpEvent
+
+    data class PeerProgress(
+        val sessionId: String,
+        val processedFiles: Int,
+        val totalFiles: Int,
+        val processedBytes: Long,
+        val totalBytes: Long,
+        val currentItem: String,
+    ) : HttpEvent
+
+    data class PeerSessionEnd(
+        val sessionId: String,
+        val clientIp: String,
+        val deviceName: String,
+        val files: Int,
+        val bytes: Long,
+        val durationMs: Long,
+        val ok: Boolean,
+        val cancelled: Boolean = false,
+        val error: String? = null,
     ) : HttpEvent
 
     data class Error(val message: String) : HttpEvent
@@ -110,6 +154,34 @@ class HttpFileServerEngine(
 
     private val running = AtomicBoolean(false)
     private val openSockets = Collections.synchronizedSet(HashSet<Socket>())
+    private val peerFsMutex = Mutex()
+    private val peerSessionLock = Any()
+    private val livePeerSessions = LinkedHashMap<String, PeerReceiveSession>()
+    private val cancelledPeerSessions = LinkedHashMap<String, Long>()
+    private val inFlightTempFiles = Collections.synchronizedSet(HashSet<VfsPath>())
+
+    private class PeerReceiveSession(
+        val id: String,
+        val shortTag: String,
+        val clientIp: String,
+        val deviceName: String,
+        val expectedFiles: Int,
+        val expectedBytes: Long,
+        val startedAtMs: Long,
+        @Volatile var lastActiveMs: Long = startedAtMs,
+    ) {
+        var completedFiles: Int = 0
+        var completedBytes: Long = 0L
+
+        @Volatile
+        var cancelled: Boolean = false
+
+        @Volatile
+        var ended: Boolean = false
+
+        val activeSockets = HashSet<Socket>()
+        val activeTempFiles = HashSet<VfsPath>()
+    }
 
     @Volatile
     private var serverSocket: ServerSocket? = null
@@ -157,6 +229,136 @@ class HttpFileServerEngine(
         pool.execute {
             acceptLoop(ss, pool)
         }
+        pool.execute {
+            peerSessionReaperLoop()
+        }
+    }
+
+    private fun peerSessionReaperLoop() {
+        while (running.get()) {
+            try {
+                Thread.sleep(5_000L)
+            } catch (_: InterruptedException) {
+                break
+            }
+            if (!running.get()) break
+            sweepExpiredPeerSessions(System.currentTimeMillis())
+        }
+    }
+
+    internal fun sweepExpiredPeerSessions(nowMs: Long = System.currentTimeMillis()) {
+        val expired = ArrayList<PeerReceiveSession>()
+        val expiredTemps = ArrayList<VfsPath>()
+        synchronized(peerSessionLock) {
+            val cancIt = cancelledPeerSessions.entries.iterator()
+            while (cancIt.hasNext()) {
+                if (nowMs - cancIt.next().value > CANCELLED_TOMBSTONE_TTL_MS) {
+                    cancIt.remove()
+                }
+            }
+
+            val it = livePeerSessions.entries.iterator()
+            while (it.hasNext()) {
+                val s = it.next().value
+                if (s.activeSockets.isEmpty() && nowMs - s.lastActiveMs > PEER_SESSION_IDLE_TIMEOUT_MS) {
+                    it.remove()
+                    if (!s.ended) {
+                        s.ended = true
+                        expired.add(s)
+                        expiredTemps.addAll(s.activeTempFiles)
+                        s.activeTempFiles.clear()
+                    }
+                }
+            }
+        }
+
+        if (expiredTemps.isNotEmpty()) {
+            runBlocking {
+                for (tp in expiredTemps) {
+                    inFlightTempFiles.remove(tp)
+                    runCatching { fs.delete(tp) }
+                }
+            }
+        }
+        for (s in expired) {
+            val elapsed = (nowMs - s.startedAtMs).coerceAtLeast(1L)
+            _events.tryEmit(
+                HttpEvent.PeerSessionEnd(
+                    sessionId = s.id,
+                    clientIp = s.clientIp,
+                    deviceName = s.deviceName,
+                    files = s.completedFiles,
+                    bytes = s.completedBytes,
+                    durationMs = elapsed,
+                    ok = false,
+                    cancelled = false,
+                    error = "Idle timeout",
+                ),
+            )
+        }
+    }
+
+    /**
+     * Cancels an active incoming peer receive session (`MUST-6`):
+     * - Records a `410 Gone` tombstone for any subsequent requests referencing [sessionId]
+     * - Closes any in-flight TCP sockets serving [sessionId]
+     * - Deletes any active `.part-<session8>` temp files
+     * - Emits [HttpEvent.PeerSessionEnd] with `cancelled = true`
+     */
+    fun cancelSession(sessionId: String): Boolean {
+        val now = System.currentTimeMillis()
+        var cancelledSession: PeerReceiveSession? = null
+        val socketsToClose = ArrayList<Socket>()
+        val tempsToDelete = ArrayList<VfsPath>()
+
+        synchronized(peerSessionLock) {
+            if (cancelledPeerSessions.size >= MAX_CANCELLED_TOMBSTONES && sessionId !in cancelledPeerSessions) {
+                cancelledPeerSessions.keys.firstOrNull()?.let { cancelledPeerSessions.remove(it) }
+            }
+            cancelledPeerSessions[sessionId] = now
+
+            val s = livePeerSessions.remove(sessionId)
+            if (s != null) {
+                s.cancelled = true
+                socketsToClose.addAll(s.activeSockets)
+                s.activeSockets.clear()
+                tempsToDelete.addAll(s.activeTempFiles)
+                s.activeTempFiles.clear()
+                if (!s.ended) {
+                    s.ended = true
+                    cancelledSession = s
+                }
+            }
+        }
+
+        for (sock in socketsToClose) {
+            runCatching { sock.close() }
+        }
+        if (tempsToDelete.isNotEmpty()) {
+            runBlocking {
+                for (tp in tempsToDelete) {
+                    inFlightTempFiles.remove(tp)
+                    runCatching { fs.delete(tp) }
+                }
+            }
+        }
+
+        val target = cancelledSession ?: return false
+        val elapsed = (now - target.startedAtMs).coerceAtLeast(1L)
+        _events.tryEmit(
+            HttpEvent.PeerSessionEnd(
+                sessionId = target.id,
+                clientIp = target.clientIp,
+                deviceName = target.deviceName,
+                files = target.completedFiles,
+                bytes = target.completedBytes,
+                durationMs = elapsed,
+                ok = false,
+                cancelled = true,
+                error = "Cancelled",
+            ),
+        )
+        return true
     }
 
     private fun acceptLoop(ss: ServerSocket, pool: ExecutorService) {
@@ -217,6 +419,26 @@ class HttpFileServerEngine(
         runCatching { serverSocket?.close() }
         serverSocket = null
 
+        val abortedSessions = ArrayList<PeerReceiveSession>()
+        val tempsToDelete = HashSet<VfsPath>()
+        synchronized(peerSessionLock) {
+            for (s in livePeerSessions.values) {
+                s.cancelled = true
+                for (sock in s.activeSockets) {
+                    runCatching { sock.close() }
+                }
+                s.activeSockets.clear()
+                tempsToDelete.addAll(s.activeTempFiles)
+                s.activeTempFiles.clear()
+                if (!s.ended) {
+                    s.ended = true
+                    abortedSessions.add(s)
+                }
+            }
+            livePeerSessions.clear()
+            cancelledPeerSessions.clear()
+        }
+
         val snapshot = synchronized(openSockets) { openSockets.toList() }
         for (sock in snapshot) {
             runCatching { sock.close() }
@@ -226,6 +448,36 @@ class HttpFileServerEngine(
 
         executor?.shutdownNow()
         executor = null
+
+        synchronized(inFlightTempFiles) {
+            tempsToDelete.addAll(inFlightTempFiles)
+            inFlightTempFiles.clear()
+        }
+        if (tempsToDelete.isNotEmpty()) {
+            runBlocking {
+                for (tp in tempsToDelete) {
+                    runCatching { fs.delete(tp) }
+                }
+            }
+        }
+
+        val now = System.currentTimeMillis()
+        for (s in abortedSessions) {
+            _events.tryEmit(
+                HttpEvent.PeerSessionEnd(
+                    sessionId = s.id,
+                    clientIp = s.clientIp,
+                    deviceName = s.deviceName,
+                    files = s.completedFiles,
+                    bytes = s.completedBytes,
+                    durationMs = (now - s.startedAtMs).coerceAtLeast(1L),
+                    ok = false,
+                    cancelled = true,
+                    error = "Server stopped",
+                ),
+            )
+        }
+
         boundPort = -1
         _events.tryEmit(HttpEvent.Stopped)
     }
@@ -290,6 +542,7 @@ class HttpFileServerEngine(
 
             val keepConnectionOpen = runBlocking {
                 dispatchRequest(
+                    socket = socket,
                     clientIp = clientIp,
                     method = method,
                     rawTarget = rawTarget,
@@ -306,6 +559,7 @@ class HttpFileServerEngine(
     }
 
     private suspend fun dispatchRequest(
+        socket: Socket,
         clientIp: String,
         method: String,
         rawTarget: String,
@@ -344,6 +598,26 @@ class HttpFileServerEngine(
                     handleUpload(clientIp, rawTarget, query, headers, input, output, requestWantsClose)
                 }
 
+                rawUriPath == "/api/peer/info" && (method == "GET" || method == "HEAD") -> {
+                    handlePeerInfo(clientIp, rawTarget, output, headOnly, requestWantsClose)
+                }
+
+                rawUriPath == "/api/peer/begin" && method == "POST" -> {
+                    handlePeerBegin(clientIp, rawTarget, query, headers, input, output, requestWantsClose)
+                }
+
+                rawUriPath == "/api/peer/mkdir" && method == "POST" -> {
+                    handlePeerMkdir(clientIp, rawTarget, rawQuery, query, headers, input, output, requestWantsClose)
+                }
+
+                rawUriPath == "/api/peer/send" && method == "POST" -> {
+                    handlePeerSend(socket, clientIp, rawTarget, rawQuery, query, headers, input, output, requestWantsClose)
+                }
+
+                rawUriPath == "/api/peer/end" && method == "POST" -> {
+                    handlePeerEnd(clientIp, rawTarget, query, headers, input, output, requestWantsClose)
+                }
+
                 rawUriPath == "/favicon.ico" && (method == "GET" || method == "HEAD") -> {
                     writeSimpleResponse(
                         out = output,
@@ -357,23 +631,27 @@ class HttpFileServerEngine(
                     !requestWantsClose
                 }
 
-                rawUriPath in setOf("/", "/browse", "/raw", "/zip", "/mkdir", "/upload") -> {
+                rawUriPath in KNOWN_HTTP_ROUTES -> {
+                    drainSmallUnreadIfNoExpectContinue(socket, headers, input)
                     _events.tryEmit(HttpEvent.Request(clientIp, method, rawTarget, 405))
                     writeJsonError(output, 405, "Method Not Allowed", "Method $method not allowed", headOnly, close = true)
                     false
                 }
 
                 else -> {
+                    drainSmallUnreadIfNoExpectContinue(socket, headers, input)
                     _events.tryEmit(HttpEvent.Request(clientIp, method, rawTarget, 404))
                     writeJsonError(output, 404, "Not Found", "Unknown endpoint: $rawUriPath", headOnly, close = true)
                     false
                 }
             }
         } catch (e: FtpAccessDeniedException) {
+            drainSmallUnreadIfNoExpectContinue(socket, headers, input)
             _events.tryEmit(HttpEvent.Request(clientIp, method, rawTarget, 403))
             writeJsonError(output, 403, "Forbidden", e.message ?: "Access denied", headOnly, close = true)
             return false
         } catch (e: HttpStatusException) {
+            drainSmallUnreadIfNoExpectContinue(socket, headers, input)
             _events.tryEmit(HttpEvent.Request(clientIp, method, rawTarget, e.status))
             writeJsonError(output, e.status, e.reason, e.message ?: e.reason, headOnly, close = true)
             return false
@@ -941,6 +1219,682 @@ class HttpFileServerEngine(
         return uploadedFiles to uploadedBytes
     }
 
+    private fun handlePeerInfo(
+        clientIp: String,
+        rawTarget: String,
+        output: OutputStream,
+        headOnly: Boolean,
+        closeConnection: Boolean,
+    ): Boolean {
+        val cleanName = PeerPathPolicy.sanitizeDisplayName(config.deviceName, 64).ifEmpty { "Files" }
+        val cleanVer = PeerPathPolicy.sanitizeDisplayName(config.appVersion, 16).ifEmpty { "1.0.6" }
+        val effectivePort = if (boundPort > 0) boundPort else config.port
+        val body = MiniJson.stringify(
+            MiniJson.obj(
+                "app" to JsonValue.Str("Files"),
+                "proto" to JsonValue.Num(1),
+                "id" to JsonValue.Str(config.deviceId),
+                "name" to JsonValue.Str(cleanName),
+                "ver" to JsonValue.Str(cleanVer),
+                "readOnly" to JsonValue.Bool(config.readOnly),
+                "port" to JsonValue.Num(effectivePort),
+            ),
+        ).toByteArray(Charsets.UTF_8)
+
+        _events.tryEmit(HttpEvent.Request(clientIp, if (headOnly) "HEAD" else "GET", rawTarget, 200))
+        writeSimpleResponse(
+            out = output,
+            status = 200,
+            reason = "OK",
+            contentType = "application/json; charset=utf-8",
+            body = body,
+            headOnly = headOnly,
+            closeConnection = closeConnection,
+        )
+        return !closeConnection
+    }
+
+    private fun handlePeerBegin(
+        clientIp: String,
+        rawTarget: String,
+        query: Map<String, String>,
+        headers: Map<String, String>,
+        input: InputStream,
+        output: OutputStream,
+        closeConnection: Boolean,
+    ): Boolean {
+        if (config.readOnly) {
+            throw FtpAccessDeniedException("Server is in read-only mode")
+        }
+
+        val bodyInfo = prepareRequestBody(headers, input, sendContinueIfNeeded = false)
+        drainSmallBodyIfBounded(bodyInfo)
+
+        val now = System.currentTimeMillis()
+        sweepExpiredPeerSessions(now)
+
+        val expectedFiles = query["files"]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+        val expectedBytes = query["bytes"]?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+        val senderDevice = PeerPathPolicy.sanitizeDisplayName(query["device"].orEmpty(), 64)
+            .ifEmpty { clientIp }
+
+        val sessionId = UUID.randomUUID().toString().replace("-", "").take(16)
+        val session = PeerReceiveSession(
+            id = sessionId,
+            shortTag = sessionId.take(8),
+            clientIp = clientIp,
+            deviceName = senderDevice,
+            expectedFiles = expectedFiles,
+            expectedBytes = expectedBytes,
+            startedAtMs = now,
+        )
+
+        synchronized(peerSessionLock) {
+            if (livePeerSessions.size >= MAX_PEER_SESSIONS) {
+                throw HttpStatusException(503, "Service Unavailable", "Too many concurrent peer transfer sessions")
+            }
+            livePeerSessions[sessionId] = session
+        }
+
+        _events.tryEmit(HttpEvent.Request(clientIp, "POST", rawTarget, 200))
+        _events.tryEmit(
+            HttpEvent.PeerSessionStart(
+                sessionId = sessionId,
+                clientIp = clientIp,
+                deviceName = senderDevice,
+                totalFiles = expectedFiles,
+                totalBytes = expectedBytes,
+            ),
+        )
+
+        val respBytes = MiniJson.stringify(
+            MiniJson.obj(
+                "ok" to JsonValue.Bool(true),
+                "session" to JsonValue.Str(sessionId),
+            ),
+        ).toByteArray(Charsets.UTF_8)
+
+        val closeAfter = closeConnection || bodyInfo.requiresClose
+        writeSimpleResponse(
+            out = output,
+            status = 200,
+            reason = "OK",
+            contentType = "application/json; charset=utf-8",
+            body = respBytes,
+            headOnly = false,
+            closeConnection = closeAfter,
+        )
+        return !closeAfter
+    }
+
+    private suspend fun handlePeerMkdir(
+        clientIp: String,
+        rawTarget: String,
+        rawQuery: String,
+        query: Map<String, String>,
+        headers: Map<String, String>,
+        input: InputStream,
+        output: OutputStream,
+        closeConnection: Boolean,
+    ): Boolean {
+        if (config.readOnly) {
+            throw FtpAccessDeniedException("Server is in read-only mode")
+        }
+
+        val sessionId = query["session"]?.trim()?.takeIf { it.isNotEmpty() }
+        if (sessionId != null) {
+            lookupActiveSessionOrThrow(sessionId)
+        }
+
+        val rawPathParam = extractRawQueryParam(rawQuery, "path")
+            ?: throw HttpStatusException(400, "Bad Request", "Missing 'path' query parameter")
+        val isFatSafe = config.root is VfsPath.Saf
+        val segments = PeerPathPolicy.validateRelPath(rawPathParam, fatSafe = isFatSafe)
+
+        val bodyInfo = prepareRequestBody(headers, input, sendContinueIfNeeded = false)
+        drainSmallBodyIfBounded(bodyInfo)
+
+        val resolvedDir = ensurePeerDirectoryChain(segments)
+        applyValidMtimeIfPresent(resolvedDir.vfsPath, query["mtime"])
+
+        _events.tryEmit(HttpEvent.Request(clientIp, "POST", rawTarget, 201))
+        val respBytes = MiniJson.stringify(
+            MiniJson.obj(
+                "ok" to JsonValue.Bool(true),
+                "path" to JsonValue.Str(resolvedDir.virtualPath),
+            ),
+        ).toByteArray(Charsets.UTF_8)
+
+        val closeAfter = closeConnection || bodyInfo.requiresClose
+        writeSimpleResponse(
+            out = output,
+            status = 201,
+            reason = "Created",
+            contentType = "application/json; charset=utf-8",
+            body = respBytes,
+            headOnly = false,
+            closeConnection = closeAfter,
+        )
+        return !closeAfter
+    }
+
+    private suspend fun handlePeerSend(
+        socket: Socket,
+        clientIp: String,
+        rawTarget: String,
+        rawQuery: String,
+        query: Map<String, String>,
+        headers: Map<String, String>,
+        input: InputStream,
+        output: OutputStream,
+        closeConnection: Boolean,
+    ): Boolean {
+        // All 403 / 400 / 409 / 410 / 411 / 507 checks run BEFORE sending HTTP/1.1 100 Continue!
+        if (config.readOnly) {
+            throw FtpAccessDeniedException("Server is in read-only mode")
+        }
+
+        val sessionId = query["session"]?.trim()?.takeIf { it.isNotEmpty() }
+        val session = if (sessionId != null) lookupActiveSessionOrThrow(sessionId) else null
+
+        val te = headers["transfer-encoding"]?.lowercase(Locale.ROOT).orEmpty()
+        val clHeader = headers["content-length"]
+        if (te.contains("chunked") || clHeader == null) {
+            throw HttpStatusException(411, "Length Required", "Content-Length header is required")
+        }
+        val contentLength = clHeader.trim().toLongOrNull()
+        if (contentLength == null || contentLength < 0L) {
+            throw HttpStatusException(400, "Bad Request", "Invalid Content-Length header")
+        }
+
+        val sizeParamStr = query["size"]?.trim()?.takeIf { it.isNotEmpty() }
+        if (sizeParamStr != null) {
+            val sizeParam = sizeParamStr.toLongOrNull()
+                ?: throw HttpStatusException(400, "Bad Request", "Invalid size parameter")
+            if (sizeParam != contentLength) {
+                throw HttpStatusException(400, "Bad Request", "size parameter does not match Content-Length")
+            }
+        }
+
+        val conflictPolicy = PeerConflictPolicy.fromWire(query["conflict"])
+            ?: throw HttpStatusException(400, "Bad Request", "Invalid conflict policy")
+
+        val rawPathParam = extractRawQueryParam(rawQuery, "path")
+            ?: throw HttpStatusException(400, "Bad Request", "Missing 'path' query parameter")
+        val isFatSafe = config.root is VfsPath.Saf
+        val relSegments = PeerPathPolicy.validateRelPath(rawPathParam, fatSafe = isFatSafe)
+        val dirSegments = relSegments.dropLast(1)
+        val desiredLeafName = relSegments.last()
+        val relDisplay = relSegments.joinToString("/")
+
+        // Free-space check with 64 MB reserve (MUST-5)
+        val spaceInfo = fs.space(config.root)
+        if (spaceInfo != null) {
+            val usableBytes = spaceInfo.second
+            if (usableBytes - contentLength < config.freeSpaceReserveBytes) {
+                throw HttpStatusException(507, "Insufficient Storage", "Not enough free storage space")
+            }
+        }
+
+        val resolvedDir = ensurePeerDirectoryChain(dirSegments)
+        val candidateFinal = fs.child(resolvedDir.vfsPath, desiredLeafName)
+        pathResolver.ensureLocalInside(candidateFinal)
+
+        val existingInitial = fs.stat(candidateFinal)
+        if (existingInitial != null) {
+            if (existingInitial.isSymlink) {
+                throw FtpAccessDeniedException("Target path is a symbolic link")
+            }
+            if (existingInitial.isDirectory) {
+                throw HttpStatusException(409, "Conflict", "A folder named '$desiredLeafName' already exists")
+            }
+            if (conflictPolicy == PeerConflictPolicy.SKIP) {
+                val expectsContinue = headers["expect"]?.equals("100-continue", ignoreCase = true) == true
+                if (!expectsContinue && contentLength > 0L) {
+                    val bounded = BoundedInputStream(input, contentLength)
+                    val drain = ByteArray(16 * 1024)
+                    while (bounded.read(drain) >= 0) {
+                        // drain body sent without 100-continue
+                    }
+                }
+                val skipVirtual = "${resolvedDir.virtualPath}/$desiredLeafName"
+                _events.tryEmit(HttpEvent.Request(clientIp, "POST", rawTarget, 200))
+                val skipBytes = MiniJson.stringify(
+                    MiniJson.obj(
+                        "ok" to JsonValue.Bool(true),
+                        "name" to JsonValue.Str(desiredLeafName),
+                        "path" to JsonValue.Str(skipVirtual),
+                        "bytes" to JsonValue.Num(0L),
+                        "skipped" to JsonValue.Bool(true),
+                    ),
+                ).toByteArray(Charsets.UTF_8)
+                val closeSkip = closeConnection || (expectsContinue && contentLength > 0L)
+                writeSimpleResponse(
+                    out = output,
+                    status = 200,
+                    reason = "OK",
+                    contentType = "application/json; charset=utf-8",
+                    body = skipBytes,
+                    headOnly = false,
+                    closeConnection = closeSkip,
+                )
+                return !closeSkip
+            }
+        }
+
+        val sessionTag = session?.shortTag
+            ?: UUID.randomUUID().toString().replace("-", "").take(8)
+        val tempLeafName = buildTempPartName(desiredLeafName, sessionTag)
+        val candidateTemp = fs.child(resolvedDir.vfsPath, tempLeafName)
+        pathResolver.ensureLocalInside(candidateTemp)
+
+        val existingTemp = fs.stat(candidateTemp)
+        if (existingTemp != null) {
+            if (existingTemp.isSymlink) {
+                throw FtpAccessDeniedException("Temporary path is a symbolic link")
+            }
+            if (existingTemp.isDirectory) {
+                throw HttpStatusException(409, "Conflict", "Temporary path collides with a folder")
+            }
+            runCatching { fs.delete(existingTemp.path) }
+        }
+
+        if (session != null) {
+            synchronized(peerSessionLock) {
+                if (session.cancelled || session.id in cancelledPeerSessions) {
+                    throw HttpStatusException(410, "Gone", "Transfer rejected by receiver")
+                }
+                session.lastActiveMs = System.currentTimeMillis()
+                session.activeSockets.add(socket)
+            }
+        }
+
+        var tempCreatedPath: VfsPath? = null
+        var renamedFinalPath: VfsPath? = null
+        try {
+            val createdTemp = peerFsMutex.withLock {
+                val created = fs.createFile(resolvedDir.vfsPath, tempLeafName, "application/octet-stream")
+                pathResolver.ensureLocalInside(created)
+                created
+            }
+            tempCreatedPath = createdTemp
+            inFlightTempFiles.add(createdTemp)
+            if (session != null) {
+                synchronized(peerSessionLock) {
+                    if (session.cancelled) {
+                        throw HttpStatusException(410, "Gone", "Transfer rejected by receiver")
+                    }
+                    session.activeTempFiles.add(createdTemp)
+                }
+            }
+
+            // All guards passed — now send 100 Continue if requested!
+            if (headers["expect"]?.equals("100-continue", ignoreCase = true) == true) {
+                output.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+                output.flush()
+            }
+
+            val bodyStream = BoundedInputStream(input, contentLength)
+            val t0 = System.currentTimeMillis()
+            var written = 0L
+            var sinceLastProgress = 0L
+
+            if (session != null) {
+                _events.tryEmit(
+                    HttpEvent.PeerProgress(
+                        sessionId = session.id,
+                        processedFiles = synchronized(peerSessionLock) { session.completedFiles },
+                        totalFiles = session.expectedFiles,
+                        processedBytes = synchronized(peerSessionLock) { session.completedBytes },
+                        totalBytes = session.expectedBytes,
+                        currentItem = relDisplay,
+                    ),
+                )
+            }
+
+            fs.openOutput(createdTemp, append = false).use { fileOut ->
+                val buf = ByteArray(64 * 1024)
+                while (written < contentLength) {
+                    if (!running.get()) {
+                        throw IOException("Server stopped during peer upload")
+                    }
+                    if (session?.cancelled == true) {
+                        throw HttpStatusException(410, "Gone", "Transfer rejected by receiver")
+                    }
+                    val toRead = minOf((contentLength - written), buf.size.toLong()).toInt()
+                    val n = bodyStream.read(buf, 0, toRead)
+                    if (n < 0) break
+                    if (n > 0) {
+                        fileOut.write(buf, 0, n)
+                        written += n
+                        sinceLastProgress += n
+                        if (session != null) {
+                            session.lastActiveMs = System.currentTimeMillis()
+                            if (sinceLastProgress >= PEER_PROGRESS_STEP_BYTES) {
+                                sinceLastProgress = 0L
+                                val (doneFiles, doneBytes) = synchronized(peerSessionLock) {
+                                    session.completedFiles to (session.completedBytes + written)
+                                }
+                                _events.tryEmit(
+                                    HttpEvent.PeerProgress(
+                                        sessionId = session.id,
+                                        processedFiles = doneFiles,
+                                        totalFiles = session.expectedFiles,
+                                        processedBytes = doneBytes,
+                                        totalBytes = session.expectedBytes,
+                                        currentItem = relDisplay,
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                }
+                fileOut.flush()
+            }
+
+            if (session?.cancelled == true) {
+                throw HttpStatusException(410, "Gone", "Transfer rejected by receiver")
+            }
+            if (written != contentLength) {
+                throw HttpStatusException(
+                    400,
+                    "Bad Request",
+                    "Incomplete peer file body ($written/$contentLength bytes)",
+                )
+            }
+
+            val (finalPath, chosenLeafName) = peerFsMutex.withLock {
+                if (session?.cancelled == true) {
+                    throw HttpStatusException(410, "Gone", "Transfer rejected by receiver")
+                }
+                val currentDest = fs.child(resolvedDir.vfsPath, desiredLeafName)
+                pathResolver.ensureLocalInside(currentDest)
+                val destStat = fs.stat(currentDest)
+                if (destStat != null) {
+                    if (destStat.isSymlink) {
+                        throw FtpAccessDeniedException("Target path is a symbolic link")
+                    }
+                    if (destStat.isDirectory) {
+                        throw HttpStatusException(409, "Conflict", "A folder named '$desiredLeafName' already exists")
+                    }
+                }
+
+                val targetLeaf = when (conflictPolicy) {
+                    PeerConflictPolicy.OVERWRITE -> {
+                        if (destStat != null) {
+                            fs.delete(destStat.path)
+                        }
+                        desiredLeafName
+                    }
+
+                    PeerConflictPolicy.RENAME -> {
+                        if (destStat == null) {
+                            desiredLeafName
+                        } else {
+                            val existingNames = fs.list(resolvedDir.vfsPath, includeHidden = true)
+                                .mapTo(HashSet()) { it.name }
+                            PathUtils.uniqueName(
+                                desired = desiredLeafName,
+                                existingNames = existingNames,
+                                isDirectory = false,
+                                caseInsensitive = isFatSafe,
+                            )
+                        }
+                    }
+
+                    PeerConflictPolicy.SKIP -> desiredLeafName
+                }
+
+                val checkTarget = fs.child(resolvedDir.vfsPath, targetLeaf)
+                pathResolver.ensureLocalInside(checkTarget)
+                val moved = fs.rename(createdTemp, targetLeaf)
+                pathResolver.ensureLocalInside(moved)
+                moved to targetLeaf
+            }
+
+            renamedFinalPath = finalPath
+            applyValidMtimeIfPresent(finalPath, query["mtime"])
+
+            val elapsed = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+            val virtualFilePath = "${resolvedDir.virtualPath}/$chosenLeafName"
+
+            if (session != null) {
+                val (doneFiles, doneBytes) = synchronized(peerSessionLock) {
+                    session.completedFiles += 1
+                    session.completedBytes += written
+                    session.lastActiveMs = System.currentTimeMillis()
+                    session.completedFiles to session.completedBytes
+                }
+                _events.tryEmit(
+                    HttpEvent.PeerProgress(
+                        sessionId = session.id,
+                        processedFiles = doneFiles,
+                        totalFiles = session.expectedFiles,
+                        processedBytes = doneBytes,
+                        totalBytes = session.expectedBytes,
+                        currentItem = relDisplay,
+                    ),
+                )
+            }
+
+            _events.tryEmit(HttpEvent.Request(clientIp, "POST", rawTarget, 201))
+            _events.tryEmit(
+                HttpEvent.Transfer(
+                    clientIp = clientIp,
+                    direction = HttpTransferDirection.UPLOAD,
+                    path = virtualFilePath,
+                    bytes = written,
+                    durationMs = elapsed,
+                    peerSessionId = session?.id,
+                ),
+            )
+
+            val respBytes = MiniJson.stringify(
+                MiniJson.obj(
+                    "ok" to JsonValue.Bool(true),
+                    "name" to JsonValue.Str(chosenLeafName),
+                    "path" to JsonValue.Str(virtualFilePath),
+                    "bytes" to JsonValue.Num(written),
+                    "skipped" to JsonValue.Bool(false),
+                ),
+            ).toByteArray(Charsets.UTF_8)
+
+            writeSimpleResponse(
+                out = output,
+                status = 201,
+                reason = "Created",
+                contentType = "application/json; charset=utf-8",
+                body = respBytes,
+                headOnly = false,
+                closeConnection = closeConnection,
+            )
+            return !closeConnection
+        } finally {
+            if (session != null) {
+                synchronized(peerSessionLock) {
+                    session.activeSockets.remove(socket)
+                    if (tempCreatedPath != null) {
+                        session.activeTempFiles.remove(tempCreatedPath)
+                    }
+                }
+            }
+            if (tempCreatedPath != null) {
+                inFlightTempFiles.remove(tempCreatedPath)
+                if (renamedFinalPath == null) {
+                    runCatching { fs.delete(tempCreatedPath) }
+                }
+            }
+        }
+    }
+
+    private fun handlePeerEnd(
+        clientIp: String,
+        rawTarget: String,
+        query: Map<String, String>,
+        headers: Map<String, String>,
+        input: InputStream,
+        output: OutputStream,
+        closeConnection: Boolean,
+    ): Boolean {
+        val bodyInfo = prepareRequestBody(headers, input, sendContinueIfNeeded = false)
+        drainSmallBodyIfBounded(bodyInfo)
+
+        val sessionId = query["session"]?.trim().orEmpty()
+        if (sessionId.isEmpty()) {
+            throw HttpStatusException(400, "Bad Request", "Missing 'session' parameter")
+        }
+
+        val okFlag = query["ok"] != "0" && !query["ok"].equals("false", ignoreCase = true)
+        var endedSession: PeerReceiveSession? = null
+        val tempsToDelete = ArrayList<VfsPath>()
+        synchronized(peerSessionLock) {
+            if (sessionId in cancelledPeerSessions) {
+                throw HttpStatusException(410, "Gone", "Transfer rejected by receiver")
+            }
+            val s = livePeerSessions.remove(sessionId)
+            if (s != null) {
+                tempsToDelete.addAll(s.activeTempFiles)
+                s.activeTempFiles.clear()
+                if (!s.ended) {
+                    s.ended = true
+                    endedSession = s
+                }
+            } else if (config.readOnly) {
+                throw FtpAccessDeniedException("Server is in read-only mode")
+            }
+        }
+
+        if (tempsToDelete.isNotEmpty()) {
+            runBlocking {
+                for (tp in tempsToDelete) {
+                    inFlightTempFiles.remove(tp)
+                    runCatching { fs.delete(tp) }
+                }
+            }
+        }
+
+        if (endedSession != null) {
+            val now = System.currentTimeMillis()
+            _events.tryEmit(
+                HttpEvent.PeerSessionEnd(
+                    sessionId = endedSession!!.id,
+                    clientIp = clientIp,
+                    deviceName = endedSession!!.deviceName,
+                    files = endedSession!!.completedFiles,
+                    bytes = endedSession!!.completedBytes,
+                    durationMs = (now - endedSession!!.startedAtMs).coerceAtLeast(1L),
+                    ok = okFlag,
+                    cancelled = !okFlag,
+                    error = if (okFlag) null else "Sender aborted",
+                ),
+            )
+        }
+
+        _events.tryEmit(HttpEvent.Request(clientIp, "POST", rawTarget, 200))
+        val respBytes = MiniJson.stringify(
+            MiniJson.obj("ok" to JsonValue.Bool(true)),
+        ).toByteArray(Charsets.UTF_8)
+
+        val closeAfter = closeConnection || bodyInfo.requiresClose
+        writeSimpleResponse(
+            out = output,
+            status = 200,
+            reason = "OK",
+            contentType = "application/json; charset=utf-8",
+            body = respBytes,
+            headOnly = false,
+            closeConnection = closeAfter,
+        )
+        return !closeAfter
+    }
+
+    private fun lookupActiveSessionOrThrow(sessionId: String): PeerReceiveSession {
+        val now = System.currentTimeMillis()
+        synchronized(peerSessionLock) {
+            if (sessionId in cancelledPeerSessions) {
+                throw HttpStatusException(410, "Gone", "Transfer rejected by receiver")
+            }
+            val session = livePeerSessions[sessionId]
+                ?: throw HttpStatusException(400, "Bad Request", "Unknown or expired peer session")
+            if (session.cancelled) {
+                throw HttpStatusException(410, "Gone", "Transfer rejected by receiver")
+            }
+            if (session.activeSockets.isEmpty() && now - session.lastActiveMs > PEER_SESSION_IDLE_TIMEOUT_MS) {
+                livePeerSessions.remove(sessionId)
+                session.ended = true
+                throw HttpStatusException(408, "Request Timeout", "Peer transfer session expired")
+            }
+            session.lastActiveMs = now
+            return session
+        }
+    }
+
+    private suspend fun ensurePeerDirectoryChain(subSegments: List<String>): ResolvedHttpPath {
+        val isFatSafe = config.root is VfsPath.Saf
+        val inboxRaw = config.peerInboxDir.trim('/')
+        val inboxSegments = if (inboxRaw.isEmpty()) {
+            emptyList()
+        } else {
+            PeerPathPolicy.validateRelPath(inboxRaw, fatSafe = isFatSafe)
+        }
+
+        val allSegments = inboxSegments + subSegments
+        pathResolver.ensureLocalInside(config.root)
+        var currentVfs = config.root
+        var currentVirtual = ""
+
+        for (seg in allSegments) {
+            val nextCandidate = fs.child(currentVfs, seg)
+            pathResolver.ensureLocalInside(nextCandidate)
+            val existing = fs.stat(nextCandidate)
+            currentVfs = if (existing != null) {
+                if (existing.isSymlink) {
+                    throw FtpAccessDeniedException("Symbolic link directory component is not permitted")
+                }
+                if (!existing.isDirectory) {
+                    throw HttpStatusException(409, "Conflict", "A file already exists at '$seg'")
+                }
+                existing.path
+            } else {
+                peerFsMutex.withLock {
+                    val recheck = fs.stat(nextCandidate)
+                    when {
+                        recheck == null -> {
+                            val created = fs.createDirectory(currentVfs, seg)
+                            pathResolver.ensureLocalInside(created)
+                            created
+                        }
+
+                        recheck.isSymlink -> {
+                            throw FtpAccessDeniedException("Symbolic link directory component is not permitted")
+                        }
+
+                        !recheck.isDirectory -> {
+                            throw HttpStatusException(409, "Conflict", "A file already exists at '$seg'")
+                        }
+
+                        else -> recheck.path
+                    }
+                }
+            }
+            pathResolver.ensureLocalInside(currentVfs)
+            currentVirtual += "/$seg"
+        }
+
+        return ResolvedHttpPath(
+            virtualPath = currentVirtual.ifEmpty { "/" },
+            vfsPath = currentVfs,
+        )
+    }
+
+    private suspend fun applyValidMtimeIfPresent(path: VfsPath, rawMtime: String?) {
+        val parsed = rawMtime?.trim()?.takeIf { it.isNotEmpty() }?.toLongOrNull() ?: return
+        val maxAllowed = System.currentTimeMillis() + 86_400_000L
+        if (parsed in 1L..maxAllowed) {
+            runCatching { fs.setLastModified(path, parsed) }
+        }
+    }
+
     private data class ResolvedHttpPath(
         val virtualPath: String,
         val vfsPath: VfsPath,
@@ -1196,6 +2150,90 @@ class HttpFileServerEngine(
     }
 
     companion object {
+        const val MAX_PEER_SESSIONS = 8
+        const val PEER_SESSION_IDLE_TIMEOUT_MS = 60_000L
+        private const val CANCELLED_TOMBSTONE_TTL_MS = 300_000L
+        private const val MAX_CANCELLED_TOMBSTONES = 128
+        private const val PEER_PROGRESS_STEP_BYTES = 256L * 1024L
+
+        private val KNOWN_HTTP_ROUTES = setOf(
+            "/",
+            "/browse",
+            "/raw",
+            "/zip",
+            "/mkdir",
+            "/upload",
+            "/api/peer/info",
+            "/api/peer/begin",
+            "/api/peer/send",
+            "/api/peer/mkdir",
+            "/api/peer/end",
+        )
+
+        internal fun buildTempPartName(leafName: String, session8: String): String {
+            val tag = session8.take(8).ifEmpty { "00000000" }
+            val suffix = ".part-$tag"
+            // Keep total UTF-8 length <= 255 bytes (prefix '.' + stem + suffix)
+            val maxStemBytes = 255 - 1 - suffix.length
+            val cleanBase = leafName.trimStart('.').ifEmpty { "file" }
+            val utf8 = cleanBase.toByteArray(Charsets.UTF_8)
+            val stem = if (utf8.size <= maxStemBytes) {
+                cleanBase
+            } else {
+                var endChar = cleanBase.length
+                while (endChar > 1 &&
+                    cleanBase.substring(0, endChar).toByteArray(Charsets.UTF_8).size > maxStemBytes
+                ) {
+                    endChar--
+                    if (endChar > 0 && Character.isHighSurrogate(cleanBase[endChar - 1])) {
+                        endChar--
+                    }
+                }
+                cleanBase.substring(0, endChar.coerceAtLeast(1)).trimEnd('.', ' ').ifEmpty { "file" }
+            }
+            return ".$stem$suffix"
+        }
+
+        internal fun extractRawQueryParam(rawQuery: String, paramName: String): String? {
+            if (rawQuery.isEmpty()) return null
+            var matched: String? = null
+            for (pair in rawQuery.split('&')) {
+                if (pair.isEmpty()) continue
+                val eq = pair.indexOf('=')
+                val rawKey = if (eq >= 0) pair.substring(0, eq) else pair
+                val decodedKey = runCatching { decodeQueryComponent(rawKey) }.getOrNull() ?: continue
+                if (decodedKey == paramName) {
+                    matched = if (eq >= 0) pair.substring(eq + 1) else ""
+                }
+            }
+            return matched
+        }
+
+        private fun drainSmallUnreadIfNoExpectContinue(
+            socket: Socket,
+            headers: Map<String, String>,
+            input: InputStream,
+        ) {
+            if (headers["expect"]?.equals("100-continue", ignoreCase = true) == true) return
+            val len = headers["content-length"]?.trim()?.toLongOrNull() ?: return
+            if (len !in 1L..65_536L) return
+            val prevTimeout = runCatching { socket.soTimeout }.getOrDefault(1_000)
+            try {
+                socket.soTimeout = 150
+                var rem = len
+                val buf = ByteArray(4096)
+                while (rem > 0L) {
+                    val n = input.read(buf, 0, minOf(rem, buf.size.toLong()).toInt())
+                    if (n <= 0) break
+                    rem -= n
+                }
+            } catch (_: Throwable) {
+                // Best-effort drain to avoid TCP RST on small non-100-continue error responses
+            } finally {
+                runCatching { socket.soTimeout = prevTimeout }
+            }
+        }
+
         internal fun parseByteRange(rangeHeader: String, totalSize: Long): Pair<Long, Long>? {
             val trimmed = rangeHeader.trim()
             if (!trimmed.startsWith("bytes=", ignoreCase = true)) return null

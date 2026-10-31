@@ -93,6 +93,7 @@ import com.minifile.explorer.ui.components.RowAction
 import com.minifile.explorer.ui.components.SelectionBottomBar
 import com.minifile.explorer.ui.components.SelectionMoreAction
 import com.minifile.explorer.ui.components.SelectionTopBar
+import com.minifile.explorer.ui.components.SendToDeviceSheet
 import com.minifile.explorer.ui.components.SortBottomSheet
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.launch
@@ -134,6 +135,7 @@ fun BrowserScreen(
     var propertiesTarget by remember { mutableStateOf<VfsNode?>(null) }
     var addFavoriteTarget by remember { mutableStateOf<PendingFavorite?>(null) }
     var compressTargets by remember { mutableStateOf<List<VfsNode>?>(null) }
+    var sendToDeviceTargets by remember { mutableStateOf<List<VfsNode>?>(null) }
     var extractTarget by remember { mutableStateOf<VfsPath?>(null) }
     var favoritePickerRequest by remember { mutableStateOf<FavoriteTransferRequest?>(null) }
 
@@ -310,6 +312,7 @@ fun BrowserScreen(
             }
 
             RowAction.COMPRESS_ZIP -> compressTargets = listOf(node)
+            RowAction.SEND_TO_DEVICE -> sendToDeviceTargets = listOf(node)
             RowAction.TOGGLE_FAVORITE -> {
                 if (node.path in favoritePaths) {
                     viewModel.removeFavoriteByPath(node.path)
@@ -591,6 +594,7 @@ fun BrowserScreen(
                                 }
 
                                 SelectionMoreAction.COMPRESS_ZIP -> compressTargets = selectedNodes
+                                SelectionMoreAction.SEND_TO_DEVICE -> sendToDeviceTargets = selectedNodes
                                 SelectionMoreAction.EXTRACT_ZIP -> selectedNodes.singleOrNull()?.let { extractTarget = it.path }
                                 SelectionMoreAction.ADD_TO_FAVORITES -> selectedNodes.singleOrNull()?.let {
                                     if (it.path in favoritePaths) {
@@ -980,6 +984,22 @@ fun BrowserScreen(
                 )
             },
             onDismiss = { favoritePickerRequest = null },
+        )
+    }
+
+    sendToDeviceTargets?.let { nodes ->
+        SendToDeviceSheet(
+            items = nodes,
+            viewModel = viewModel,
+            onSelectPeer = { peer ->
+                sendToDeviceTargets = null
+                viewModel.sendToPeer(
+                    context = context,
+                    peer = peer,
+                    items = nodes.map { it.path },
+                )
+            },
+            onDismiss = { sendToDeviceTargets = null },
         )
     }
 }

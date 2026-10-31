@@ -50,6 +50,7 @@ class OperationRegistry {
 
     private data class RunningEntry(
         val cancelled: AtomicBoolean = AtomicBoolean(false),
+        val onCancel: (() -> Unit)? = null,
         var job: Job? = null,
     )
 
@@ -71,10 +72,11 @@ class OperationRegistry {
         kind: OperationKind,
         title: String,
         retryAction: (() -> Unit)? = null,
+        onCancel: (() -> Unit)? = null,
         block: suspend (id: String, sink: ProgressSink) -> OperationRunOutcome,
     ): String {
         val opId = UUID.randomUUID().toString()
-        val entry = RunningEntry()
+        val entry = RunningEntry(onCancel = onCancel)
         running[opId] = entry
         if (retryAction != null) {
             retryHandlers[opId] = retryAction
@@ -175,14 +177,18 @@ class OperationRegistry {
     }
 
     fun cancel(opId: String) {
-        running[opId]?.let {
-            it.cancelled.set(true)
+        running[opId]?.let { entry ->
+            if (entry.cancelled.compareAndSet(false, true)) {
+                runCatching { entry.onCancel?.invoke() }
+            }
         }
     }
 
     fun cancelAll() {
         for ((_, entry) in running) {
-            entry.cancelled.set(true)
+            if (entry.cancelled.compareAndSet(false, true)) {
+                runCatching { entry.onCancel?.invoke() }
+            }
         }
     }
 

@@ -7,12 +7,15 @@ import com.minifile.explorer.core.model.MiniJson
 import com.minifile.explorer.core.model.SortSpec
 import com.minifile.explorer.core.model.ThemeMode
 import com.minifile.explorer.core.model.ViewMode
+import com.minifile.explorer.core.peer.PeerPathPolicy
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.UUID
 
 class SettingsRepository(
     private val store: KeyValueStore,
+    private val defaultDeviceNameProvider: () -> String = { "Files" },
 ) {
     companion object {
         const val KEY_SHOW_HIDDEN = "show_hidden"
@@ -45,6 +48,8 @@ class SettingsRepository(
         const val KEY_FTP_KEEP_SCREEN_ON = "ftp_keep_screen_on"
 
         const val KEY_FAV_PICKER_RECENCY = "fav_picker_recency"
+        const val KEY_PEER_DEVICE_ID = "peer_device_id"
+        const val KEY_PEER_DEVICE_NAME = "peer_device_name"
 
         const val KEY_UPDATE_AUTO_CHECK = "update_auto_check"
         const val KEY_UPDATE_INCLUDE_PRE = "update_include_pre"
@@ -85,6 +90,19 @@ class SettingsRepository(
 
         val authMode = store.getString(KEY_FTP_AUTH_MODE, "anonymous") ?: "anonymous"
 
+        val persistedPeerId = store.getString(KEY_PEER_DEVICE_ID, null)?.trim()?.takeIf { it.isNotEmpty() }
+            ?: UUID.randomUUID().toString().also { generated ->
+                store.putString(KEY_PEER_DEVICE_ID, generated)
+            }
+        val storedPeerName = store.getString(KEY_PEER_DEVICE_NAME, null)
+        val peerName = if (storedPeerName != null) {
+            PeerPathPolicy.sanitizeDisplayName(storedPeerName, 64).ifEmpty { "Files" }
+        } else {
+            PeerPathPolicy.sanitizeDisplayName(defaultDeviceNameProvider(), 64)
+                .ifEmpty { "Files" }
+                .also { initialName -> store.putString(KEY_PEER_DEVICE_NAME, initialName) }
+        }
+
         return AppSettings(
             showHidden = store.getBoolean(KEY_SHOW_HIDDEN, false),
             viewMode = viewMode,
@@ -114,6 +132,8 @@ class SettingsRepository(
             ftpIdleTimeoutSec = store.getInt(KEY_FTP_IDLE_TIMEOUT, 300).coerceIn(15, 7200),
             ftpKeepScreenOn = store.getBoolean(KEY_FTP_KEEP_SCREEN_ON, true),
             favoritePickerSortByRecency = store.getBoolean(KEY_FAV_PICKER_RECENCY, true),
+            peerDeviceId = persistedPeerId,
+            peerDeviceName = peerName,
             updateAutoCheck = store.getBoolean(KEY_UPDATE_AUTO_CHECK, true),
             updateIncludePre = store.getBoolean(KEY_UPDATE_INCLUDE_PRE, false),
             updateLastCheckMs = store.getLong(KEY_UPDATE_LAST_CHECK_MS, 0L),
@@ -170,6 +190,12 @@ class SettingsRepository(
         update { it.copy(ftpReadOnly = ro, httpReadOnly = ro) }
     }
 
+    fun setPeerDeviceName(raw: String) {
+        val clean = PeerPathPolicy.sanitizeDisplayName(raw, 64)
+            .ifEmpty { PeerPathPolicy.sanitizeDisplayName(defaultDeviceNameProvider(), 64).ifEmpty { "Files" } }
+        update { it.copy(peerDeviceName = clean) }
+    }
+
     private fun persist(s: AppSettings) {
         store.putBoolean(KEY_SHOW_HIDDEN, s.showHidden)
         store.putString(KEY_VIEW_MODE, s.viewMode.name)
@@ -201,6 +227,13 @@ class SettingsRepository(
         store.putBoolean(KEY_FTP_KEEP_SCREEN_ON, s.ftpKeepScreenOn)
 
         store.putBoolean(KEY_FAV_PICKER_RECENCY, s.favoritePickerSortByRecency)
+        if (s.peerDeviceId.isNotBlank()) {
+            store.putString(KEY_PEER_DEVICE_ID, s.peerDeviceId)
+        }
+        store.putString(
+            KEY_PEER_DEVICE_NAME,
+            PeerPathPolicy.sanitizeDisplayName(s.peerDeviceName, 64).ifEmpty { "Files" },
+        )
 
         store.putBoolean(KEY_UPDATE_AUTO_CHECK, s.updateAutoCheck)
         store.putBoolean(KEY_UPDATE_INCLUDE_PRE, s.updateIncludePre)

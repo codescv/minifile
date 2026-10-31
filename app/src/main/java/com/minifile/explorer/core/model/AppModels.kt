@@ -218,6 +218,8 @@ data class AppSettings(
     val ftpIdleTimeoutSec: Int = 300,
     val ftpKeepScreenOn: Boolean = true,
     val favoritePickerSortByRecency: Boolean = true,
+    val peerDeviceId: String = "",
+    val peerDeviceName: String = "Files",
     val updateAutoCheck: Boolean = true,
     val updateIncludePre: Boolean = false,
     val updateLastCheckMs: Long = 0L,
@@ -231,6 +233,8 @@ enum class OperationKind {
     COMPRESS,
     EXTRACT,
     COMPUTE_SIZE,
+    SEND,
+    RECEIVE,
 }
 
 data class OperationProgress(

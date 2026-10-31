@@ -174,7 +174,7 @@ class FileOperationService : Service() {
                     "File Operations",
                     NotificationManager.IMPORTANCE_LOW,
                 ).apply {
-                    description = "Progress of copy, move, delete, and archive tasks"
+                    description = "Progress of copy, move, delete, archive, and peer transfer tasks"
                 }
                 nm.createNotificationChannel(ch)
             }

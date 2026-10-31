@@ -1,6 +1,7 @@
 package com.minifile.explorer.di
 
 import android.content.Context
+import android.os.Build
 import android.os.Environment
 import com.minifile.explorer.core.ftp.FtpClientFileSystem
 import com.minifile.explorer.core.model.Clock
@@ -23,12 +24,17 @@ import com.minifile.explorer.data.SettingsRepository
 import com.minifile.explorer.data.SharedPrefsKeyValueStore
 import com.minifile.explorer.data.update.UpdateManager
 import com.minifile.explorer.service.OperationRegistry
+import com.minifile.explorer.service.PeerDiscoveryHolder
+import com.minifile.explorer.service.PeerReceiveBridge
 
 class AppContainer(context: Context) {
     val appContext: Context = context.applicationContext
 
     val keyValueStore = SharedPrefsKeyValueStore(appContext)
-    val settingsRepository = SettingsRepository(keyValueStore)
+    val settingsRepository = SettingsRepository(
+        store = keyValueStore,
+        defaultDeviceNameProvider = { Build.MODEL?.takeIf { it.isNotBlank() } ?: "Android" },
+    )
     val persistedTreeStore = PersistedTreeStore(appContext, keyValueStore)
     val ftpServersRepository: FtpServersRepository = DefaultFtpServersRepository(
         store = keyValueStore,
@@ -57,4 +63,14 @@ class AppContainer(context: Context) {
     val lanAddressResolver = LanAddressResolver(appContext)
     val updateManager = UpdateManager(appContext, settingsRepository)
     val operationRegistry = OperationRegistry.instance
+    val peerDiscoveryHolder = PeerDiscoveryHolder(
+        context = appContext,
+        settingsRepository = settingsRepository,
+        lanAddressResolver = lanAddressResolver,
+    )
+    val peerReceiveBridge = PeerReceiveBridge(
+        context = appContext,
+        operationRegistry = operationRegistry,
+        fs = fileSystem,
+    )
 }

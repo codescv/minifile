@@ -15,6 +15,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.minifile.explorer.BuildConfig
 import com.minifile.explorer.MainActivity
 import com.minifile.explorer.MiniFileApplication
 import com.minifile.explorer.R
@@ -296,6 +297,10 @@ class FtpServerService : Service() {
             readOnly = readOnly,
             showHidden = settings.showHidden,
             serverName = "Files HTTP",
+            deviceId = settings.peerDeviceId.ifBlank { "local" },
+            deviceName = settings.peerDeviceName.ifBlank { "Files" },
+            appVersion = BuildConfig.VERSION_NAME,
+            peerInboxDir = "Received",
         )
 
         val candidatePorts = buildList {
@@ -352,11 +357,13 @@ class FtpServerService : Service() {
 
         val initialIps = container.lanAddressResolver.currentIpv4List()
         HttpServerHolder.markStarted(srv.boundPort, initialIps)
+        container.peerDiscoveryHolder.setReceiverRole(true)
         refreshRunningNotification()
 
         httpEventsJob = scope.launch {
             srv.events.collect { ev ->
                 HttpServerHolder.onEvent(ev)
+                container.peerReceiveBridge.onHttpEvent(srv, ev)
                 refreshRunningNotification()
             }
         }
@@ -396,6 +403,9 @@ class FtpServerService : Service() {
     }
 
     private fun shutdownHttp(errorMessage: String?) {
+        val container = (application as? MiniFileApplication)?.container
+        container?.peerDiscoveryHolder?.setReceiverRole(false)
+
         httpEventsJob?.cancel()
         httpEventsJob = null
         httpClientsJob?.cancel()
@@ -403,6 +413,7 @@ class FtpServerService : Service() {
 
         httpEngine?.let { runCatching { it.stop() } }
         httpEngine = null
+        container?.peerReceiveBridge?.cancelAndClearAll()
         HttpServerHolder.markStopped(errorMessage)
     }
 

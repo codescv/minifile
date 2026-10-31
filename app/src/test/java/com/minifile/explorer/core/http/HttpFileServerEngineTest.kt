@@ -421,4 +421,76 @@ class HttpFileServerEngineTest {
             assertFalse(File(outsideDir, "injected.txt").exists())
         }
     }
+
+    @Test
+    fun peerEndpoints_exposeInfoEnforce405_411_SymlinkGuardAndSessionCap() {
+        val srv = HttpFileServerEngine(
+            config = HttpConfig(
+                port = 0,
+                bindAddress = "127.0.0.1",
+                root = VfsPath.Local(rootDir.canonicalPath),
+                readOnly = false,
+                deviceId = "dev-uuid-123",
+                deviceName = "Pixel\u0000 8",
+                appVersion = "1.0.6",
+            ),
+            fs = LocalFileSystem(),
+        )
+        srv.start()
+        server = srv
+
+        // 1. GET /api/peer/info
+        val infoResp = sendRawHttp(srv.boundPort, "GET", "/api/peer/info")
+        assertEquals(200, infoResp.status)
+        assertTrue(infoResp.headers["content-type"].orEmpty().contains("application/json"))
+        assertTrue(infoResp.text.contains("\"app\":\"Files\""))
+        assertTrue(infoResp.text.contains("\"proto\":1"))
+        assertTrue(infoResp.text.contains("\"id\":\"dev-uuid-123\""))
+        assertTrue(infoResp.text.contains("\"name\":\"Pixel 8\""))
+        assertTrue(infoResp.text.contains("\"ver\":\"1.0.6\""))
+        assertTrue(infoResp.text.contains("\"readOnly\":false"))
+
+        // 2. Wrong HTTP methods on known /api/peer/* routes return 405 Method Not Allowed
+        assertEquals(405, sendRawHttp(srv.boundPort, "POST", "/api/peer/info").status)
+        assertEquals(405, sendRawHttp(srv.boundPort, "GET", "/api/peer/begin").status)
+        assertEquals(405, sendRawHttp(srv.boundPort, "GET", "/api/peer/send?path=a.txt").status)
+        assertEquals(405, sendRawHttp(srv.boundPort, "GET", "/api/peer/mkdir?path=dir").status)
+        assertEquals(405, sendRawHttp(srv.boundPort, "GET", "/api/peer/end?session=abc").status)
+
+        // 3. POST /api/peer/send without Content-Length returns 411 Length Required
+        val missingLenResp = sendRawHttp(
+            port = srv.boundPort,
+            method = "POST",
+            target = "/api/peer/send?path=test.txt",
+            headers = emptyMap(),
+            body = null,
+        )
+        assertEquals(411, missingLenResp.status)
+
+        // 4. Symlink directory inside Received/ rejected with 403 Forbidden
+        val outsideDir = tempFolder.newFolder("peer_outside_escape")
+        val inbox = File(rootDir, "Received").apply { mkdirs() }
+        val symCreated = runCatching {
+            Files.createSymbolicLink(File(inbox, "sym_escape").toPath(), outsideDir.toPath())
+            true
+        }.getOrDefault(false)
+        if (symCreated) {
+            val symResp = sendRawHttp(
+                port = srv.boundPort,
+                method = "POST",
+                target = "/api/peer/send?path=sym_escape/pwned.txt",
+                body = "evil".toByteArray(Charsets.UTF_8),
+            )
+            assertEquals(403, symResp.status)
+            assertFalse(File(outsideDir, "pwned.txt").exists())
+        }
+
+        // 5. Concurrent session cap (max 8 active sessions -> 9th returns 503)
+        repeat(8) { idx ->
+            val r = sendRawHttp(srv.boundPort, "POST", "/api/peer/begin?files=1&bytes=10&device=Phone$idx")
+            assertEquals(200, r.status)
+        }
+        val ninth = sendRawHttp(srv.boundPort, "POST", "/api/peer/begin?files=1&bytes=10&device=Phone9")
+        assertEquals(503, ninth.status)
+    }
 }

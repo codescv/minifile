@@ -1,7 +1,10 @@
 package com.minifile.explorer.ui
 
 import android.content.Context
+import android.net.Uri
 import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -19,6 +22,13 @@ import com.minifile.explorer.core.ops.ConflictResolution
 import com.minifile.explorer.core.ops.ConflictResolver
 import com.minifile.explorer.core.ops.ProgressSink
 import com.minifile.explorer.core.ops.SearchHit
+import com.minifile.explorer.core.peer.PeerHttpClient
+import com.minifile.explorer.core.peer.PeerInfo
+import com.minifile.explorer.core.peer.PeerPathPolicy
+import com.minifile.explorer.core.peer.PeerSendItem
+import com.minifile.explorer.core.peer.PeerSendResult
+import com.minifile.explorer.core.peer.PeerTransferEngine
+import com.minifile.explorer.core.peer.PeerTransferException
 import com.minifile.explorer.core.vfs.NameValidation
 import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsNode
@@ -28,6 +38,7 @@ import com.minifile.explorer.di.AppContainer
 import com.minifile.explorer.service.OperationCompletionEvent
 import com.minifile.explorer.service.OperationRunOutcome
 import com.minifile.explorer.ui.util.UiFormatters
+import java.io.FileNotFoundException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -127,6 +138,8 @@ class MainViewModel(
     val ftpServers: StateFlow<List<FtpServerBookmark>> = container.ftpServersRepository.servers
     val volumes: StateFlow<List<Volume>> = container.volumeProvider.volumes
     val clipboard = ClipboardHolder.state
+    val peers: StateFlow<List<PeerInfo>> = container.peerDiscoveryHolder.peers
+    val isScanningPeers: StateFlow<Boolean> = container.peerDiscoveryHolder.isScanning
 
     private var directoryLoadJob: Job? = null
     private var recursiveSearchJob: Job? = null
@@ -1098,6 +1111,286 @@ class MainViewModel(
             container.favoritesRepository.remove(existing.id)
             emitSimpleMessage("Removed '${existing.name}' from Favorites")
         }
+    }
+
+    // --- App-to-App Peer Discovery & Transfer ---
+    fun startPeerBrowsing() {
+        container.peerDiscoveryHolder.acquireBrowser()
+    }
+
+    fun stopPeerBrowsing() {
+        container.peerDiscoveryHolder.releaseBrowser()
+    }
+
+    fun scanPeersSubnet() {
+        container.peerDiscoveryHolder.scanSubnet()
+    }
+
+    fun addPeerByAddress(
+        rawAddress: String,
+        onSuccess: (PeerInfo) -> Unit = {},
+        onError: (String) -> Unit = {},
+    ) {
+        val trimmed = rawAddress.trim()
+        if (trimmed.isEmpty()) {
+            onError("Enter host or IP address")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val peer = withContext(Dispatchers.IO) {
+                    container.peerDiscoveryHolder.probeAddress(trimmed)
+                }
+                onSuccess(peer)
+            } catch (e: PeerTransferException) {
+                onError(e.userMessage)
+            } catch (e: Exception) {
+                onError(e.message ?: "Could not reach $trimmed")
+            }
+        }
+    }
+
+    fun sendToPeer(
+        context: Context,
+        peer: PeerInfo,
+        items: List<VfsPath>,
+    ) {
+        if (items.isEmpty()) return
+        val appContext = context.applicationContext
+        val peerName = PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host }
+        if (peer.readOnly) {
+            emitSimpleMessage("$peerName is read-only (Transfer ▸ Settings)")
+            return
+        }
+        clearSelection()
+        emitSimpleMessage("Sending to $peerName…")
+
+        val countLabel = if (items.size == 1) items.first().displayName else "${items.size} items"
+        val txClient = PeerHttpClient(socketBinder = container.peerDiscoveryHolder::bindTcpSocket)
+
+        container.operationRegistry.enqueue(
+            context = appContext,
+            kind = OperationKind.SEND,
+            title = "Sending $countLabel to $peerName",
+            retryAction = { sendToPeer(appContext, peer, items) },
+            onCancel = { txClient.close() },
+        ) { _, sink ->
+            txClient.use { client ->
+                try {
+                    val sendItems = PeerTransferEngine.collectSendItems(
+                        fs = container.fileSystem,
+                        roots = items,
+                        includeHidden = settings.value.showHidden,
+                    )
+                    if (sendItems.isEmpty()) {
+                        return@use OperationRunOutcome(message = "Nothing to send to $peerName")
+                    }
+                    val res = PeerTransferEngine(
+                        client = client,
+                        senderDeviceNameProvider = { settings.value.peerDeviceName },
+                    ).send(
+                        peer = peer,
+                        items = sendItems,
+                        sink = sink,
+                    )
+                    formatPeerSendOutcome(peerName, res, sink.isCancelled())
+                } catch (e: PeerTransferException) {
+                    if (sink.isCancelled()) {
+                        OperationRunOutcome(message = "Sending to $peerName cancelled")
+                    } else {
+                        OperationRunOutcome(
+                            message = e.userMessage,
+                            errorSummary = e.userMessage,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun sendUrisToPeer(
+        context: Context,
+        peer: PeerInfo,
+        uris: List<Uri>,
+    ) {
+        if (uris.isEmpty()) return
+        val appContext = context.applicationContext
+        val peerName = PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host }
+        if (peer.readOnly) {
+            emitSimpleMessage("$peerName is read-only (Transfer ▸ Settings)")
+            return
+        }
+        emitSimpleMessage("Sending to $peerName…")
+
+        val countLabel = if (uris.size == 1) "1 file" else "${uris.size} files"
+        val txClient = PeerHttpClient(socketBinder = container.peerDiscoveryHolder::bindTcpSocket)
+
+        container.operationRegistry.enqueue(
+            context = appContext,
+            kind = OperationKind.SEND,
+            title = "Sending $countLabel to $peerName",
+            retryAction = { sendUrisToPeer(appContext, peer, uris) },
+            onCancel = { txClient.close() },
+        ) { _, sink ->
+            txClient.use { client ->
+                try {
+                    val sendItems = resolveUriSendItems(appContext, uris, sink)
+                    if (sink.isCancelled()) {
+                        return@use OperationRunOutcome(message = "Sending to $peerName cancelled")
+                    }
+                    if (sendItems.isEmpty()) {
+                        return@use OperationRunOutcome(message = "Nothing to send to $peerName")
+                    }
+                    val res = PeerTransferEngine(
+                        client = client,
+                        senderDeviceNameProvider = { settings.value.peerDeviceName },
+                    ).send(
+                        peer = peer,
+                        items = sendItems,
+                        sink = sink,
+                    )
+                    formatPeerSendOutcome(peerName, res, sink.isCancelled())
+                } catch (e: PeerTransferException) {
+                    if (sink.isCancelled()) {
+                        OperationRunOutcome(message = "Sending to $peerName cancelled")
+                    } else {
+                        OperationRunOutcome(
+                            message = e.userMessage,
+                            errorSummary = e.userMessage,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun resolveUriSendItems(
+        appContext: Context,
+        uris: List<Uri>,
+        sink: ProgressSink,
+    ): List<PeerSendItem> {
+        val resolver = appContext.contentResolver
+        val usedNames = HashSet<String>()
+        val items = ArrayList<PeerSendItem>(uris.size)
+
+        for (uri in uris) {
+            if (sink.isCancelled()) break
+            var rawName: String? = null
+            var knownSize = -1L
+            var lastMod = 0L
+
+            runCatching {
+                resolver.query(
+                    uri,
+                    arrayOf(
+                        OpenableColumns.DISPLAY_NAME,
+                        OpenableColumns.SIZE,
+                        DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                    ),
+                    null,
+                    null,
+                    null,
+                )?.use { c ->
+                    if (c.moveToFirst()) {
+                        val nameIdx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (nameIdx >= 0 && !c.isNull(nameIdx)) {
+                            rawName = c.getString(nameIdx)
+                        }
+                        val sizeIdx = c.getColumnIndex(OpenableColumns.SIZE)
+                        if (sizeIdx >= 0 && !c.isNull(sizeIdx)) {
+                            knownSize = c.getLong(sizeIdx)
+                        }
+                        val modIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                        if (modIdx >= 0 && !c.isNull(modIdx)) {
+                            lastMod = c.getLong(modIdx)
+                        }
+                    }
+                }
+            }
+
+            if (knownSize < 0L) {
+                knownSize = runCatching {
+                    resolver.openAssetFileDescriptor(uri, "r")?.use { afd -> afd.length } ?: -1L
+                }.getOrDefault(-1L)
+            }
+
+            if (knownSize < 0L) {
+                knownSize = resolver.openInputStream(uri)?.use { stream ->
+                    val buf = ByteArray(64 * 1024)
+                    var total = 0L
+                    while (true) {
+                        if (sink.isCancelled()) return emptyList()
+                        val n = stream.read(buf)
+                        if (n < 0) break
+                        total += n
+                    }
+                    total
+                } ?: throw FileNotFoundException("Cannot open selected document")
+            }
+
+            val fallbackName = uri.lastPathSegment
+                ?.substringAfterLast('/')
+                ?.substringAfterLast(':')
+                .orEmpty()
+            val cleanedCandidate = (rawName ?: fallbackName)
+                .replace('\u0000', '_')
+                .replace('/', '_')
+                .replace('\\', '_')
+                .trim()
+                .ifEmpty { "file" }
+            val validatedCandidate = if (PathUtils.validateName(cleanedCandidate) is NameValidation.Valid) {
+                cleanedCandidate
+            } else {
+                "file"
+            }
+            val uniqueRelName = PathUtils.uniqueName(
+                desired = validatedCandidate,
+                existingNames = usedNames,
+                isDirectory = false,
+            )
+            usedNames.add(uniqueRelName)
+
+            items.add(
+                PeerSendItem(
+                    relPath = uniqueRelName,
+                    size = knownSize.coerceAtLeast(0L),
+                    mtime = if (lastMod > 0L) lastMod else System.currentTimeMillis(),
+                    isDirectory = false,
+                    open = {
+                        resolver.openInputStream(uri)
+                            ?: throw FileNotFoundException("Cannot open $uniqueRelName")
+                    },
+                ),
+            )
+        }
+        return items
+    }
+
+    private fun formatPeerSendOutcome(
+        peerName: String,
+        res: PeerSendResult,
+        cancelled: Boolean,
+    ): OperationRunOutcome {
+        if (cancelled || res.cancelled) {
+            return OperationRunOutcome(message = "Sending to $peerName cancelled")
+        }
+        val summary = buildString {
+            when {
+                res.files > 0 -> {
+                    append("Sent ${res.files} file${if (res.files == 1) "" else "s"} to $peerName")
+                }
+                res.dirs > 0 -> {
+                    append("Sent ${res.dirs} folder${if (res.dirs == 1) "" else "s"} to $peerName")
+                }
+                else -> {
+                    append("Sent 0 files to $peerName")
+                }
+            }
+            if (res.skipped > 0) {
+                append(" (${res.skipped} skipped)")
+            }
+        }
+        return OperationRunOutcome(message = summary)
     }
 
     fun emitSimpleMessage(text: String, destinationToOpen: VfsPath? = null) {

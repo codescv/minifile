@@ -66,4 +66,27 @@ class SettingsRepositoryTest {
         assertEquals(51000, repo2.settings.value.ftpPasvStart)
         assertEquals(51020, repo2.settings.value.ftpPasvEnd)
     }
+
+    @Test
+    fun peerDeviceIdAndDeviceName_generatedOncePersistedAndSanitized() {
+        val store = InMemoryKeyValueStore()
+        val repo1 = SettingsRepository(store, defaultDeviceNameProvider = { "Pixel\u0007 9 Pro  " })
+
+        val generatedId = repo1.settings.value.peerDeviceId
+        assertTrue("Expected non-blank UUID peerDeviceId", generatedId.length >= 16)
+        assertEquals("Pixel 9 Pro", repo1.settings.value.peerDeviceName)
+
+        // Reloading against the same store preserves the generated peerDeviceId
+        val repo2 = SettingsRepository(store, defaultDeviceNameProvider = { "Different Default" })
+        assertEquals(generatedId, repo2.settings.value.peerDeviceId)
+        assertEquals("Pixel 9 Pro", repo2.settings.value.peerDeviceName)
+
+        // Updating device name sanitizes control chars and persists
+        repo2.setPeerDeviceName("  Chii's\n Fold  ")
+        assertEquals("Chii's Fold", repo2.settings.value.peerDeviceName)
+
+        val repo3 = SettingsRepository(store)
+        assertEquals(generatedId, repo3.settings.value.peerDeviceId)
+        assertEquals("Chii's Fold", repo3.settings.value.peerDeviceName)
+    }
 }

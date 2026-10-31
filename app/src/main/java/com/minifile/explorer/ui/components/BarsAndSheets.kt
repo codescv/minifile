@@ -125,6 +125,7 @@ enum class SelectionMoreAction {
     COPY_TO_FAVORITE,
     MOVE_TO_FAVORITE,
     COMPRESS_ZIP,
+    SEND_TO_DEVICE,
     EXTRACT_ZIP,
     ADD_TO_FAVORITES,
     TOGGLE_NOMEDIA,
@@ -217,6 +218,13 @@ fun SelectionBottomBar(
                         onClick = {
                             moreExpanded = false
                             onMoreAction(SelectionMoreAction.COMPRESS_ZIP)
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Send to device…") },
+                        onClick = {
+                            moreExpanded = false
+                            onMoreAction(SelectionMoreAction.SEND_TO_DEVICE)
                         },
                     )
                     if (singleIsZip) {

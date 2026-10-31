@@ -65,6 +65,7 @@ enum class RowAction {
     COPY_TO_FAVORITE,
     MOVE_TO_FAVORITE,
     COMPRESS_ZIP,
+    SEND_TO_DEVICE,
     TOGGLE_FAVORITE,
     TOGGLE_NOMEDIA,
     PROPERTIES,
@@ -464,6 +465,10 @@ private fun NodeContextMenu(
         DropdownMenuItem(
             text = { Text("Compress to ZIP") },
             onClick = { onAction(RowAction.COMPRESS_ZIP) },
+        )
+        DropdownMenuItem(
+            text = { Text("Send to device…") },
+            onClick = { onAction(RowAction.SEND_TO_DEVICE) },
         )
         HorizontalDivider()
         DropdownMenuItem(

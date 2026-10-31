@@ -35,6 +35,8 @@ object HttpServerHolder {
 
     private val lock = Any()
     private var nextId = 1L
+    private val sessionLogRowIds = LinkedHashMap<String, Long>()
+    private val sessionPeerNames = LinkedHashMap<String, String>()
     private val _state = MutableStateFlow(HttpServerState())
     val state: StateFlow<HttpServerState> = _state.asStateFlow()
 
@@ -81,6 +83,8 @@ object HttpServerHolder {
         if (_state.value.isRunning) {
             appendLogLocked("server", errorMessage ?: "HTTP server stopped")
         }
+        sessionLogRowIds.clear()
+        sessionPeerNames.clear()
         _state.value = _state.value.copy(
             isRunning = false,
             isStarting = false,
@@ -90,24 +94,79 @@ object HttpServerHolder {
         )
     }
 
+    fun logInfo(source: String, message: String) = synchronized(lock) {
+        appendLogLocked(source, message)
+    }
+
     fun onEvent(event: HttpEvent) = synchronized(lock) {
         when (event) {
             is HttpEvent.Request -> {
-                appendLogLocked(event.clientIp, "${event.method} ${event.target} → ${event.status}")
+                val isPeerApi = event.target.startsWith("/api/peer/")
+                if (!isPeerApi || event.status !in 200..299) {
+                    appendLogLocked(event.clientIp, "${event.method} ${event.target} → ${event.status}")
+                }
             }
 
             is HttpEvent.Transfer -> {
                 val cur = _state.value
-                val arrow = if (event.direction == HttpTransferDirection.UPLOAD) "UPLOAD ↑" else "DOWNLOAD ↓"
                 _state.value = if (event.direction == HttpTransferDirection.UPLOAD) {
                     cur.copy(uploadsCount = cur.uploadsCount + 1)
                 } else {
                     cur.copy(downloadsCount = cur.downloadsCount + 1)
                 }
-                appendLogLocked(
-                    event.clientIp,
-                    "$arrow ${event.path} (${formatBytesShort(event.bytes)} in ${event.durationMs} ms)",
-                )
+                // SHOULD-7 / #80 note 3: sessioned peer uploads aggregate into one row per session;
+                // session-less sends keep today's per-file UPLOAD ↑ line.
+                if (event.peerSessionId == null) {
+                    val arrow = if (event.direction == HttpTransferDirection.UPLOAD) "UPLOAD ↑" else "DOWNLOAD ↓"
+                    appendLogLocked(
+                        event.clientIp,
+                        "$arrow ${event.path} (${formatBytesShort(event.bytes)} in ${event.durationMs} ms)",
+                    )
+                }
+            }
+
+            is HttpEvent.PeerSessionStart -> {
+                sessionPeerNames[event.sessionId] = event.deviceName
+                val countLabel = if (event.totalFiles == 1) "1 file" else "${event.totalFiles} files"
+                val summary = "⇐ ${event.deviceName}  0/${event.totalFiles} ($countLabel · ${formatBytesShort(event.totalBytes)})"
+                val rowId = appendLogLocked(event.clientIp, summary)
+                sessionLogRowIds[event.sessionId] = rowId
+            }
+
+            is HttpEvent.PeerProgress -> {
+                val peerName = sessionPeerNames[event.sessionId] ?: "Peer"
+                val totalPart = if (event.totalFiles > 0) "${event.processedFiles}/${event.totalFiles} files" else "${event.processedFiles} files"
+                val itemTail = event.currentItem.substringAfterLast('/').takeIf { it.isNotEmpty() }
+                val summary = buildString {
+                    append("⇐ ").append(peerName).append("  ")
+                    append(totalPart).append(" · ").append(formatBytesShort(event.processedBytes))
+                    if (itemTail != null) {
+                        append(" · ").append(itemTail)
+                    }
+                }
+                val rowId = sessionLogRowIds[event.sessionId]
+                if (rowId != null) {
+                    updateOrAppendLogLocked(rowId, "peer", summary)
+                } else {
+                    sessionLogRowIds[event.sessionId] = appendLogLocked("peer", summary)
+                }
+            }
+
+            is HttpEvent.PeerSessionEnd -> {
+                val peerName = sessionPeerNames.remove(event.sessionId) ?: event.deviceName
+                val rowId = sessionLogRowIds.remove(event.sessionId)
+                val secStr = String.format(Locale.US, "%.1f s", (event.durationMs.coerceAtLeast(1L)) / 1000.0)
+                val countLabel = if (event.files == 1) "1 file" else "${event.files} files"
+                val summary = when {
+                    event.ok -> "⇐ $peerName  $countLabel · ${formatBytesShort(event.bytes)} · $secStr"
+                    event.cancelled -> "⇐ $peerName  cancelled ($countLabel · ${formatBytesShort(event.bytes)})"
+                    else -> "⇐ $peerName  failed${event.error?.let { ": $it" }.orEmpty()} ($countLabel · ${formatBytesShort(event.bytes)})"
+                }
+                if (rowId != null) {
+                    updateOrAppendLogLocked(rowId, event.clientIp, summary)
+                } else {
+                    appendLogLocked(event.clientIp, summary)
+                }
             }
 
             is HttpEvent.Error -> {
@@ -120,14 +179,17 @@ object HttpServerHolder {
     }
 
     fun clearLog() = synchronized(lock) {
+        sessionLogRowIds.clear()
+        sessionPeerNames.clear()
         _state.value = _state.value.copy(log = emptyList())
     }
 
-    private fun appendLogLocked(clientIp: String, summary: String) {
+    private fun appendLogLocked(clientIp: String, summary: String): Long {
         val now = System.currentTimeMillis()
         val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(now))
+        val id = nextId++
         val entry = HttpLogEntry(
-            id = nextId++,
+            id = id,
             timestampMs = now,
             formattedTime = timeFmt,
             clientIp = clientIp,
@@ -140,6 +202,25 @@ object HttpServerHolder {
             cur + entry
         }
         _state.value = _state.value.copy(log = updated)
+        return id
+    }
+
+    private fun updateOrAppendLogLocked(rowId: Long, fallbackClientIp: String, summary: String) {
+        val cur = _state.value.log
+        val idx = cur.indexOfFirst { it.id == rowId }
+        if (idx < 0) {
+            appendLogLocked(fallbackClientIp, summary)
+            return
+        }
+        val now = System.currentTimeMillis()
+        val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(now))
+        val mutable = cur.toMutableList()
+        mutable[idx] = mutable[idx].copy(
+            timestampMs = now,
+            formattedTime = timeFmt,
+            summary = summary,
+        )
+        _state.value = _state.value.copy(log = mutable)
     }
 
     private fun formatBytesShort(bytes: Long): String {
