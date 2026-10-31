@@ -18,15 +18,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Apps
-import androidx.compose.material.icons.filled.CreateNewFolder
-import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -40,7 +35,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -76,9 +70,7 @@ fun StorageHomeScreen(
     clipboard: ClipboardState?,
     onGrantAllFilesAccess: () -> Unit,
     onDismissOnboarding: () -> Unit,
-    onMountGenericFolder: () -> Unit,
     onMountVolumeSaf: (Volume) -> Unit,
-    onUnmountSafKey: (String) -> Unit,
     onOpenVolume: (Volume) -> Unit,
     onOpenQuickPath: (VfsPath, String) -> Unit,
     onOpenFavorite: (Favorite) -> Unit,
@@ -91,10 +83,6 @@ fun StorageHomeScreen(
     val storageVolumes = volumes.filter {
         it.kind == VolumeKind.PRIMARY || it.kind == VolumeKind.SD_CARD || it.kind == VolumeKind.USB_OTG
     }
-    val appDataVolumes = volumes.filter {
-        it.kind == VolumeKind.APP_DATA || it.kind == VolumeKind.APP_OBB
-    }
-    val mountedTrees = volumes.filter { it.kind == VolumeKind.MOUNTED_TREE }
     val recentFavorites = favorites.sortedByDescending { it.lastUsedAt }.take(4)
 
     val primaryBase = Environment.getExternalStorageDirectory().absolutePath
@@ -110,7 +98,7 @@ fun StorageHomeScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("MiniFile", fontWeight = FontWeight.SemiBold) },
+                title = { Text("Files", fontWeight = FontWeight.SemiBold) },
             )
         },
         bottomBar = {
@@ -156,7 +144,7 @@ fun StorageHomeScreen(
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                             )
                             Text(
-                                text = "Grant All-files access to browse Internal Storage directly, or mount individual folders via Android's document picker.",
+                                text = "Grant All-files access to browse and manage Internal Storage.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                             )
@@ -166,9 +154,6 @@ fun StorageHomeScreen(
                             ) {
                                 Button(onClick = onGrantAllFilesAccess) {
                                     Text("Grant access")
-                                }
-                                OutlinedButton(onClick = onMountGenericFolder) {
-                                    Text("Mount a folder instead…")
                                 }
                                 Spacer(Modifier.weight(1f))
                                 TextButton(onClick = onDismissOnboarding) {
@@ -212,7 +197,7 @@ fun StorageHomeScreen(
                 }
             }
 
-            // 2. App Data & Installed Apps
+            // 2. App Data (Installed Apps only)
             item(key = "appdata-section") {
                 SectionHeader("App Data")
                 Card(
@@ -221,47 +206,6 @@ fun StorageHomeScreen(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        appDataVolumes.forEach { vol ->
-                            ListItem(
-                                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                                leadingContent = {
-                                    Icon(
-                                        imageVector = Icons.Filled.Android,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                },
-                                headlineContent = { Text(vol.name, fontWeight = FontWeight.Medium) },
-                                supportingContent = {
-                                    Text(vol.subtitle ?: if (vol.needsSafGrant) "Tap to mount" else "Mounted")
-                                },
-                                trailingContent = {
-                                    if (vol.needsSafGrant) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                Icons.Filled.Lock,
-                                                contentDescription = "Locked",
-                                                modifier = Modifier.size(16.dp),
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                            Spacer(Modifier.width(6.dp))
-                                            OutlinedButton(onClick = { onMountVolumeSaf(vol) }) {
-                                                Text("Mount")
-                                            }
-                                        }
-                                    }
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        if (vol.needsSafGrant || vol.root == null) {
-                                            onMountVolumeSaf(vol)
-                                        } else {
-                                            onOpenVolume(vol)
-                                        }
-                                    },
-                            )
-                        }
                         ListItem(
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             leadingContent = {
@@ -272,7 +216,7 @@ fun StorageHomeScreen(
                                 )
                             },
                             headlineContent = { Text("Installed Apps", fontWeight = FontWeight.Medium) },
-                            supportingContent = { Text("Inspect app data paths, sizes & export APKs") },
+                            supportingContent = { Text("Browse app data, open via Shizuku/SAF & export APKs") },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable(onClick = onOpenInstalledApps),
@@ -281,51 +225,7 @@ fun StorageHomeScreen(
                 }
             }
 
-            // 3. Mounted SAF folders
-            item(key = "mounted-section") {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    SectionHeader("Mounted folders")
-                    TextButton(onClick = onMountGenericFolder) {
-                        Icon(Icons.Filled.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Mount a folder…")
-                    }
-                }
-                if (mountedTrees.isNotEmpty()) {
-                    Card(
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            mountedTrees.forEach { tree ->
-                                ListItem(
-                                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                                    leadingContent = {
-                                        Icon(Icons.Filled.FolderSpecial, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
-                                    },
-                                    headlineContent = { Text(tree.name, fontWeight = FontWeight.Medium) },
-                                    supportingContent = tree.subtitle?.let { { Text(it, maxLines = 1) } },
-                                    trailingContent = {
-                                        IconButton(onClick = { onUnmountSafKey(tree.id) }) {
-                                            Icon(Icons.Filled.DeleteOutline, contentDescription = "Unmount ${tree.name}")
-                                        }
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { onOpenVolume(tree) },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 4. Quick Access
+            // 3. Quick Access
             item(key = "quick-access") {
                 SectionHeader("Quick Access")
                 FlowRow(
@@ -343,7 +243,7 @@ fun StorageHomeScreen(
                 }
             }
 
-            // 5. Recent Favorites
+            // 4. Recent Favorites
             if (recentFavorites.isNotEmpty()) {
                 item(key = "recent-favorites") {
                     Row(

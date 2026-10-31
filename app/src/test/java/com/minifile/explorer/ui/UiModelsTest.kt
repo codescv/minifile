@@ -7,6 +7,7 @@ import com.minifile.explorer.core.model.SortSpec
 import com.minifile.explorer.core.model.TransferMode
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
+import com.minifile.explorer.ui.util.UiFormatters
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -87,5 +88,40 @@ class UiModelsTest {
                 VfsPath.Saf("content://com.android.externalstorage.documents/tree/primary%3AAndroid%2Fdata", "primary:Android/data"),
             ),
         )
+    }
+
+    @Test
+    fun classifyRestrictedPackageDir_andTargetSafMetadata_matchExpectedSpec() {
+        val dataTarget = MainViewModel.classifyRestrictedPackageDir(
+            VfsPath.Local("/storage/emulated/0/Android/data/com.tencent.mm"),
+        )
+        assertEquals(RestrictedAndroidDirKind.DATA to "com.tencent.mm", dataTarget)
+
+        val obbTarget = MainViewModel.classifyRestrictedPackageDir(
+            VfsPath.Local("/storage/emulated/0/Android/obb/com.miHoYo.Yuanshen"),
+        )
+        assertEquals(RestrictedAndroidDirKind.OBB to "com.miHoYo.Yuanshen", obbTarget)
+
+        // Deeper paths inside an app folder or parent Android/data itself should NOT classify as top-level package root
+        assertNull(
+            MainViewModel.classifyRestrictedPackageDir(
+                VfsPath.Local("/storage/emulated/0/Android/data"),
+            ),
+        )
+        assertNull(
+            MainViewModel.classifyRestrictedPackageDir(
+                VfsPath.Local("/storage/emulated/0/Android/data/com.tencent.mm/files"),
+            ),
+        )
+
+        val model = RestrictedPackageTarget(
+            kind = RestrictedAndroidDirKind.DATA,
+            packageName = "com.tencent.mm",
+            appLabel = "WeChat",
+        )
+        assertEquals("pkg_data:com.tencent.mm", model.safKey)
+        assertEquals("primary:Android/data/com.tencent.mm", model.safInitialDocId)
+        assertEquals("WeChat data", model.safMountLabel)
+        assertEquals("toggle_adb_wireless", UiFormatters.WIRELESS_DEBUGGING_FRAGMENT_KEY)
     }
 }

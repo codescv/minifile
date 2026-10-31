@@ -90,7 +90,6 @@ private data class SafMountRequest(
     val expectedDocIdPrefix: String?,
     val label: String?,
     val navigateOnMount: Boolean,
-    val genericMount: Boolean,
 )
 
 class MainActivity : ComponentActivity() {
@@ -307,36 +306,26 @@ private fun MiniFileRoot(
         if (res.resultCode == Activity.RESULT_OK && uri != null && req != null) {
             val pickedDocId = runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull()
             val expectedPrefix = req.expectedDocIdPrefix
-            val mismatchedPick = !req.genericMount &&
-                expectedPrefix != null &&
+            val mismatchedPick = expectedPrefix != null &&
                 pickedDocId != null &&
                 !pickedDocId.equals(expectedPrefix, ignoreCase = false) &&
                 !pickedDocId.startsWith(expectedPrefix)
 
-            if (mismatchedPick) {
-                val grant = container.persistedTreeStore.recordGenericMountedFolder(uri)
-                viewModel.refreshVolumes()
-                viewModel.emitSimpleMessage(
-                    text = "You picked a different folder — added under Mounted folders",
-                    destinationToOpen = grant.toVfsPath(),
-                )
+            val grant = if (mismatchedPick) {
+                container.persistedTreeStore.recordGenericMountedFolder(uri)
             } else {
-                val grant = if (req.genericMount) {
-                    container.persistedTreeStore.recordGenericMountedFolder(uri, req.label)
-                } else {
-                    container.persistedTreeStore.recordTreeGrant(req.key, uri, req.label)
-                }
-                viewModel.refreshVolumes()
-                if (req.navigateOnMount) {
-                    val vfsRoot = grant.toVfsPath()
-                    viewModel.closeOverlay()
-                    viewModel.selectTab(MainTab.BROWSE)
-                    viewModel.navigateToDirectory(
-                        dir = vfsRoot,
-                        rootVolumeName = grant.label,
-                        rootVolumeBase = vfsRoot,
-                    )
-                }
+                container.persistedTreeStore.recordTreeGrant(req.key, uri, req.label)
+            }
+            viewModel.refreshVolumes()
+            if (req.navigateOnMount) {
+                val vfsRoot = grant.toVfsPath()
+                viewModel.closeOverlay()
+                viewModel.selectTab(MainTab.BROWSE)
+                viewModel.navigateToDirectory(
+                    dir = vfsRoot,
+                    rootVolumeName = grant.label,
+                    rootVolumeBase = vfsRoot,
+                )
             }
         }
     }
@@ -466,23 +455,6 @@ private fun MiniFileRoot(
                 OverlayScreen.InstalledApps -> {
                     InstalledAppsScreen(
                         viewModel = viewModel,
-                        onMountPackageSaf = { safKey, initialDocId, label ->
-                            pendingSafMount = SafMountRequest(
-                                key = safKey,
-                                expectedDocIdPrefix = initialDocId,
-                                label = label,
-                                navigateOnMount = true,
-                                genericMount = false,
-                            )
-                            runCatching {
-                                safTreeLauncher.launch(
-                                    container.volumeProvider.buildOpenTreeIntent(initialDocId = initialDocId),
-                                )
-                            }.onFailure { e ->
-                                pendingSafMount = null
-                                viewModel.emitSimpleMessage("Could not open system folder picker: ${e.message}")
-                            }
-                        },
                         onClose = { viewModel.closeOverlay() },
                     )
                 }
@@ -493,32 +465,32 @@ private fun MiniFileRoot(
                             BrowserScreen(
                                 viewModel = viewModel,
                                 onGrantAllFilesAccess = requestAllFilesAccess,
-                                onMountGenericFolder = {
-                                    pendingSafMount = SafMountRequest(
-                                        key = "",
-                                        expectedDocIdPrefix = null,
-                                        label = null,
-                                        navigateOnMount = true,
-                                        genericMount = true,
-                                    )
-                                    runCatching {
-                                        safTreeLauncher.launch(container.volumeProvider.buildOpenTreeIntent())
-                                    }.onFailure { e ->
-                                        pendingSafMount = null
-                                        viewModel.emitSimpleMessage("Could not open system folder picker: ${e.message}")
-                                    }
-                                },
                                 onMountVolumeSaf = { volume ->
                                     pendingSafMount = SafMountRequest(
                                         key = volume.id,
                                         expectedDocIdPrefix = volume.safInitialDocId,
                                         label = volume.name,
                                         navigateOnMount = true,
-                                        genericMount = false,
                                     )
                                     runCatching {
                                         safTreeLauncher.launch(
                                             container.volumeProvider.buildOpenTreeIntent(volume = volume),
+                                        )
+                                    }.onFailure { e ->
+                                        pendingSafMount = null
+                                        viewModel.emitSimpleMessage("Could not open system folder picker: ${e.message}")
+                                    }
+                                },
+                                onMountPackageSaf = { safKey, initialDocId, label ->
+                                    pendingSafMount = SafMountRequest(
+                                        key = safKey,
+                                        expectedDocIdPrefix = initialDocId,
+                                        label = label,
+                                        navigateOnMount = true,
+                                    )
+                                    runCatching {
+                                        safTreeLauncher.launch(
+                                            container.volumeProvider.buildOpenTreeIntent(initialDocId = initialDocId),
                                         )
                                     }.onFailure { e ->
                                         pendingSafMount = null

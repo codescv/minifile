@@ -19,6 +19,7 @@ import com.minifile.explorer.data.PersistedTreeStore
 import com.minifile.explorer.data.SafFileSystem
 import com.minifile.explorer.data.SettingsRepository
 import com.minifile.explorer.data.SharedPrefsKeyValueStore
+import com.minifile.explorer.data.shizuku.PrivilegedShellBridge
 import com.minifile.explorer.data.update.UpdateManager
 import com.minifile.explorer.service.OperationRegistry
 
@@ -29,7 +30,8 @@ class AppContainer(context: Context) {
     val settingsRepository = SettingsRepository(keyValueStore)
     val persistedTreeStore = PersistedTreeStore(appContext, keyValueStore)
 
-    val localFileSystem = LocalFileSystem()
+    val privilegedFallback = PrivilegedShellBridge.createLocalFallback(appContext)
+    val localFileSystem = LocalFileSystem(privilegedFallback)
     val safFileSystem = SafFileSystem(appContext)
     val fileSystem = FileSystemRepository(listOf(localFileSystem, safFileSystem))
 

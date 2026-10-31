@@ -94,6 +94,21 @@ class InstalledAppsRepository(
     }
 
     suspend fun computeExternalDirSize(localPath: String): Long? = withContext(Dispatchers.IO) {
+        val vfsPath = VfsPath.Local(localPath)
+        val rootStat = runCatching { fs.stat(vfsPath) }.getOrNull()
+        if (rootStat != null && rootStat.isDirectory) {
+            suspend fun sumVfs(dir: VfsPath, depth: Int): Long {
+                if (depth > 16) return 0L
+                val kids = runCatching { fs.list(dir, includeHidden = true) }.getOrNull() ?: return 0L
+                var acc = 0L
+                for (k in kids) {
+                    if (k.isSymlink) continue
+                    acc += if (k.isDirectory) sumVfs(k.path, depth + 1) else k.size.coerceAtLeast(0L)
+                }
+                return acc
+            }
+            return@withContext runCatching { sumVfs(vfsPath, 0) }.getOrNull()
+        }
         val dir = File(localPath)
         if (!dir.exists() || !dir.canRead()) return@withContext null
         fun sum(f: File, depth: Int): Long {

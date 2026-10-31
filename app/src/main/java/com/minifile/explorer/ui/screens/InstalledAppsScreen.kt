@@ -59,6 +59,7 @@ import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.data.InstalledAppInfo
 import com.minifile.explorer.service.OperationRunOutcome
+import com.minifile.explorer.ui.MainTab
 import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.util.UiFormatters
 import java.io.File
@@ -70,7 +71,6 @@ private enum class AppSort { NAME, SIZE, UPDATED }
 @Composable
 fun InstalledAppsScreen(
     viewModel: MainViewModel,
-    onMountPackageSaf: (safKey: String, initialDocId: String, label: String) -> Unit,
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -310,24 +310,14 @@ fun InstalledAppsScreen(
                 Button(
                     onClick = {
                         selectedApp = null
-                        val localDir = File(app.externalDataPath)
-                        val grantKey = "pkg_data:${app.packageName}"
-                        val existingGrant = viewModel.container.persistedTreeStore.getGrant(grantKey)
-                        when {
-                            localDir.exists() && localDir.canRead() -> {
-                                onClose()
-                                viewModel.navigateToDirectory(VfsPath.Local(localDir.absolutePath), rootVolumeName = app.label)
-                            }
-
-                            existingGrant != null -> {
-                                onClose()
-                                viewModel.navigateToDirectory(existingGrant.toVfsPath(), rootVolumeName = app.label)
-                            }
-
-                            else -> {
-                                onMountPackageSaf(grantKey, "primary:Android/data/${app.packageName}", "${app.label} data")
-                            }
-                        }
+                        onClose()
+                        val primaryBase = VfsPath.Local(Environment.getExternalStorageDirectory().absolutePath)
+                        viewModel.selectTab(MainTab.BROWSE)
+                        viewModel.navigateToDirectory(
+                            dir = VfsPath.Local(app.externalDataPath),
+                            rootVolumeName = "Internal",
+                            rootVolumeBase = primaryBase,
+                        )
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
@@ -341,24 +331,14 @@ fun InstalledAppsScreen(
                     OutlinedButton(
                         onClick = {
                             selectedApp = null
-                            val obbDir = File(app.obbPath)
-                            val grantKey = "pkg_obb:${app.packageName}"
-                            val existingGrant = viewModel.container.persistedTreeStore.getGrant(grantKey)
-                            when {
-                                obbDir.exists() && obbDir.canRead() -> {
-                                    onClose()
-                                    viewModel.navigateToDirectory(VfsPath.Local(obbDir.absolutePath), rootVolumeName = "${app.label} obb")
-                                }
-
-                                existingGrant != null -> {
-                                    onClose()
-                                    viewModel.navigateToDirectory(existingGrant.toVfsPath(), rootVolumeName = "${app.label} obb")
-                                }
-
-                                else -> {
-                                    onMountPackageSaf(grantKey, "primary:Android/obb/${app.packageName}", "${app.label} obb")
-                                }
-                            }
+                            onClose()
+                            val primaryBase = VfsPath.Local(Environment.getExternalStorageDirectory().absolutePath)
+                            viewModel.selectTab(MainTab.BROWSE)
+                            viewModel.navigateToDirectory(
+                                dir = VfsPath.Local(app.obbPath),
+                                rootVolumeName = "Internal",
+                                rootVolumeBase = primaryBase,
+                            )
                         },
                         modifier = Modifier.weight(1f),
                     ) {
@@ -371,7 +351,13 @@ fun InstalledAppsScreen(
                             if (mediaDir.exists() && mediaDir.canRead()) {
                                 selectedApp = null
                                 onClose()
-                                viewModel.navigateToDirectory(VfsPath.Local(mediaDir.absolutePath), rootVolumeName = "${app.label} media")
+                                val primaryBase = VfsPath.Local(Environment.getExternalStorageDirectory().absolutePath)
+                                viewModel.selectTab(MainTab.BROWSE)
+                                viewModel.navigateToDirectory(
+                                    dir = VfsPath.Local(mediaDir.absolutePath),
+                                    rootVolumeName = "Internal",
+                                    rootVolumeBase = primaryBase,
+                                )
                             } else {
                                 viewModel.emitSimpleMessage("No shared Android/media folder for ${app.label}")
                             }

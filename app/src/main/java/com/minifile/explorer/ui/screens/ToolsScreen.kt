@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
@@ -45,6 +44,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,12 +60,12 @@ import androidx.compose.ui.unit.dp
 import com.minifile.explorer.BuildConfig
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.data.AndroidVolumeProvider
+import com.minifile.explorer.data.shizuku.PrivilegedShellBridge
 import com.minifile.explorer.data.update.InstallLaunchResult
 import com.minifile.explorer.data.update.UpdateUiState
 import com.minifile.explorer.service.FtpServerHolder
 import com.minifile.explorer.ui.MainTab
 import com.minifile.explorer.ui.MainViewModel
-import com.minifile.explorer.ui.OverlayScreen
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -82,10 +82,16 @@ fun ToolsScreen(
     val scope = rememberCoroutineScope()
 
     val settings by viewModel.settings.collectAsState()
-    val grants by viewModel.container.persistedTreeStore.grants.collectAsState()
     val volumes by viewModel.volumes.collectAsState()
     val updateState by viewModel.container.updateManager.state.collectAsState()
     val opHistory by viewModel.container.operationRegistry.history.collectAsState()
+    val privilegedState by PrivilegedShellBridge.state.collectAsState()
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            PrivilegedShellBridge.hasPrivilegedAccess(context)
+        }
+    }
 
     var showNomediaScanner by remember { mutableStateOf(false) }
     var showTasksHistory by remember { mutableStateOf(false) }
@@ -317,7 +323,7 @@ fun ToolsScreen(
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             headlineContent = { Text("All-files access") },
                             supportingContent = {
-                                Text(if (hasAllFiles) "Granted" else "Not granted — SAF mounted folders active")
+                                Text(if (hasAllFiles) "Granted" else "Not granted")
                             },
                             trailingContent = {
                                 OutlinedButton(onClick = onGrantAllFilesAccess) {
@@ -328,10 +334,35 @@ fun ToolsScreen(
                         HorizontalDivider()
                         ListItem(
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text("Installed Apps Inspector") },
-                            supportingContent = { Text("Browse Android/data per app & backup APKs") },
+                            headlineContent = { Text("Wireless debugging settings") },
+                            supportingContent = {
+                                val privSummary = when {
+                                    privilegedState.shizukuRunning && privilegedState.shizukuGranted ->
+                                        "Shizuku connected (UID ${privilegedState.shizukuUid}) — full App Data access"
+                                    privilegedState.rootAvailable ->
+                                        "Root (su) active — full App Data access"
+                                    privilegedState.shizukuRunning ->
+                                        "Shizuku running — authorize Files to browse Android/data"
+                                    else ->
+                                        "Open Developer Options to start Shizuku for Android/data access"
+                                }
+                                Text(privSummary)
+                            },
+                            trailingContent = {
+                                OutlinedButton(
+                                    onClick = {
+                                        UiFormatters.launchWirelessDebuggingSettings(context) {
+                                            viewModel.emitSimpleMessage(it)
+                                        }
+                                    },
+                                ) {
+                                    Text("Open")
+                                }
+                            },
                             modifier = Modifier.clickable {
-                                viewModel.openOverlay(OverlayScreen.InstalledApps)
+                                UiFormatters.launchWirelessDebuggingSettings(context) {
+                                    viewModel.emitSimpleMessage(it)
+                                }
                             },
                         )
                         HorizontalDivider()
@@ -341,26 +372,6 @@ fun ToolsScreen(
                             supportingContent = { Text("View mount paths, states, and capacities") },
                             modifier = Modifier.clickable { showVolumesDiag = true },
                         )
-                        if (grants.isNotEmpty()) {
-                            HorizontalDivider()
-                            for ((key, grant) in grants) {
-                                ListItem(
-                                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                                    headlineContent = { Text("SAF: ${grant.label}") },
-                                    supportingContent = { Text(grant.rootDocumentId, maxLines = 1) },
-                                    trailingContent = {
-                                        IconButton(
-                                            onClick = {
-                                                viewModel.container.persistedTreeStore.revoke(key)
-                                                viewModel.refreshVolumes()
-                                            },
-                                        ) {
-                                            Icon(Icons.Filled.DeleteOutline, contentDescription = "Revoke ${grant.label}")
-                                        }
-                                    },
-                                )
-                            }
-                        }
                     }
                 }
             }
@@ -425,7 +436,7 @@ fun ToolsScreen(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.padding(16.dp),
                     ) {
-                        Text("MiniFile ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text("Files ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Text(
                             "Minimalist, offline-first file manager with built-in RFC 959/3659 FTP server and PC Companion.",
                             style = MaterialTheme.typography.bodySmall,

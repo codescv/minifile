@@ -34,12 +34,14 @@ import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.DeveloperMode
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.Button
@@ -50,6 +52,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -83,12 +86,14 @@ import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.vfs.Volume
 import com.minifile.explorer.core.vfs.VolumeKind
 import com.minifile.explorer.data.AndroidVolumeProvider
-import com.minifile.explorer.data.PersistedTreeStore
+import com.minifile.explorer.data.shizuku.PrivilegedAccessState
+import com.minifile.explorer.data.shizuku.PrivilegedShellBridge
 import com.minifile.explorer.ui.ClipboardHolder
 import com.minifile.explorer.ui.MainTab
 import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.OverlayScreen
 import com.minifile.explorer.ui.RestrictedAndroidDirKind
+import com.minifile.explorer.ui.RestrictedPackageTarget
 import com.minifile.explorer.ui.components.AddFavoriteDialog
 import com.minifile.explorer.ui.components.BreadcrumbBar
 import com.minifile.explorer.ui.components.ClipboardBar
@@ -121,8 +126,8 @@ private data class FavoriteTransferRequest(
 fun BrowserScreen(
     viewModel: MainViewModel,
     onGrantAllFilesAccess: () -> Unit,
-    onMountGenericFolder: () -> Unit,
     onMountVolumeSaf: (Volume) -> Unit,
+    onMountPackageSaf: (safKey: String, initialDocId: String, label: String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -132,6 +137,7 @@ fun BrowserScreen(
     val favorites by viewModel.favorites.collectAsState()
     val volumes by viewModel.volumes.collectAsState()
     val clipboard by viewModel.clipboard.collectAsState()
+    val privilegedState by PrivilegedShellBridge.state.collectAsState()
 
     var showSortSheet by remember { mutableStateOf(false) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
@@ -161,12 +167,7 @@ fun BrowserScreen(
             onDismissOnboarding = {
                 viewModel.container.settingsRepository.update { it.copy(onboardingDone = true) }
             },
-            onMountGenericFolder = onMountGenericFolder,
             onMountVolumeSaf = onMountVolumeSaf,
-            onUnmountSafKey = { key ->
-                viewModel.container.persistedTreeStore.revoke(key)
-                viewModel.refreshVolumes()
-            },
             onOpenVolume = { viewModel.openVolume(it) },
             onOpenQuickPath = { path, rootLabel ->
                 viewModel.navigateToDirectory(path, rootVolumeName = rootLabel)
@@ -680,21 +681,16 @@ fun BrowserScreen(
                             modifier = Modifier.size(48.dp),
                         )
                         Spacer(Modifier.height(12.dp))
-                        Text("Allow MiniFile to manage storage", style = MaterialTheme.typography.titleMedium)
+                        Text("Allow Files to manage storage", style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "Grant All-files access to read this directory, or mount a folder with Android's document picker.",
+                            "Grant All-files access to browse and manage this directory.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(Modifier.height(16.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(onClick = onGrantAllFilesAccess) {
-                                Text("Grant access")
-                            }
-                            OutlinedButton(onClick = onMountGenericFolder) {
-                                Text("Mount a folder…")
-                            }
+                        Button(onClick = onGrantAllFilesAccess) {
+                            Text("Grant access")
                         }
                     }
                 }
@@ -711,6 +707,51 @@ fun BrowserScreen(
                         Spacer(Modifier.height(12.dp))
                         OutlinedButton(onClick = { viewModel.reloadCurrentDirectory(silent = false) }) {
                             Text("Retry")
+                        }
+                    }
+                }
+
+                browser.restrictedPackageTarget != null -> {
+                    val pkgTarget = browser.restrictedPackageTarget!!
+                    val shizukuInstalled = remember(context, privilegedState) {
+                        PrivilegedShellBridge.isShizukuInstalled(context)
+                    }
+                    LazyColumn(
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 92.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        item(key = "app-data-access-card") {
+                            AppDataAccessCard(
+                                target = pkgTarget,
+                                privilegedState = privilegedState,
+                                shizukuInstalled = shizukuInstalled,
+                                onOpenWirelessDebugging = {
+                                    UiFormatters.launchWirelessDebuggingSettings(context) {
+                                        viewModel.emitSimpleMessage(it)
+                                    }
+                                },
+                                onConnectShizuku = {
+                                    PrivilegedShellBridge.connectOrOpenShizuku(context) {
+                                        viewModel.emitSimpleMessage(it)
+                                    }
+                                    viewModel.reloadCurrentDirectory(silent = true)
+                                },
+                                onMountPackageSaf = {
+                                    onMountPackageSaf(
+                                        pkgTarget.safKey,
+                                        pkgTarget.safInitialDocId,
+                                        pkgTarget.safMountLabel,
+                                    )
+                                },
+                                onOpenSystemFiles = {
+                                    openInSystemFiles(
+                                        context = context,
+                                        docId = pkgTarget.safInitialDocId,
+                                        fallbackDocId = pkgTarget.kind.defaultSafDocId,
+                                        onFallback = { viewModel.emitSimpleMessage(it) },
+                                    )
+                                },
+                            )
                         }
                     }
                 }
@@ -757,12 +798,20 @@ fun BrowserScreen(
                             item(key = "restricted-android-data-empty-banner") {
                                 RestrictedAndroidDataCard(
                                     kind = restrictedKind,
+                                    onOpenWirelessDebugging = {
+                                        UiFormatters.launchWirelessDebuggingSettings(context) {
+                                            viewModel.emitSimpleMessage(it)
+                                        }
+                                    },
+                                    onConnectShizuku = {
+                                        PrivilegedShellBridge.connectOrOpenShizuku(context) {
+                                            viewModel.emitSimpleMessage(it)
+                                        }
+                                        viewModel.reloadCurrentDirectory(silent = true)
+                                    },
                                     onMountSaf = {
                                         val vol = resolveRestrictedAndroidVolume(volumes, restrictedKind)
                                         onMountVolumeSaf(vol)
-                                    },
-                                    onSelectApp = {
-                                        viewModel.openOverlay(OverlayScreen.InstalledApps)
                                     },
                                     onOpenSystemFiles = {
                                         openInSystemFiles(
@@ -776,8 +825,8 @@ fun BrowserScreen(
                             }
                             item(key = "restricted-android-data-empty-hint") {
                                 EmptyFolderView(
-                                    title = "No accessible app folders mounted yet",
-                                    subtitle = "Mount via SAF, select an app, or open in System Files",
+                                    title = "No app folders found",
+                                    subtitle = "Connect Shizuku via Wireless Debugging, mount via SAF, or open in System Files",
                                 )
                             }
                         }
@@ -810,12 +859,20 @@ fun BrowserScreen(
                             ) {
                                 RestrictedAndroidDataCard(
                                     kind = restrictedKind,
+                                    onOpenWirelessDebugging = {
+                                        UiFormatters.launchWirelessDebuggingSettings(context) {
+                                            viewModel.emitSimpleMessage(it)
+                                        }
+                                    },
+                                    onConnectShizuku = {
+                                        PrivilegedShellBridge.connectOrOpenShizuku(context) {
+                                            viewModel.emitSimpleMessage(it)
+                                        }
+                                        viewModel.reloadCurrentDirectory(silent = true)
+                                    },
                                     onMountSaf = {
                                         val vol = resolveRestrictedAndroidVolume(volumes, restrictedKind)
                                         onMountVolumeSaf(vol)
-                                    },
-                                    onSelectApp = {
-                                        viewModel.openOverlay(OverlayScreen.InstalledApps)
                                     },
                                     onOpenSystemFiles = {
                                         openInSystemFiles(
@@ -855,12 +912,20 @@ fun BrowserScreen(
                             item(key = "restricted-android-data-banner") {
                                 RestrictedAndroidDataCard(
                                     kind = restrictedKind,
+                                    onOpenWirelessDebugging = {
+                                        UiFormatters.launchWirelessDebuggingSettings(context) {
+                                            viewModel.emitSimpleMessage(it)
+                                        }
+                                    },
+                                    onConnectShizuku = {
+                                        PrivilegedShellBridge.connectOrOpenShizuku(context) {
+                                            viewModel.emitSimpleMessage(it)
+                                        }
+                                        viewModel.reloadCurrentDirectory(silent = true)
+                                    },
                                     onMountSaf = {
                                         val vol = resolveRestrictedAndroidVolume(volumes, restrictedKind)
                                         onMountVolumeSaf(vol)
-                                    },
-                                    onSelectApp = {
-                                        viewModel.openOverlay(OverlayScreen.InstalledApps)
                                     },
                                     onOpenSystemFiles = {
                                         openInSystemFiles(
@@ -1063,41 +1128,153 @@ private fun resolveRestrictedAndroidVolume(
 private fun openInSystemFiles(
     context: android.content.Context,
     docId: String,
+    fallbackDocId: String? = null,
     onFallback: (String) -> Unit,
 ) {
-    val docUri = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", docId)
-    val candidates = listOf(
-        Intent(Intent.ACTION_VIEW)
-            .setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
-            .setPackage("com.google.android.documentsui")
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-        Intent(Intent.ACTION_VIEW)
-            .setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
-            .setPackage("com.android.documentsui")
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-        Intent(Intent.ACTION_VIEW)
-            .setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-        Intent("android.provider.action.BROWSE")
-            .setData(docUri)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-    )
-    for (intent in candidates) {
-        val launched = runCatching {
-            context.startActivity(intent)
-            true
-        }.getOrDefault(false)
-        if (launched) return
+    val docIds = listOfNotNull(docId, fallbackDocId?.takeIf { it != docId })
+    for (id in docIds) {
+        val docUri = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", id)
+        val candidates = listOf(
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                .setPackage("com.google.android.documentsui")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                .setPackage("com.android.documentsui")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            Intent("android.provider.action.BROWSE")
+                .setData(docUri)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+        for (intent in candidates) {
+            val launched = runCatching {
+                context.startActivity(intent)
+                true
+            }.getOrDefault(false)
+            if (launched) return
+        }
     }
     onFallback("System Files app is unavailable on this device")
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
+private fun AppDataAccessCard(
+    target: RestrictedPackageTarget,
+    privilegedState: PrivilegedAccessState,
+    shizukuInstalled: Boolean,
+    onOpenWirelessDebugging: () -> Unit,
+    onConnectShizuku: () -> Unit,
+    onMountPackageSaf: () -> Unit,
+    onOpenSystemFiles: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shizukuStatusText = when {
+        privilegedState.shizukuRunning && privilegedState.shizukuGranted ->
+            "Shizuku status: Connected (UID ${privilegedState.shizukuUid})"
+        privilegedState.shizukuRunning ->
+            "Shizuku status: Running — tap Connect Shizuku to authorize Files"
+        privilegedState.rootAvailable ->
+            "Root status: su available"
+        shizukuInstalled ->
+            "Shizuku status: Installed (enable Wireless Debugging, start Shizuku, then tap Connect Shizuku)"
+        else ->
+            "Shizuku status: Not installed (tap Connect Shizuku to get Shizuku, then start via Wireless Debugging)"
+    }
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(16.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.Security,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "${target.appLabel} (${target.kind.displaySubpath})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = target.packageName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Text(
+                text = "Android 13–16 blocks direct FUSE & SAF access to other apps' ${target.kind.displaySubpath} folders. " +
+                    "Enable Wireless Debugging and connect Shizuku (or Root) for full read/write access right inside Files.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Text(
+                text = shizukuStatusText,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+
+            Button(
+                onClick = onOpenWirelessDebugging,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.DeveloperMode,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Open Wireless Debugging (打开无线调试设置)")
+            }
+
+            FilledTonalButton(
+                onClick = onConnectShizuku,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Connect Shizuku")
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                OutlinedButton(onClick = onMountPackageSaf) {
+                    Text("Mount via SAF (Android 11–12)")
+                }
+                OutlinedButton(onClick = onOpenSystemFiles) {
+                    Text("Open in System Files")
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
 private fun RestrictedAndroidDataCard(
     kind: RestrictedAndroidDirKind,
+    onOpenWirelessDebugging: () -> Unit,
+    onConnectShizuku: () -> Unit,
     onMountSaf: () -> Unit,
-    onSelectApp: () -> Unit,
     onOpenSystemFiles: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1122,15 +1299,14 @@ private fun RestrictedAndroidDataCard(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = "Restricted $dirLabel folder",
+                    text = "App folders in $dirLabel",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
             Text(
-                text = "Android 11+ system restriction: Android hides other apps' Android/data folders from direct file listing. " +
-                    "On Android 11–12 you can mount via SAF; on Android 13–15 Google restricts third-party SAF access to Android/data " +
-                    "(only own app data, Android/media, or system Files app are allowed without ADB/root).",
+                text = "Tap any app folder below to inspect or open it. For full read/write access on Android 13–16, " +
+                    "enable Wireless Debugging and connect Shizuku (or mount via SAF on Android 11–12).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1139,11 +1315,14 @@ private fun RestrictedAndroidDataCard(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Button(onClick = onMountSaf) {
-                    Text("Mount via SAF", maxLines = 1, softWrap = false)
+                Button(onClick = onConnectShizuku) {
+                    Text("Connect Shizuku", maxLines = 1, softWrap = false)
                 }
-                OutlinedButton(onClick = onSelectApp) {
-                    Text("Select App", maxLines = 1, softWrap = false)
+                OutlinedButton(onClick = onOpenWirelessDebugging) {
+                    Text("Open Wireless Debugging", maxLines = 1, softWrap = false)
+                }
+                OutlinedButton(onClick = onMountSaf) {
+                    Text("Mount via SAF", maxLines = 1, softWrap = false)
                 }
                 OutlinedButton(onClick = onOpenSystemFiles) {
                     Text("Open in System Files", maxLines = 1, softWrap = false)

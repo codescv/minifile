@@ -12,7 +12,9 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.attribute.PosixFilePermission
 
-class LocalFileSystem : FileSystem {
+class LocalFileSystem(
+    private val fallback: PrivilegedLocalFallback? = null,
+) : FileSystem {
 
     override fun supports(path: VfsPath): Boolean = path is VfsPath.Local
 
@@ -21,21 +23,55 @@ class LocalFileSystem : FileSystem {
         return File(path.normalized)
     }
 
+    private fun shouldPreferPrivileged(normalizedPath: String): Boolean {
+        val fb = fallback ?: return false
+        return fb.isAvailable() &&
+            PathUtils.isRestrictedAndroidSubtree(normalizedPath) &&
+            !PathUtils.isOwnPackageSubtree(normalizedPath, fb.ownPackageName)
+    }
+
+    private fun canFallbackPrivileged(normalizedPath: String): Boolean {
+        val fb = fallback ?: return false
+        return fb.isAvailable() && PathUtils.isRestrictedAndroidSubtree(normalizedPath)
+    }
+
     override suspend fun stat(path: VfsPath): VfsNode? {
         val file = toFile(path)
+        if (shouldPreferPrivileged(file.path)) {
+            return fallback!!.stat(file.path)
+        }
         val nio = file.toPath()
         val isSymlink = runCatching { Files.isSymbolicLink(nio) }.getOrDefault(false)
-        if (!file.exists() && !isSymlink) return null
+        if (!file.exists() && !isSymlink) {
+            if (canFallbackPrivileged(file.path)) {
+                return fallback!!.stat(file.path)
+            }
+            return null
+        }
         return toNode(file, computeChildCount = false)
     }
 
     override suspend fun list(dir: VfsPath, includeHidden: Boolean): List<VfsNode> {
         val dirFile = toFile(dir)
+        if (shouldPreferPrivileged(dirFile.path)) {
+            return fallback!!.listDirectory(dirFile.path, includeHidden)
+                ?: throw FileNotFoundException("Directory does not exist: ${dirFile.path}")
+        }
         if (!dirFile.exists() || !dirFile.isDirectory) {
+            if (canFallbackPrivileged(dirFile.path)) {
+                return fallback!!.listDirectory(dirFile.path, includeHidden)
+                    ?: throw FileNotFoundException("Directory does not exist: ${dirFile.path}")
+            }
             throw FileNotFoundException("Directory does not exist: ${dirFile.path}")
         }
         val children = dirFile.listFiles()
-            ?: throw IOException("Permission denied reading directory: ${dirFile.path}")
+        if (children == null) {
+            if (canFallbackPrivileged(dirFile.path)) {
+                return fallback!!.listDirectory(dirFile.path, includeHidden)
+                    ?: throw IOException("Permission denied reading directory: ${dirFile.path}")
+            }
+            throw IOException("Permission denied reading directory: ${dirFile.path}")
+        }
 
         val nodes = ArrayList<VfsNode>(children.size)
         for (child in children) {
@@ -64,11 +100,29 @@ class LocalFileSystem : FileSystem {
 
     override suspend fun exists(path: VfsPath): Boolean {
         val file = toFile(path)
-        return file.exists() || runCatching { Files.isSymbolicLink(file.toPath()) }.getOrDefault(false)
+        if (shouldPreferPrivileged(file.path)) {
+            return fallback!!.exists(file.path)
+        }
+        val direct = file.exists() || runCatching { Files.isSymbolicLink(file.toPath()) }.getOrDefault(false)
+        if (!direct && canFallbackPrivileged(file.path)) {
+            return fallback!!.exists(file.path)
+        }
+        return direct
     }
 
     override suspend fun createDirectory(dir: VfsPath, name: String): VfsPath {
         val target = toFile(child(dir, name))
+        if (shouldPreferPrivileged(target.path)) {
+            val existing = fallback!!.stat(target.path)
+            if (existing != null) {
+                if (existing.isDirectory) return VfsPath.Local(target.path)
+                throw IOException("A file with name '$name' already exists")
+            }
+            if (!fallback.mkdir(target.path)) {
+                throw IOException("Failed to create directory: ${target.path}")
+            }
+            return VfsPath.Local(target.path)
+        }
         if (!target.parentFile.let { it != null && it.exists() && it.isDirectory }) {
             throw FileNotFoundException("Parent directory does not exist: ${target.parent}")
         }
@@ -84,6 +138,12 @@ class LocalFileSystem : FileSystem {
 
     override suspend fun createFile(dir: VfsPath, name: String, mime: String): VfsPath {
         val target = toFile(child(dir, name))
+        if (shouldPreferPrivileged(target.path)) {
+            if (!fallback!!.exists(target.path) && !fallback.createFile(target.path)) {
+                throw IOException("Failed to create file: ${target.path}")
+            }
+            return VfsPath.Local(target.path)
+        }
         val parent = target.parentFile
         if (parent == null || !parent.exists() || !parent.isDirectory) {
             throw FileNotFoundException("Parent directory does not exist: ${target.parent}")
@@ -96,6 +156,9 @@ class LocalFileSystem : FileSystem {
 
     override suspend fun delete(path: VfsPath): Boolean {
         val file = toFile(path)
+        if (shouldPreferPrivileged(file.path)) {
+            return fallback!!.delete(file.path)
+        }
         val nio = file.toPath()
         return runCatching { Files.deleteIfExists(nio) }.getOrElse { file.delete() }
     }
@@ -106,6 +169,20 @@ class LocalFileSystem : FileSystem {
             throw IllegalArgumentException(validation.reason)
         }
         val src = toFile(path)
+        if (shouldPreferPrivileged(src.path)) {
+            if (!fallback!!.exists(src.path)) {
+                throw FileNotFoundException("Source does not exist: ${src.path}")
+            }
+            val parent = src.parentFile ?: throw IOException("Cannot rename filesystem root")
+            val dst = File(parent, newName)
+            if (dst.path != src.path && fallback.exists(dst.path)) {
+                throw IOException("Destination already exists: ${dst.path}")
+            }
+            if (!fallback.rename(src.path, dst.path)) {
+                throw IOException("Failed to rename ${src.path} to ${dst.path}")
+            }
+            return VfsPath.Local(dst.path)
+        }
         if (!src.exists() && !runCatching { Files.isSymbolicLink(src.toPath()) }.getOrDefault(false)) {
             throw FileNotFoundException("Source does not exist: ${src.path}")
         }
@@ -123,6 +200,22 @@ class LocalFileSystem : FileSystem {
     override suspend fun moveWithinSameBackend(src: VfsPath, dstDir: VfsPath): VfsPath? {
         val srcFile = toFile(src)
         val dstDirFile = toFile(dstDir)
+        if (shouldPreferPrivileged(srcFile.path) || shouldPreferPrivileged(dstDirFile.path)) {
+            val dstStat = if (shouldPreferPrivileged(dstDirFile.path)) {
+                fallback!!.stat(dstDirFile.path)
+            } else {
+                stat(dstDir)
+            }
+            if (dstStat?.isDirectory != true) return null
+            val target = File(dstDirFile, srcFile.name)
+            val targetExists = if (shouldPreferPrivileged(target.path)) {
+                fallback!!.exists(target.path)
+            } else {
+                target.exists()
+            }
+            if (targetExists) return null
+            return if (fallback!!.rename(srcFile.path, target.path)) VfsPath.Local(target.path) else null
+        }
         if (!dstDirFile.isDirectory) return null
         val target = File(dstDirFile, srcFile.name)
         if (target.exists()) return null
@@ -132,7 +225,13 @@ class LocalFileSystem : FileSystem {
     override fun openInput(path: VfsPath, offset: Long): InputStream {
         require(offset >= 0L) { "Negative offset: $offset" }
         val file = toFile(path)
+        if (shouldPreferPrivileged(file.path)) {
+            return fallback!!.openInput(file.path, offset)
+        }
         if (!file.exists() || file.isDirectory) {
+            if (canFallbackPrivileged(file.path)) {
+                return fallback!!.openInput(file.path, offset)
+            }
             throw FileNotFoundException("Cannot open file for reading: ${file.path}")
         }
         if (offset == 0L) {
@@ -150,8 +249,14 @@ class LocalFileSystem : FileSystem {
 
     override fun openOutput(path: VfsPath, append: Boolean): OutputStream {
         val file = toFile(path)
+        if (shouldPreferPrivileged(file.path)) {
+            return fallback!!.openOutput(file.path, append)
+        }
         val parent = file.parentFile
         if (parent == null || !parent.exists() || !parent.isDirectory) {
+            if (canFallbackPrivileged(file.path)) {
+                return fallback!!.openOutput(file.path, append)
+            }
             throw FileNotFoundException("Parent directory does not exist: ${file.parent}")
         }
         return FileOutputStream(file, append)
@@ -177,6 +282,9 @@ class LocalFileSystem : FileSystem {
 
     override suspend fun setLastModified(path: VfsPath, epochMs: Long): Boolean {
         val file = toFile(path)
+        if (shouldPreferPrivileged(file.path)) {
+            return fallback!!.setLastModified(file.path, epochMs)
+        }
         return file.setLastModified(epochMs)
     }
 

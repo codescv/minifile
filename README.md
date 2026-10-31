@@ -23,8 +23,8 @@ Minimalist, offline-first **Android File Manager** with a built-in **RFC 959 / R
   - File & folder Properties sheet with asynchronous `MD5` & `SHA-256` checksum calculation and hash verification.
 - **Storage Volumes & App Data**:
   - Internal Storage, removable SD cards, and hot-plugged USB OTG drives.
-  - Guided Storage Access Framework (`ACTION_OPEN_DOCUMENT_TREE`) mounting for `Android/data`, `Android/obb`, and arbitrary folders when All-files access is not granted.
-  - Installed Apps Inspector with package storage inspection and 1-tap APK backup/export.
+  - Installed app directory enumeration (`Android/data` & `Android/obb`) with zero-dependency **Shizuku** (Wireless Debugging) & **Root (`su`)** privileged shell VFS access on Android 11–16, plus per-app SAF & System Files fallbacks.
+  - Installed Apps browser with package storage inspection and 1-tap APK backup/export.
 - **Favorites & 1-Tap Copy/Move to Favorite**:
   - Bookmark local or SAF directories, reorder/rename, export/import Favorites JSON, and copy or move any selection directly to a Favorite folder in one tap via `FavoritePickerSheet`.
 - **Verified Updates via GitHub Releases**:
@@ -40,8 +40,8 @@ Grab the latest release from [**GitHub Releases**](https://github.com/codescv/mi
 
 | Asset | Description |
 |-------|-------------|
-| `minifile-v1.0.2-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
-| `minifile-companion-v1.0.2.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
+| `minifile-v1.0.3-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
+| `minifile-companion-v1.0.3.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
 | `SHA256SUMS.txt` | SHA-256 checksums for release assets |
 
 ### Install PC Companion with `uv` (Recommended)

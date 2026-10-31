@@ -101,68 +101,6 @@ class AndroidVolumeProvider(
             )
         }
 
-        // App Data: Android/data and Android/obb
-        val androidDataFile = File(primaryDir, "Android/data")
-        val canReadDataDirectly = Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q &&
-            allFiles &&
-            androidDataFile.canRead()
-        val dataGrant = grants[PersistedTreeStore.KEY_ANDROID_DATA]
-        built.add(
-            Volume(
-                id = PersistedTreeStore.KEY_ANDROID_DATA,
-                name = "Android/data",
-                kind = VolumeKind.APP_DATA,
-                root = when {
-                    canReadDataDirectly -> VfsPath.Local(androidDataFile.absolutePath)
-                    dataGrant != null -> dataGrant.toVfsPath()
-                    else -> null
-                },
-                isMounted = true,
-                needsSafGrant = !canReadDataDirectly && dataGrant == null,
-                safInitialDocId = "primary:Android/data",
-                subtitle = if (dataGrant != null || canReadDataDirectly) "App external data" else "Tap to mount via system picker",
-            ),
-        )
-
-        val androidObbFile = File(primaryDir, "Android/obb")
-        val canReadObbDirectly = Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q &&
-            allFiles &&
-            androidObbFile.canRead()
-        val obbGrant = grants[PersistedTreeStore.KEY_ANDROID_OBB]
-        built.add(
-            Volume(
-                id = PersistedTreeStore.KEY_ANDROID_OBB,
-                name = "Android/obb",
-                kind = VolumeKind.APP_OBB,
-                root = when {
-                    canReadObbDirectly -> VfsPath.Local(androidObbFile.absolutePath)
-                    obbGrant != null -> obbGrant.toVfsPath()
-                    else -> null
-                },
-                isMounted = true,
-                needsSafGrant = !canReadObbDirectly && obbGrant == null,
-                safInitialDocId = "primary:Android/obb",
-                subtitle = if (obbGrant != null || canReadObbDirectly) "App expansion files" else "Tap to mount via system picker",
-            ),
-        )
-
-        // Generic Mounted SAF folders (and per-package grants)
-        val reservedKeys = built.map { it.id }.toSet()
-        for ((key, grant) in grants) {
-            if (key in reservedKeys) continue
-            built.add(
-                Volume(
-                    id = key,
-                    name = grant.label,
-                    kind = VolumeKind.MOUNTED_TREE,
-                    root = grant.toVfsPath(),
-                    isMounted = true,
-                    needsSafGrant = false,
-                    subtitle = "${grant.providerAuthority} · ${grant.rootDocumentId}",
-                ),
-            )
-        }
-
         _volumes.value = built
     }
 
