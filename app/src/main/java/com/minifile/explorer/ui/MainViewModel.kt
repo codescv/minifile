@@ -25,8 +25,11 @@ import com.minifile.explorer.core.model.TransferMode
 import com.minifile.explorer.core.model.ViewMode
 import com.minifile.explorer.core.ops.ConflictResolution
 import com.minifile.explorer.core.ops.ConflictResolver
+import com.minifile.explorer.core.ops.FileOperations
+import com.minifile.explorer.core.ops.NomediaManager
 import com.minifile.explorer.core.ops.ProgressSink
 import com.minifile.explorer.core.ops.SearchHit
+import com.minifile.explorer.core.ops.ZipArchiver
 import com.minifile.explorer.core.peer.PeerHttpClient
 import com.minifile.explorer.core.peer.PeerInfo
 import com.minifile.explorer.core.peer.PeerPathPolicy
@@ -34,19 +37,27 @@ import com.minifile.explorer.core.peer.PeerSendItem
 import com.minifile.explorer.core.peer.PeerSendResult
 import com.minifile.explorer.core.peer.PeerTransferEngine
 import com.minifile.explorer.core.peer.PeerTransferException
+import com.minifile.explorer.core.vfs.FileSystem
 import com.minifile.explorer.core.vfs.NameValidation
 import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.vfs.Volume
+import com.minifile.explorer.data.FavoritesRepository
+import com.minifile.explorer.data.FtpServersRepository
+import com.minifile.explorer.data.GDriveServersRepository
+import com.minifile.explorer.data.SettingsRepository
 import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
 import com.minifile.explorer.data.gdrive.GDriveSignInState
 import com.minifile.explorer.di.AppContainer
 import com.minifile.explorer.service.OperationCompletionEvent
+import com.minifile.explorer.service.OperationRegistry
 import com.minifile.explorer.service.OperationRunOutcome
 import com.minifile.explorer.ui.util.UiFormatters
 import java.io.FileNotFoundException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -104,10 +115,90 @@ data class BrowserUiState(
     val isSelectionMode: Boolean get() = selectedPaths.isNotEmpty()
 }
 
-class MainViewModel(
-    val container: AppContainer,
+private data class BrowserBackEntry(
+    val dir: VfsPath?,
+    val rootVolumeName: String,
+    val rootVolumeBase: VfsPath?,
+    val overlay: OverlayScreen?,
+    val tab: MainTab,
+)
+
+internal class MainViewModelDependencies(
+    val settingsRepository: SettingsRepository,
+    val favoritesRepository: FavoritesRepository,
+    val ftpServersRepository: FtpServersRepository,
+    val gdriveServersRepository: GDriveServersRepository,
+    val fileSystem: FileSystem,
+    val fileOperations: FileOperations,
+    val zipArchiver: ZipArchiver,
+    val nomediaManager: NomediaManager,
+    val operationRegistry: OperationRegistry,
+    val volumes: StateFlow<List<Volume>>,
+    val refreshVolumesAction: suspend () -> Unit,
+    val gdriveSignInState: StateFlow<GDriveSignInState> = MutableStateFlow(GDriveSignInState.Idle),
+    val peers: StateFlow<List<PeerInfo>> = MutableStateFlow(emptyList()),
+    val isScanningPeers: StateFlow<Boolean> = MutableStateFlow(false),
+    val invalidateGDriveServer: (String) -> Unit = {},
+    val invalidateGDrivePath: (VfsPath.GDrive) -> Unit = {},
+    val peekGDriveCachedToken: (String) -> String? = { null },
+    val cancelGDriveSignIn: () -> Unit = {},
+    val resetGDriveSignIn: () -> Unit = {},
+    val findSafGrantRoot: (String) -> VfsPath.Saf? = { null },
+    val primaryStoragePathProvider: () -> String = {
+        Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
+    },
+) {
+    companion object {
+        fun fromContainer(container: AppContainer): MainViewModelDependencies =
+            MainViewModelDependencies(
+                settingsRepository = container.settingsRepository,
+                favoritesRepository = container.favoritesRepository,
+                ftpServersRepository = container.ftpServersRepository,
+                gdriveServersRepository = container.gdriveServersRepository,
+                fileSystem = container.fileSystem,
+                fileOperations = container.fileOperations,
+                zipArchiver = container.zipArchiver,
+                nomediaManager = container.nomediaManager,
+                operationRegistry = container.operationRegistry,
+                volumes = container.volumeProvider.volumes,
+                refreshVolumesAction = { container.volumeProvider.refresh() },
+                gdriveSignInState = container.gdriveSignInController.state,
+                peers = container.peerDiscoveryHolder.peers,
+                isScanningPeers = container.peerDiscoveryHolder.isScanning,
+                invalidateGDriveServer = { container.googleDriveFileSystem.invalidateServer(it) },
+                invalidateGDrivePath = { container.googleDriveFileSystem.invalidate(it) },
+                peekGDriveCachedToken = { container.googleDriveFileSystem.peekCachedToken(it) },
+                cancelGDriveSignIn = { container.gdriveSignInController.cancel() },
+                resetGDriveSignIn = { container.gdriveSignInController.reset() },
+                findSafGrantRoot = { treeUri ->
+                    container.persistedTreeStore.findGrantByTreeUri(treeUri)?.toVfsPath()
+                },
+            )
+    }
+}
+
+class MainViewModel internal constructor(
+    private val _container: AppContainer?,
     private val savedStateHandle: SavedStateHandle,
+    private val deps: MainViewModelDependencies,
+    private val scopeOverride: CoroutineScope? = null,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
+
+    constructor(
+        container: AppContainer,
+        savedStateHandle: SavedStateHandle,
+    ) : this(
+        _container = container,
+        savedStateHandle = savedStateHandle,
+        deps = MainViewModelDependencies.fromContainer(container),
+    )
+
+    val container: AppContainer
+        get() = checkNotNull(_container) { "AppContainer is not attached in headless unit test mode" }
+
+    private val vmScope: CoroutineScope
+        get() = scopeOverride ?: viewModelScope
 
     companion object {
         private const val STATE_TAB = "saved_tab"
@@ -125,6 +216,9 @@ class MainViewModel(
             }
     }
 
+    private val overlayBackStack = ArrayDeque<OverlayScreen>()
+    private val browserBackStack = ArrayDeque<BrowserBackEntry>()
+
     private val _activeTab = MutableStateFlow(restoreInitialTab())
     val activeTab: StateFlow<MainTab> = _activeTab.asStateFlow()
 
@@ -140,28 +234,29 @@ class MainViewModel(
     private val _snackbarMessages = MutableSharedFlow<OperationCompletionEvent>(extraBufferCapacity = 16)
     val snackbarMessages: SharedFlow<OperationCompletionEvent> = _snackbarMessages.asSharedFlow()
 
-    val settings: StateFlow<AppSettings> = container.settingsRepository.settings
-    val favorites: StateFlow<List<Favorite>> = container.favoritesRepository.favorites
-    val ftpServers: StateFlow<List<FtpServerBookmark>> = container.ftpServersRepository.servers
-    val gdriveServers: StateFlow<List<GDriveServerBookmark>> = container.gdriveServersRepository.servers
-    val gdriveSignInState: StateFlow<GDriveSignInState> = container.gdriveSignInController.state
-    val volumes: StateFlow<List<Volume>> = container.volumeProvider.volumes
+    val settings: StateFlow<AppSettings> = deps.settingsRepository.settings
+    val favorites: StateFlow<List<Favorite>> = deps.favoritesRepository.favorites
+    val ftpServers: StateFlow<List<FtpServerBookmark>> = deps.ftpServersRepository.servers
+    val gdriveServers: StateFlow<List<GDriveServerBookmark>> = deps.gdriveServersRepository.servers
+    val gdriveSignInState: StateFlow<GDriveSignInState> = deps.gdriveSignInState
+    val volumes: StateFlow<List<Volume>> = deps.volumes
     val clipboard = ClipboardHolder.state
-    val peers: StateFlow<List<PeerInfo>> = container.peerDiscoveryHolder.peers
-    val isScanningPeers: StateFlow<Boolean> = container.peerDiscoveryHolder.isScanning
+    val peers: StateFlow<List<PeerInfo>> = deps.peers
+    val isScanningPeers: StateFlow<Boolean> = deps.isScanningPeers
 
     private val _reauthGDriveBookmark = MutableStateFlow<GDriveServerBookmark?>(null)
     val reauthGDriveBookmark: StateFlow<GDriveServerBookmark?> = _reauthGDriveBookmark.asStateFlow()
 
     private var directoryLoadJob: Job? = null
     private var recursiveSearchJob: Job? = null
+    private var favoriteOpenJob: Job? = null
 
     init {
-        viewModelScope.launch {
-            container.volumeProvider.refresh()
+        vmScope.launch {
+            deps.refreshVolumesAction()
         }
         var lastShowHidden = settings.value.showHidden
-        viewModelScope.launch {
+        vmScope.launch {
             settings.collect { s ->
                 recomputeVisibleEntries(s)
                 if (s.showHidden != lastShowHidden) {
@@ -172,13 +267,13 @@ class MainViewModel(
                 }
             }
         }
-        viewModelScope.launch {
-            container.operationRegistry.completions.collect { event ->
+        vmScope.launch {
+            deps.operationRegistry.completions.collect { event ->
                 _snackbarMessages.tryEmit(event)
                 if (_browser.value.currentDir != null) {
                     reloadCurrentDirectory(silent = true)
                 }
-                container.volumeProvider.refresh()
+                deps.refreshVolumesAction()
             }
         }
 
@@ -192,7 +287,12 @@ class MainViewModel(
                 ?.let { runCatching { VfsPath.parse(it) }.getOrNull() }
                 ?: inferRootBase(parsed)
             if (parsed != null) {
-                navigateToDirectory(parsed, rootVolumeName = rootName, rootVolumeBase = rootBase)
+                navigateToDirectory(
+                    parsed,
+                    rootVolumeName = rootName,
+                    rootVolumeBase = rootBase,
+                    recordHistory = false,
+                )
             }
         }
     }
@@ -203,41 +303,54 @@ class MainViewModel(
     }
 
     fun selectTab(tab: MainTab) {
+        overlayBackStack.clear()
         _overlay.value = null
         _activeTab.value = tab
         savedStateHandle[STATE_TAB] = tab.name
         if (tab == MainTab.BROWSE && _browser.value.currentDir == null) {
-            viewModelScope.launch { container.volumeProvider.refresh() }
+            vmScope.launch { deps.refreshVolumesAction() }
         }
     }
 
     fun openOverlay(screen: OverlayScreen) {
+        val current = _overlay.value
+        if (current != null && current != screen) {
+            val existingIdx = overlayBackStack.indexOf(screen)
+            if (existingIdx >= 0) {
+                while (overlayBackStack.size > existingIdx) {
+                    overlayBackStack.removeLast()
+                }
+            } else {
+                overlayBackStack.addLast(current)
+            }
+        }
         _overlay.value = screen
     }
 
     fun closeOverlay() {
-        _overlay.value = null
-        if (_browser.value.currentDir != null) {
+        val prev = overlayBackStack.removeLastOrNull()
+        _overlay.value = prev
+        if (prev == null && _browser.value.currentDir != null) {
             reloadCurrentDirectory(silent = true)
         }
     }
 
     fun refreshVolumes() {
-        viewModelScope.launch {
-            container.volumeProvider.refresh()
+        vmScope.launch {
+            deps.refreshVolumesAction()
             // If currently browsing an unmounted volume, step back to Storage Home gracefully
             val cur = _browser.value.currentDir
             if (cur is VfsPath.Ftp) {
-                if (container.ftpServersRepository.findById(cur.serverId) == null) {
+                if (deps.ftpServersRepository.findById(cur.serverId) == null) {
                     navigateToStorageHome()
                 }
             } else if (cur is VfsPath.GDrive) {
-                if (container.gdriveServersRepository.findById(cur.serverId) == null) {
+                if (deps.gdriveServersRepository.findById(cur.serverId) == null) {
                     navigateToStorageHome()
                 }
             } else if (cur != null) {
-                val stillExists = withContext(Dispatchers.IO) {
-                    runCatching { container.fileSystem.exists(cur) }.getOrDefault(false)
+                val stillExists = withContext(ioDispatcher) {
+                    runCatching { deps.fileSystem.exists(cur) }.getOrDefault(false)
                 }
                 if (!stillExists) {
                     navigateToStorageHome()
@@ -247,7 +360,10 @@ class MainViewModel(
         }
     }
 
-    fun navigateToStorageHome() {
+    fun navigateToStorageHome(clearBackStack: Boolean = true) {
+        if (clearBackStack) {
+            browserBackStack.clear()
+        }
         directoryLoadJob?.cancel()
         recursiveSearchJob?.cancel()
         val hadSelection = _browser.value.selectedPaths.isNotEmpty()
@@ -272,6 +388,7 @@ class MainViewModel(
     }
 
     fun openFtpServer(server: FtpServerBookmark) {
+        overlayBackStack.clear()
         _overlay.value = null
         _activeTab.value = MainTab.BROWSE
         savedStateHandle[STATE_TAB] = MainTab.BROWSE.name
@@ -293,8 +410,8 @@ class MainViewModel(
         initialPath: String,
         openAfterAdd: Boolean = true,
     ) {
-        viewModelScope.launch {
-            val created = container.ftpServersRepository.add(
+        vmScope.launch {
+            val created = deps.ftpServersRepository.add(
                 name = name,
                 host = host,
                 port = port,
@@ -311,8 +428,8 @@ class MainViewModel(
     }
 
     fun updateFtpServer(server: FtpServerBookmark) {
-        viewModelScope.launch {
-            container.ftpServersRepository.update(server)
+        vmScope.launch {
+            deps.ftpServersRepository.update(server)
             emitSimpleMessage("Updated FTP server '${server.name}'")
             val cur = _browser.value.currentDir
             if (cur is VfsPath.Ftp && cur.serverId == server.id) {
@@ -327,9 +444,9 @@ class MainViewModel(
     }
 
     fun removeFtpServer(id: String) {
-        val existing = container.ftpServersRepository.findById(id)
-        viewModelScope.launch {
-            container.ftpServersRepository.remove(id)
+        val existing = deps.ftpServersRepository.findById(id)
+        vmScope.launch {
+            deps.ftpServersRepository.remove(id)
             val cur = _browser.value.currentDir
             if (cur is VfsPath.Ftp && cur.serverId == id) {
                 navigateToStorageHome()
@@ -341,6 +458,7 @@ class MainViewModel(
     }
 
     fun openGDriveServer(server: GDriveServerBookmark) {
+        overlayBackStack.clear()
         _overlay.value = null
         _activeTab.value = MainTab.BROWSE
         savedStateHandle[STATE_TAB] = MainTab.BROWSE.name
@@ -353,9 +471,9 @@ class MainViewModel(
     }
 
     fun addGDriveServer(bookmark: GDriveServerBookmark, openAfterAdd: Boolean = true) {
-        viewModelScope.launch {
-            val created = container.gdriveServersRepository.add(bookmark)
-            container.googleDriveFileSystem.invalidateServer(created.id)
+        vmScope.launch {
+            val created = deps.gdriveServersRepository.add(bookmark)
+            deps.invalidateGDriveServer(created.id)
             emitSimpleMessage("Added Google Drive '${created.name}'")
             if (openAfterAdd) {
                 openGDriveServer(created)
@@ -364,9 +482,9 @@ class MainViewModel(
     }
 
     fun updateGDriveServer(server: GDriveServerBookmark) {
-        viewModelScope.launch {
-            container.gdriveServersRepository.update(server)
-            container.googleDriveFileSystem.invalidateServer(server.id)
+        vmScope.launch {
+            deps.gdriveServersRepository.update(server)
+            deps.invalidateGDriveServer(server.id)
             emitSimpleMessage("Updated Google Drive '${server.name}'")
             val cur = _browser.value.currentDir
             if (cur is VfsPath.GDrive && cur.serverId == server.id) {
@@ -381,23 +499,25 @@ class MainViewModel(
     }
 
     fun removeGDriveServer(id: String) {
-        val existing = container.gdriveServersRepository.findById(id)
-        val cachedToken = container.googleDriveFileSystem.peekCachedToken(id)
-        viewModelScope.launch {
-            container.gdriveServersRepository.remove(id)
-            container.googleDriveFileSystem.invalidateServer(id)
+        val existing = deps.gdriveServersRepository.findById(id)
+        val cachedToken = deps.peekGDriveCachedToken(id)
+        vmScope.launch {
+            deps.gdriveServersRepository.remove(id)
+            deps.invalidateGDriveServer(id)
             val cur = _browser.value.currentDir
             if (cur is VfsPath.GDrive && cur.serverId == id) {
                 navigateToStorageHome()
             }
             if (existing != null) {
                 emitSimpleMessage("Removed Google Drive '${existing.name}'")
-                withContext(Dispatchers.IO) {
+                withContext(ioDispatcher) {
                     if (existing.authMode == GDriveAuthMode.SYSTEM_ACCOUNT) {
-                        AndroidAccountTokenProvider.invalidateTokenBestEffort(
-                            container.appContext,
-                            cachedToken,
-                        )
+                        _container?.appContext?.let { ctx ->
+                            AndroidAccountTokenProvider.invalidateTokenBestEffort(
+                                ctx,
+                                cachedToken,
+                            )
+                        }
                     } else {
                         val tokenToRevoke = existing.refreshToken.ifBlank { existing.accessToken }
                         revokeOAuthTokenBestEffort(tokenToRevoke)
@@ -415,7 +535,7 @@ class MainViewModel(
         existingBookmark: GDriveServerBookmark? = null,
     ) {
         container.gdriveSignInController.startBrowserSignIn(
-            scope = viewModelScope,
+            scope = vmScope,
             clientId = clientId,
             clientSecret = clientSecret,
             displayName = displayName,
@@ -425,11 +545,11 @@ class MainViewModel(
     }
 
     fun cancelGDriveSignIn() {
-        container.gdriveSignInController.cancel()
+        deps.cancelGDriveSignIn()
     }
 
     fun resetGDriveSignIn() {
-        container.gdriveSignInController.reset()
+        deps.resetGDriveSignIn()
     }
 
     fun submitGDrivePastedCredentials(
@@ -441,7 +561,7 @@ class MainViewModel(
         existingBookmark: GDriveServerBookmark? = null,
     ) {
         container.gdriveSignInController.submitPastedCredentials(
-            scope = viewModelScope,
+            scope = vmScope,
             rawText = rawText,
             overrideClientId = overrideClientId,
             overrideClientSecret = overrideClientSecret,
@@ -459,7 +579,7 @@ class MainViewModel(
         existingBookmark: GDriveServerBookmark? = null,
     ) {
         container.gdriveSignInController.completeSystemAccountSignIn(
-            scope = viewModelScope,
+            scope = vmScope,
             activity = activity,
             accountName = accountName,
             displayName = displayName,
@@ -469,28 +589,28 @@ class MainViewModel(
     }
 
     fun openReauthGDriveDialog(serverId: String) {
-        _reauthGDriveBookmark.value = container.gdriveServersRepository.findById(serverId)
+        _reauthGDriveBookmark.value = deps.gdriveServersRepository.findById(serverId)
     }
 
     fun dismissReauthGDriveDialog() {
-        container.gdriveSignInController.cancel()
+        deps.cancelGDriveSignIn()
         _reauthGDriveBookmark.value = null
     }
 
     override fun onCleared() {
-        container.gdriveSignInController.cancel()
+        deps.cancelGDriveSignIn()
         super.onCleared()
     }
 
     fun openFavoriteInBrowse(fav: Favorite, context: Context? = null) {
-        _overlay.value = null
-        viewModelScope.launch {
-            container.favoritesRepository.touch(fav.id)
-            val node = withContext(Dispatchers.IO) {
-                runCatching { container.fileSystem.stat(fav.path) }.getOrNull()
+        favoriteOpenJob?.cancel()
+        favoriteOpenJob = vmScope.launch {
+            deps.favoritesRepository.touch(fav.id)
+            val node = withContext(ioDispatcher) {
+                runCatching { deps.fileSystem.stat(fav.path) }.getOrNull()
             }
             if (node != null && node.isDirectory != fav.isDirectory) {
-                container.favoritesRepository.add(
+                deps.favoritesRepository.add(
                     name = fav.name,
                     path = fav.path,
                     color = fav.color,
@@ -499,18 +619,6 @@ class MainViewModel(
             }
             val isFileFav = if (node != null) !node.isDirectory else !fav.isDirectory
             if (isFileFav) {
-                val parentDir = withContext(Dispatchers.IO) {
-                    runCatching { container.fileSystem.parent(fav.path) }.getOrNull()
-                }
-                _activeTab.value = MainTab.BROWSE
-                savedStateHandle[STATE_TAB] = MainTab.BROWSE.name
-                if (parentDir != null) {
-                    navigateToDirectory(
-                        dir = parentDir,
-                        rootVolumeName = inferRootName(parentDir),
-                        rootVolumeBase = inferRootBase(parentDir),
-                    )
-                }
                 val targetPath = node?.path ?: fav.path
                 val targetName = node?.name ?: fav.path.displayName
                 val ext = PathUtils.extensionOf(targetName)
@@ -524,17 +632,16 @@ class MainViewModel(
                     }
 
                     node != null && settings.value.openTextInBuiltInEditor &&
-                        withContext(Dispatchers.IO) { UiFormatters.shouldOpenAsText(node, container.fileSystem) } -> {
+                        withContext(ioDispatcher) { UiFormatters.shouldOpenAsText(node, deps.fileSystem) } -> {
                         openOverlay(OverlayScreen.TextEditor(targetPath))
                     }
 
                     else -> {
-                        _overlay.value = null
                         if (context != null && node != null) {
                             UiFormatters.openExternallyAsync(
                                 context = context,
                                 safFs = container.safFileSystem,
-                                fs = container.fileSystem,
+                                fs = deps.fileSystem,
                                 node = node,
                             ).onFailure { err ->
                                 emitSimpleMessage("Cannot open ${node.name}: ${err.message}")
@@ -543,6 +650,20 @@ class MainViewModel(
                     }
                 }
             } else {
+                val originEntry = BrowserBackEntry(
+                    dir = _browser.value.currentDir,
+                    rootVolumeName = _browser.value.rootVolumeName,
+                    rootVolumeBase = _browser.value.rootVolumeBase,
+                    overlay = _overlay.value,
+                    tab = _activeTab.value,
+                )
+                if (originEntry.overlay != null ||
+                    originEntry.tab != MainTab.BROWSE ||
+                    originEntry.dir != fav.path
+                ) {
+                    browserBackStack.addLast(originEntry)
+                }
+                overlayBackStack.clear()
                 _overlay.value = null
                 _activeTab.value = MainTab.BROWSE
                 savedStateHandle[STATE_TAB] = MainTab.BROWSE.name
@@ -550,6 +671,7 @@ class MainViewModel(
                     dir = fav.path,
                     rootVolumeName = inferRootName(fav.path),
                     rootVolumeBase = inferRootBase(fav.path),
+                    recordHistory = false,
                 )
             }
         }
@@ -559,8 +681,28 @@ class MainViewModel(
         dir: VfsPath,
         rootVolumeName: String? = null,
         rootVolumeBase: VfsPath? = null,
+        recordHistory: Boolean = true,
     ) {
         val prev = _browser.value
+        if (recordHistory && prev.currentDir != dir) {
+            val existingIdx = browserBackStack.indexOfFirst { it.dir == dir && it.overlay == null }
+            if (existingIdx >= 0) {
+                while (browserBackStack.size > existingIdx) {
+                    browserBackStack.removeLast()
+                }
+            } else {
+                browserBackStack.addLast(
+                    BrowserBackEntry(
+                        dir = prev.currentDir,
+                        rootVolumeName = prev.rootVolumeName,
+                        rootVolumeBase = prev.rootVolumeBase,
+                        overlay = null,
+                        tab = _activeTab.value,
+                    ),
+                )
+            }
+        }
+
         val hadSelection = prev.selectedPaths.isNotEmpty() && prev.currentDir != null && prev.currentDir != dir
 
         val effectiveRootName = rootVolumeName ?: prev.rootVolumeName.takeIf {
@@ -575,7 +717,7 @@ class MainViewModel(
         savedStateHandle[STATE_ROOT_NAME] = effectiveRootName
         effectiveRootBase?.let { savedStateHandle[STATE_ROOT_BASE] = it.serialize() }
 
-        container.settingsRepository.update { s ->
+        deps.settingsRepository.update { s ->
             if (s.rememberLastFolder) s.copy(lastFolder = dir.serialize()) else s
         }
 
@@ -607,23 +749,23 @@ class MainViewModel(
     fun reloadCurrentDirectory(silent: Boolean = false) {
         val dir = _browser.value.currentDir ?: return
         if (!silent && dir is VfsPath.GDrive) {
-            container.googleDriveFileSystem.invalidate(dir)
+            deps.invalidateGDrivePath(dir)
         }
         loadDirectoryInternal(dir, showSpinner = !silent)
     }
 
     private fun loadDirectoryInternal(dir: VfsPath, showSpinner: Boolean) {
         directoryLoadJob?.cancel()
-        directoryLoadJob = viewModelScope.launch {
+        directoryLoadJob = vmScope.launch {
             if (showSpinner) {
                 _browser.value = _browser.value.copy(isLoading = true, errorMessage = null)
             }
             try {
                 // Always fetch hidden entries into rawEntries so toggling show_hidden is instant,
                 // and filter according to settings in recomputeVisibleEntries.
-                val (dirStat, allChildren) = withContext(Dispatchers.IO) {
-                    val st = container.fileSystem.stat(dir)
-                    val list = container.fileSystem.list(dir, includeHidden = true)
+                val (dirStat, allChildren) = withContext(ioDispatcher) {
+                    val st = deps.fileSystem.stat(dir)
+                    val list = deps.fileSystem.list(dir, includeHidden = true)
                     st to list
                 }
                 val validSelected = _browser.value.selectedPaths.intersect(allChildren.map { it.path }.toSet())
@@ -713,7 +855,7 @@ class MainViewModel(
 
             is VfsPath.Ftp -> {
                 val baseFtp = (rootBase as? VfsPath.Ftp)?.takeIf { it.serverId == dir.serverId }
-                    ?: container.ftpServersRepository.findById(dir.serverId)?.rootPath
+                    ?: deps.ftpServersRepository.findById(dir.serverId)?.rootPath
                     ?: VfsPath.Ftp(dir.serverId, "/")
                 val baseNorm = baseFtp.normalizedRemotePath
                 val dirNorm = dir.normalizedRemotePath
@@ -733,7 +875,7 @@ class MainViewModel(
 
             is VfsPath.GDrive -> {
                 val baseGd = (rootBase as? VfsPath.GDrive)?.takeIf { it.serverId == dir.serverId }
-                    ?: container.gdriveServersRepository.findById(dir.serverId)?.rootPath
+                    ?: deps.gdriveServersRepository.findById(dir.serverId)?.rootPath
                     ?: VfsPath.GDrive(dir.serverId, "/")
                 val baseNorm = baseGd.normalizedRemotePath
                 val dirNorm = dir.normalizedRemotePath
@@ -757,16 +899,16 @@ class MainViewModel(
     private fun inferRootName(path: VfsPath?): String {
         if (path == null) return "Internal"
         if (path is VfsPath.Ftp) {
-            return container.ftpServersRepository.findById(path.serverId)?.name ?: "FTP (${path.serverId})"
+            return deps.ftpServersRepository.findById(path.serverId)?.name ?: "FTP (${path.serverId})"
         }
         if (path is VfsPath.GDrive) {
-            return container.gdriveServersRepository.findById(path.serverId)?.name ?: "Google Drive (${path.serverId})"
+            return deps.gdriveServersRepository.findById(path.serverId)?.name ?: "Google Drive (${path.serverId})"
         }
         for (v in volumes.value) {
             val r = v.root ?: continue
             if (PathUtils.isAncestor(r, path)) return v.name
         }
-        val primary = Environment.getExternalStorageDirectory().absolutePath
+        val primary = deps.primaryStoragePathProvider()
         if (path is VfsPath.Local && PathUtils.isAncestor(VfsPath.Local(primary), path)) {
             return "Internal"
         }
@@ -779,14 +921,14 @@ class MainViewModel(
             val r = v.root ?: continue
             if (PathUtils.isAncestor(r, path)) return r
         }
-        val primary = VfsPath.Local(Environment.getExternalStorageDirectory().absolutePath)
+        val primary = VfsPath.Local(deps.primaryStoragePathProvider())
         if (path is VfsPath.Local && PathUtils.isAncestor(primary, path)) return primary
         return when (path) {
             is VfsPath.Local -> VfsPath.Local("/")
-            is VfsPath.Saf -> container.persistedTreeStore.findGrantByTreeUri(path.treeUri)?.toVfsPath() ?: path
-            is VfsPath.Ftp -> container.ftpServersRepository.findById(path.serverId)?.rootPath
+            is VfsPath.Saf -> deps.findSafGrantRoot(path.treeUri) ?: path
+            is VfsPath.Ftp -> deps.ftpServersRepository.findById(path.serverId)?.rootPath
                 ?: VfsPath.Ftp(path.serverId, "/")
-            is VfsPath.GDrive -> container.gdriveServersRepository.findById(path.serverId)?.rootPath
+            is VfsPath.GDrive -> deps.gdriveServersRepository.findById(path.serverId)?.rootPath
                 ?: VfsPath.GDrive(path.serverId, "/")
         }
     }
@@ -825,17 +967,37 @@ class MainViewModel(
     fun navigateUpOrHome() {
         val b = _browser.value
         val cur = b.currentDir ?: return
+        if (browserBackStack.isNotEmpty()) {
+            val prev = browserBackStack.removeLast()
+            if (prev.tab != _activeTab.value) {
+                _activeTab.value = prev.tab
+                savedStateHandle[STATE_TAB] = prev.tab.name
+            }
+            if (prev.dir == null) {
+                navigateToStorageHome(clearBackStack = false)
+                _overlay.value = prev.overlay
+            } else {
+                navigateToDirectory(
+                    dir = prev.dir,
+                    rootVolumeName = prev.rootVolumeName,
+                    rootVolumeBase = prev.rootVolumeBase,
+                    recordHistory = false,
+                )
+                _overlay.value = prev.overlay
+            }
+            return
+        }
         val base = b.rootVolumeBase
         if (base != null && cur == base) {
             navigateToStorageHome()
             return
         }
-        viewModelScope.launch {
-            val parent = withContext(Dispatchers.IO) { container.fileSystem.parent(cur) }
+        vmScope.launch {
+            val parent = withContext(ioDispatcher) { deps.fileSystem.parent(cur) }
             if (parent == null || (base != null && !PathUtils.isAncestor(base, parent))) {
                 navigateToStorageHome()
             } else {
-                navigateToDirectory(parent, b.rootVolumeName, b.rootVolumeBase)
+                navigateToDirectory(parent, b.rootVolumeName, b.rootVolumeBase, recordHistory = false)
             }
         }
     }
@@ -885,7 +1047,7 @@ class MainViewModel(
         }
         val includeHidden = settings.value.showHidden
         _browser.value = _browser.value.copy(isRecursiveSearching = true, recursiveHits = emptyList())
-        recursiveSearchJob = viewModelScope.launch {
+        recursiveSearchJob = vmScope.launch {
             val buffer = ArrayList<SearchHit>()
             var cancelled = false
             val sink = object : ProgressSink {
@@ -893,8 +1055,8 @@ class MainViewModel(
                 override fun isCancelled(): Boolean = cancelled
             }
             try {
-                withContext(Dispatchers.IO) {
-                    container.fileOperations.searchRecursive(
+                withContext(ioDispatcher) {
+                    deps.fileOperations.searchRecursive(
                         root = root,
                         query = q,
                         includeHidden = includeHidden,
@@ -964,17 +1126,17 @@ class MainViewModel(
 
     // --- Settings quick actions ---
     fun toggleShowHidden() {
-        container.settingsRepository.update { it.copy(showHidden = !it.showHidden) }
+        deps.settingsRepository.update { it.copy(showHidden = !it.showHidden) }
     }
 
     fun toggleViewMode() {
-        container.settingsRepository.update {
+        deps.settingsRepository.update {
             it.copy(viewMode = if (it.viewMode == ViewMode.LIST) ViewMode.GRID else ViewMode.LIST)
         }
     }
 
     fun updateSort(sortSpec: SortSpec) {
-        container.settingsRepository.update { it.copy(sort = sortSpec) }
+        deps.settingsRepository.update { it.copy(sort = sortSpec) }
     }
 
     // --- Clipboard & Transfers ---
@@ -1002,8 +1164,8 @@ class MainViewModel(
         favorite: Favorite,
         clearClipboardOnComplete: Boolean = false,
     ) {
-        viewModelScope.launch {
-            container.favoritesRepository.touch(favorite.id)
+        vmScope.launch {
+            deps.favoritesRepository.touch(favorite.id)
         }
         clearSelection()
         executeTransfer(
@@ -1030,7 +1192,7 @@ class MainViewModel(
         val verbPast = if (mode == TransferMode.COPY) "Copied" else "Moved"
         val countLabel = if (items.size == 1) items.first().displayName else "${items.size} items"
 
-        container.operationRegistry.enqueue(
+        deps.operationRegistry.enqueue(
             context = context,
             kind = opKind,
             title = "$verbPresent $countLabel to $destinationLabel",
@@ -1040,9 +1202,9 @@ class MainViewModel(
         ) { _, sink ->
             val resolver = buildInteractiveConflictResolver()
             val res = if (mode == TransferMode.COPY) {
-                container.fileOperations.copy(items, destinationDir, resolver, sink)
+                deps.fileOperations.copy(items, destinationDir, resolver, sink)
             } else {
-                container.fileOperations.move(items, destinationDir, resolver, sink)
+                deps.fileOperations.move(items, destinationDir, resolver, sink)
             }
             if (clearClipboardOnComplete && !res.cancelled && res.failed.isEmpty()) {
                 ClipboardHolder.clear()
@@ -1113,10 +1275,10 @@ class MainViewModel(
             onError(v.reason)
             return
         }
-        viewModelScope.launch {
+        vmScope.launch {
             try {
-                withContext(Dispatchers.IO) {
-                    container.fileOperations.createFolder(dir, name.trim())
+                withContext(ioDispatcher) {
+                    deps.fileOperations.createFolder(dir, name.trim())
                 }
                 reloadCurrentDirectory(silent = true)
             } catch (e: Exception) {
@@ -1136,10 +1298,10 @@ class MainViewModel(
             onError(v.reason)
             return
         }
-        viewModelScope.launch {
+        vmScope.launch {
             try {
-                val created = withContext(Dispatchers.IO) {
-                    container.fileOperations.createFile(dir, name.trim())
+                val created = withContext(ioDispatcher) {
+                    deps.fileOperations.createFile(dir, name.trim())
                 }
                 reloadCurrentDirectory(silent = true)
                 if (openInEditor) {
@@ -1157,10 +1319,10 @@ class MainViewModel(
             onError(v.reason)
             return
         }
-        viewModelScope.launch {
+        vmScope.launch {
             try {
-                withContext(Dispatchers.IO) {
-                    container.fileOperations.rename(item, newName.trim())
+                withContext(ioDispatcher) {
+                    deps.fileOperations.rename(item, newName.trim())
                 }
                 clearSelection()
                 reloadCurrentDirectory(silent = true)
@@ -1176,12 +1338,12 @@ class MainViewModel(
         clearSelection()
         val allGDrive = items.all { it is VfsPath.GDrive }
         val label = if (items.size == 1) items.first().displayName else "${items.size} items"
-        container.operationRegistry.enqueue(
+        deps.operationRegistry.enqueue(
             context = context,
             kind = OperationKind.DELETE,
             title = if (allGDrive) "Moving $label to trash" else "Deleting $label",
         ) { _, sink ->
-            val res = container.fileOperations.delete(items, sink)
+            val res = deps.fileOperations.delete(items, sink)
             val firstFailed = res.failed.firstOrNull()
             val expiredServerId = if (firstFailed?.second?.contains("sign-in expired", ignoreCase = true) == true) {
                 (firstFailed.first as? VfsPath.GDrive)?.serverId
@@ -1218,13 +1380,13 @@ class MainViewModel(
         if (items.isEmpty()) return
         clearSelection()
         val finalZipName = if (archiveName.endsWith(".zip", ignoreCase = true)) archiveName else "$archiveName.zip"
-        container.operationRegistry.enqueue(
+        deps.operationRegistry.enqueue(
             context = context,
             kind = OperationKind.COMPRESS,
             title = "Compressing $finalZipName",
             retryAction = { compressItemsToZip(context, items, destinationDir, archiveName, compressionLevel) },
         ) { _, sink ->
-            val created = container.zipArchiver.compress(
+            val created = deps.zipArchiver.compress(
                 items = items,
                 dstDir = destinationDir,
                 archiveName = finalZipName,
@@ -1248,7 +1410,7 @@ class MainViewModel(
         overwrite: Boolean = false,
         allowBombOverride: Boolean = false,
     ) {
-        container.operationRegistry.enqueue(
+        deps.operationRegistry.enqueue(
             context = context,
             kind = OperationKind.EXTRACT,
             title = "Extracting ${zipPath.displayName}",
@@ -1258,20 +1420,20 @@ class MainViewModel(
         ) { _, sink ->
             val actualDest = if (!createSubfolderName.isNullOrBlank()) {
                 val existingNames = runCatching {
-                    container.fileSystem.list(destinationDir, includeHidden = true).map { it.name }.toSet()
+                    deps.fileSystem.list(destinationDir, includeHidden = true).map { it.name }.toSet()
                 }.getOrDefault(emptySet())
                 val folderName = if (overwrite) createSubfolderName else PathUtils.uniqueName(createSubfolderName, existingNames, isDirectory = true)
-                val existingChild = container.fileSystem.child(destinationDir, folderName)
-                if (container.fileSystem.stat(existingChild)?.isDirectory == true) {
+                val existingChild = deps.fileSystem.child(destinationDir, folderName)
+                if (deps.fileSystem.stat(existingChild)?.isDirectory == true) {
                     existingChild
                 } else {
-                    container.fileSystem.createDirectory(destinationDir, folderName)
+                    deps.fileSystem.createDirectory(destinationDir, folderName)
                 }
             } else {
                 destinationDir
             }
 
-            val res = container.zipArchiver.extract(
+            val res = deps.zipArchiver.extract(
                 zip = zipPath,
                 dstDir = actualDest,
                 entries = selectedEntries,
@@ -1294,13 +1456,13 @@ class MainViewModel(
     }
 
     fun toggleNomedia(dirPath: VfsPath) {
-        viewModelScope.launch {
+        vmScope.launch {
             try {
-                val currentlyHas = withContext(Dispatchers.IO) {
-                    container.nomediaManager.has(dirPath)
+                val currentlyHas = withContext(ioDispatcher) {
+                    deps.nomediaManager.has(dirPath)
                 }
-                withContext(Dispatchers.IO) {
-                    container.nomediaManager.set(dirPath, !currentlyHas)
+                withContext(ioDispatcher) {
+                    deps.nomediaManager.set(dirPath, !currentlyHas)
                 }
                 reloadCurrentDirectory(silent = true)
                 val msg = if (!currentlyHas) {
@@ -1321,8 +1483,8 @@ class MainViewModel(
         color: Int? = null,
         isDirectory: Boolean = true,
     ) {
-        viewModelScope.launch {
-            container.favoritesRepository.add(name, path, color, isDirectory = isDirectory)
+        vmScope.launch {
+            deps.favoritesRepository.add(name, path, color, isDirectory = isDirectory)
             emitSimpleMessage("Added '${name.ifBlank { path.displayName }}' to Favorites")
         }
     }
@@ -1337,9 +1499,9 @@ class MainViewModel(
     }
 
     fun removeFavoriteByPath(path: VfsPath) {
-        val existing = container.favoritesRepository.findByPath(path) ?: return
-        viewModelScope.launch {
-            container.favoritesRepository.remove(existing.id)
+        val existing = deps.favoritesRepository.findByPath(path) ?: return
+        vmScope.launch {
+            deps.favoritesRepository.remove(existing.id)
             emitSimpleMessage("Removed '${existing.name}' from Favorites")
         }
     }
@@ -1347,21 +1509,21 @@ class MainViewModel(
     fun renameFavorite(id: String, newName: String) {
         val clean = newName.trim()
         if (clean.isEmpty()) return
-        viewModelScope.launch {
-            container.favoritesRepository.rename(id, clean)
+        vmScope.launch {
+            deps.favoritesRepository.rename(id, clean)
             emitSimpleMessage("Renamed favorite to '$clean'")
         }
     }
 
     fun removeFavorite(fav: Favorite) {
-        viewModelScope.launch {
-            container.favoritesRepository.remove(fav.id)
+        vmScope.launch {
+            deps.favoritesRepository.remove(fav.id)
             emitSimpleMessage("Removed '${fav.name}' from Favorites")
         }
     }
 
     fun moveFavorite(id: String, delta: Int) {
-        viewModelScope.launch {
+        vmScope.launch {
             val ids = favorites.value.map { it.id }.toMutableList()
             val idx = ids.indexOf(id)
             if (idx < 0) return@launch
@@ -1369,7 +1531,7 @@ class MainViewModel(
             if (targetIdx == idx) return@launch
             val moved = ids.removeAt(idx)
             ids.add(targetIdx, moved)
-            container.favoritesRepository.reorder(ids)
+            deps.favoritesRepository.reorder(ids)
         }
     }
 
@@ -1396,9 +1558,9 @@ class MainViewModel(
             onError("Enter host or IP address")
             return
         }
-        viewModelScope.launch {
+        vmScope.launch {
             try {
-                val peer = withContext(Dispatchers.IO) {
+                val peer = withContext(ioDispatcher) {
                     container.peerDiscoveryHolder.probeAddress(trimmed)
                 }
                 onSuccess(peer)
