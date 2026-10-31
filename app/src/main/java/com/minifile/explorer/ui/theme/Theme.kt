@@ -2,6 +2,7 @@ package com.minifile.explorer.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -13,7 +14,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.minifile.explorer.core.model.ThemeMode
 
 // Fallback seed #3366CC palette (DESIGN.md §8)
-private val LightColors = lightColorScheme(
+internal val LightColors = lightColorScheme(
     primary = Color(0xFF2B5BBF),
     onPrimary = Color(0xFFFFFFFF),
     primaryContainer = Color(0xFFD9E2FF),
@@ -36,7 +37,8 @@ private val LightColors = lightColorScheme(
     onError = Color(0xFFFFFFFF),
 )
 
-private val DarkColors = darkColorScheme(
+// Google Material Charcoal Dark surface hierarchy (Tone 12–13 base #1E1F24 + progressive containers)
+internal val DarkColors = darkColorScheme(
     primary = Color(0xFFB0C6FF),
     onPrimary = Color(0xFF002D6F),
     primaryContainer = Color(0xFF0A43A5),
@@ -49,15 +51,32 @@ private val DarkColors = darkColorScheme(
     onTertiary = Color(0xFF0C372A),
     tertiaryContainer = Color(0xFF264E40),
     onTertiaryContainer = Color(0xFFC0ECD9),
-    background = Color(0xFF121318),
+    background = Color(0xFF1E1F24),
     onBackground = Color(0xFFE3E2E9),
-    surface = Color(0xFF121318),
+    surface = Color(0xFF1E1F24),
     onSurface = Color(0xFFE3E2E9),
+    surfaceDim = Color(0xFF16181D),
+    surfaceBright = Color(0xFF383B43),
+    surfaceContainerLowest = Color(0xFF181A1F),
+    surfaceContainerLow = Color(0xFF26282F),
+    surfaceContainer = Color(0xFF2B2E36),
+    surfaceContainerHigh = Color(0xFF32353E),
+    surfaceContainerHighest = Color(0xFF3B3E48),
     surfaceVariant = Color(0xFF44464F),
     onSurfaceVariant = Color(0xFFC5C6D0),
     error = Color(0xFFFFB4AB),
     onError = Color(0xFF690005),
 )
+
+internal fun elevateDynamicDarkSurfaces(rawDark: ColorScheme): ColorScheme =
+    rawDark.copy(
+        background = rawDark.surfaceContainer,
+        surface = rawDark.surfaceContainer,
+        surfaceContainerLowest = rawDark.surface,
+        surfaceContainerLow = rawDark.surfaceContainerHigh,
+        surfaceContainer = rawDark.surfaceContainerHighest,
+        surfaceContainerHigh = rawDark.surfaceBright,
+    )
 
 @Composable
 fun MiniFileTheme(
@@ -73,7 +92,11 @@ fun MiniFileTheme(
     val context = LocalContext.current
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            if (darkTheme) {
+                elevateDynamicDarkSurfaces(dynamicDarkColorScheme(context))
+            } else {
+                dynamicLightColorScheme(context)
+            }
         }
 
         darkTheme -> DarkColors

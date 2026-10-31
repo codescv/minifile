@@ -44,8 +44,8 @@ Grab the latest release from [**GitHub Releases**](https://github.com/codescv/mi
 
 | Asset | Description |
 |-------|-------------|
-| `minifile-v1.0.8-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
-| `minifile-companion-v1.0.8.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
+| `minifile-v1.0.9-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
+| `minifile-companion-v1.0.9.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
 | `SHA256SUMS.txt` | SHA-256 checksums for release assets |
 
 ### Install PC Companion with `uv` (Recommended)

@@ -26,9 +26,10 @@
     <application
         android:name=".MiniFileApplication"
         android:allowBackup="false"
-        android:icon="@drawable/ic_launcher_foreground"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:requestLegacyExternalStorage="true"
+        android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.MiniFile"
         android:usesCleartextTraffic="false">
