@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.io.BufferedOutputStream
 import java.io.IOException
 import java.io.OutputStreamWriter
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -87,6 +88,15 @@ class FtpServerEngine(
                 break
             }
 
+            val remoteAddr = client.inetAddress
+            val localAddr = client.localAddress
+            if (remoteAddr == null || localAddr == null ||
+                !isAllowedClientAddress(remoteAddr) || !isAllowedClientAddress(localAddr)
+            ) {
+                runCatching { client.close() }
+                continue
+            }
+
             if (sessions.size >= config.maxClients) {
                 runCatching {
                     val w = OutputStreamWriter(BufferedOutputStream(client.getOutputStream()), Charsets.UTF_8)
@@ -130,5 +140,43 @@ class FtpServerEngine(
         executor = null
         boundPort = -1
         _events.tryEmit(FtpEvent.Stopped)
+    }
+
+    companion object {
+        /**
+         * Strict LAN / loopback firewall check: allows ONLY loopback (`127.0.0.0/8`, `::1`),
+         * RFC 1918 site-local (`10/8`, `172.16/12`, `192.168/16`, `fec0::/10`), link-local
+         * (`169.254/16`, `fe80::/10`), IPv4 CGNAT (`100.64.0.0/10`), or IPv6 ULA (`fc00::/7`).
+         * Rejects cellular/public IPv4 & global IPv6 WAN addresses, multicast, and unspecified `0.0.0.0`/`::`.
+         */
+        fun isAllowedClientAddress(addr: InetAddress): Boolean {
+            if (addr.isAnyLocalAddress || addr.isMulticastAddress) return false
+
+            val v4 = FtpSession.extractIpv4Bytes(addr)
+            if (v4 != null) {
+                val b0 = v4[0].toInt() and 0xFF
+                val b1 = v4[1].toInt() and 0xFF
+                return when {
+                    b0 == 127 -> true // 127.0.0.0/8 loopback
+                    b0 == 10 -> true // 10.0.0.0/8 private
+                    b0 == 172 && b1 in 16..31 -> true // 172.16.0.0/12 private
+                    b0 == 192 && b1 == 168 -> true // 192.168.0.0/16 private
+                    b0 == 169 && b1 == 254 -> true // 169.254.0.0/16 link-local
+                    b0 == 100 && b1 in 64..127 -> true // 100.64.0.0/10 CGNAT
+                    else -> false
+                }
+            }
+
+            if (addr is Inet6Address) {
+                if (addr.isLoopbackAddress || addr.isSiteLocalAddress || addr.isLinkLocalAddress) {
+                    return true
+                }
+                val raw = addr.address
+                if (raw.size == 16 && (raw[0].toInt() and 0xFE) == 0xFC) {
+                    return true // fc00::/7 Unique Local Address (fc00:: .. fdff::)
+                }
+            }
+            return false
+        }
     }
 }

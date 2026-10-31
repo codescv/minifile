@@ -63,4 +63,29 @@ class UiModelsTest {
         ClipboardHolder.clear()
         assertNull(ClipboardHolder.state.value)
     }
+
+    @Test
+    fun classifyRestrictedAndroidDir_detectsDataAndObbOnlyOnLocalPaths() {
+        assertEquals(
+            RestrictedAndroidDirKind.DATA,
+            MainViewModel.classifyRestrictedAndroidDir(VfsPath.Local("/storage/emulated/0/Android/data")),
+        )
+        assertEquals(
+            RestrictedAndroidDirKind.OBB,
+            MainViewModel.classifyRestrictedAndroidDir(VfsPath.Local("/storage/emulated/0/Android/obb")),
+        )
+        assertNull(
+            MainViewModel.classifyRestrictedAndroidDir(VfsPath.Local("/storage/emulated/0/Android/media")),
+        )
+        assertNull(
+            MainViewModel.classifyRestrictedAndroidDir(
+                VfsPath.Local("/storage/emulated/0/Android/data/com.minifile.explorer"),
+            ),
+        )
+        assertNull(
+            MainViewModel.classifyRestrictedAndroidDir(
+                VfsPath.Saf("content://com.android.externalstorage.documents/tree/primary%3AAndroid%2Fdata", "primary:Android/data"),
+            ),
+        )
+    }
 }

@@ -1,6 +1,7 @@
 package com.minifile.explorer.ui
 
 import android.content.Context
+import android.os.Build
 import android.os.Environment
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -23,9 +24,11 @@ import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.vfs.Volume
+import com.minifile.explorer.data.PersistedTreeStore
 import com.minifile.explorer.di.AppContainer
 import com.minifile.explorer.service.OperationCompletionEvent
 import com.minifile.explorer.service.OperationRunOutcome
+import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -62,6 +65,26 @@ data class ConflictPrompt(
     val deferred: CompletableDeferred<Pair<ConflictResolution, Boolean>>,
 )
 
+enum class RestrictedAndroidDirKind(
+    val safKey: String,
+    val pkgGrantPrefix: String,
+    val defaultSafDocId: String,
+    val displaySubpath: String,
+) {
+    DATA(
+        safKey = PersistedTreeStore.KEY_ANDROID_DATA,
+        pkgGrantPrefix = "pkg_data:",
+        defaultSafDocId = "primary:Android/data",
+        displaySubpath = "Android/data",
+    ),
+    OBB(
+        safKey = PersistedTreeStore.KEY_ANDROID_OBB,
+        pkgGrantPrefix = "pkg_obb:",
+        defaultSafDocId = "primary:Android/obb",
+        displaySubpath = "Android/obb",
+    ),
+}
+
 data class BrowserUiState(
     val currentDir: VfsPath? = null, // null = Storage Home
     val currentDirNode: VfsNode? = null,
@@ -73,6 +96,7 @@ data class BrowserUiState(
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
     val permissionRequired: Boolean = false,
+    val isRestrictedAndroidDataDir: Boolean = false,
     val searchActive: Boolean = false,
     val searchQuery: String = "",
     val recursiveSearch: Boolean = false,
@@ -94,6 +118,16 @@ class MainViewModel(
         private const val STATE_DIR = "saved_dir"
         private const val STATE_ROOT_NAME = "saved_root_name"
         private const val STATE_ROOT_BASE = "saved_root_base"
+
+        fun classifyRestrictedAndroidDir(path: VfsPath): RestrictedAndroidDirKind? {
+            val local = path as? VfsPath.Local ?: return null
+            val norm = local.normalized
+            return when {
+                norm.endsWith("/Android/data", ignoreCase = true) -> RestrictedAndroidDirKind.DATA
+                norm.endsWith("/Android/obb", ignoreCase = true) -> RestrictedAndroidDirKind.OBB
+                else -> null
+            }
+        }
 
         fun factory(container: AppContainer): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
@@ -282,6 +316,7 @@ class MainViewModel(
             isLoading = true,
             errorMessage = null,
             permissionRequired = false,
+            isRestrictedAndroidDataDir = false,
             searchActive = false,
             searchQuery = "",
             recursiveSearch = false,
@@ -303,6 +338,16 @@ class MainViewModel(
         loadDirectoryInternal(dir, showSpinner = !silent)
     }
 
+    private fun isPrimaryStorageAndroidDir(local: VfsPath.Local): Boolean {
+        val primaryRoot = runCatching {
+            PathUtils.normalizeLocalPath(Environment.getExternalStorageDirectory().absolutePath)
+        }.getOrDefault("/storage/emulated/0")
+        val norm = local.normalized
+        return norm.startsWith("$primaryRoot/", ignoreCase = true) ||
+            norm.startsWith("/storage/emulated/0/", ignoreCase = true) ||
+            norm.startsWith("/sdcard/", ignoreCase = true)
+    }
+
     private fun loadDirectoryInternal(dir: VfsPath, showSpinner: Boolean) {
         directoryLoadJob?.cancel()
         directoryLoadJob = viewModelScope.launch {
@@ -310,6 +355,148 @@ class MainViewModel(
                 _browser.value = _browser.value.copy(isLoading = true, errorMessage = null)
             }
             try {
+                val restrictedKind = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    classifyRestrictedAndroidDir(dir)
+                } else {
+                    null
+                }
+
+                if (restrictedKind != null && dir is VfsPath.Local) {
+                    val isPrimary = isPrimaryStorageAndroidDir(dir)
+                    val existingTreeGrant = if (isPrimary) {
+                        container.persistedTreeStore.getGrant(restrictedKind.safKey)
+                    } else {
+                        null
+                    }
+                    if (existingTreeGrant != null) {
+                        val safRoot = existingTreeGrant.toVfsPath()
+                        savedStateHandle[STATE_DIR] = safRoot.serialize()
+                        savedStateHandle[STATE_ROOT_NAME] = existingTreeGrant.label
+                        savedStateHandle[STATE_ROOT_BASE] = safRoot.serialize()
+                        container.settingsRepository.update { s ->
+                            if (s.rememberLastFolder) s.copy(lastFolder = safRoot.serialize()) else s
+                        }
+                        val (safStat, safChildren) = withContext(Dispatchers.IO) {
+                            val st = container.fileSystem.stat(safRoot)
+                            val list = container.fileSystem.list(safRoot, includeHidden = true)
+                            st to list
+                        }
+                        _browser.value = _browser.value.copy(
+                            currentDir = safRoot,
+                            currentDirNode = safStat,
+                            rootVolumeName = existingTreeGrant.label,
+                            rootVolumeBase = safRoot,
+                            breadcrumbs = buildBreadcrumbs(safRoot, existingTreeGrant.label, safRoot),
+                            rawEntries = safChildren,
+                            isLoading = false,
+                            errorMessage = null,
+                            permissionRequired = false,
+                            isRestrictedAndroidDataDir = false,
+                            selectedPaths = emptySet(),
+                        )
+                        recomputeVisibleEntries(settings.value)
+                        return@launch
+                    }
+
+                    val (restrictedDirNode, mergedChildren) = withContext(Dispatchers.IO) {
+                        val byName = LinkedHashMap<String, VfsNode>()
+                        val directList = runCatching {
+                            container.fileSystem.list(dir, includeHidden = true)
+                        }.getOrDefault(emptyList())
+                        for (child in directList) {
+                            byName[child.name] = child
+                        }
+
+                        // Ensure MiniFile's own external package folder is created and visible
+                        val ownPkgName = container.appContext.packageName
+                        if (ownPkgName !in byName) {
+                            val candidateUnderDir = File(File(dir.normalized), ownPkgName)
+                            val fallbackOwnDir = if (isPrimary) {
+                                when (restrictedKind) {
+                                    RestrictedAndroidDirKind.DATA ->
+                                        runCatching { container.appContext.getExternalFilesDir(null)?.parentFile }.getOrNull()
+                                    RestrictedAndroidDirKind.OBB ->
+                                        runCatching { container.appContext.obbDir }.getOrNull()
+                                }
+                            } else {
+                                null
+                            }
+                            val resolvedOwnDir = when {
+                                candidateUnderDir.exists() && candidateUnderDir.canRead() -> candidateUnderDir
+                                fallbackOwnDir != null && fallbackOwnDir.exists() && fallbackOwnDir.canRead() -> fallbackOwnDir
+                                else -> null
+                            }
+                            if (resolvedOwnDir != null) {
+                                val ownPath = VfsPath.Local(File(File(dir.normalized), ownPkgName).path)
+                                    .takeIf { File(it.normalized).exists() }
+                                    ?: VfsPath.Local(resolvedOwnDir.path)
+                                val st = runCatching { container.fileSystem.stat(ownPath) }.getOrNull()
+                                if (st != null) {
+                                    val count = resolvedOwnDir.list()?.size ?: -1
+                                    byName[ownPkgName] = st.copy(name = ownPkgName, childCount = count)
+                                }
+                            }
+                        }
+
+                        // Include any per-package SAF grants (pkg_data:<pkg> / pkg_obb:<pkg>)
+                        if (isPrimary) {
+                            for ((key, grant) in container.persistedTreeStore.grants.value) {
+                                val matchesPkgKey = key.startsWith(restrictedKind.pkgGrantPrefix)
+                                val matchesDocId = grant.rootDocumentId.startsWith(
+                                    "${restrictedKind.defaultSafDocId}/",
+                                    ignoreCase = true,
+                                )
+                                if (!matchesPkgKey && !matchesDocId) continue
+                                val pkgFolderName = if (matchesPkgKey) {
+                                    key.removePrefix(restrictedKind.pkgGrantPrefix)
+                                } else {
+                                    grant.rootDocumentId.substringAfterLast('/')
+                                }.trim()
+                                if (pkgFolderName.isEmpty() || pkgFolderName in byName) continue
+                                val grantPath = grant.toVfsPath()
+                                val grantNode = runCatching { container.fileSystem.stat(grantPath) }.getOrNull()
+                                    ?: VfsNode(
+                                        path = grantPath,
+                                        name = pkgFolderName,
+                                        isDirectory = true,
+                                        size = 0L,
+                                        lastModified = 0L,
+                                        canRead = true,
+                                        canWrite = grant.isWritable,
+                                    )
+                                byName[pkgFolderName] = grantNode.copy(name = pkgFolderName)
+                            }
+                        }
+
+                        val rawDirStat = runCatching { container.fileSystem.stat(dir) }.getOrNull()
+                        val effectiveDirStat = (
+                            rawDirStat ?: VfsNode(
+                                path = dir,
+                                name = dir.displayName,
+                                isDirectory = true,
+                                size = 0L,
+                                lastModified = 0L,
+                                canRead = true,
+                                canWrite = false,
+                            )
+                            ).copy(canWrite = false)
+                        effectiveDirStat to byName.values.toList()
+                    }
+
+                    val validSelected = _browser.value.selectedPaths.intersect(mergedChildren.map { it.path }.toSet())
+                    _browser.value = _browser.value.copy(
+                        currentDirNode = restrictedDirNode,
+                        rawEntries = mergedChildren,
+                        isLoading = false,
+                        errorMessage = null,
+                        permissionRequired = false,
+                        isRestrictedAndroidDataDir = true,
+                        selectedPaths = validSelected,
+                    )
+                    recomputeVisibleEntries(settings.value)
+                    return@launch
+                }
+
                 // Always fetch hidden entries into rawEntries so toggling show_hidden is instant,
                 // and filter according to settings in recomputeVisibleEntries.
                 val (dirStat, allChildren) = withContext(Dispatchers.IO) {
@@ -324,6 +511,7 @@ class MainViewModel(
                     isLoading = false,
                     errorMessage = null,
                     permissionRequired = false,
+                    isRestrictedAndroidDataDir = false,
                     selectedPaths = validSelected,
                 )
                 recomputeVisibleEntries(settings.value)
@@ -337,6 +525,7 @@ class MainViewModel(
                     isLoading = false,
                     errorMessage = msg,
                     permissionRequired = needsPerm,
+                    isRestrictedAndroidDataDir = false,
                 )
             }
         }

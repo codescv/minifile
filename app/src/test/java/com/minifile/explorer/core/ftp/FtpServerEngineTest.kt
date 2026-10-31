@@ -2,6 +2,7 @@ package com.minifile.explorer.core.ftp
 
 import com.minifile.explorer.core.vfs.LocalFileSystem
 import com.minifile.explorer.core.vfs.VfsPath
+import com.minifile.explorer.data.LanAddressResolver
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -14,6 +15,8 @@ import java.io.Closeable
 import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.Socket
 import java.nio.file.Files
 
@@ -282,5 +285,104 @@ class FtpServerEngineTest {
                 assertEquals(425, c.cmd("EPSV").first)
             }
         }
+    }
+
+    @Test
+    fun strictLanAndLoopbackFirewallAllowsOnlyLocalPrivateLinkLocalCgnatAndUla() {
+        val allowedIps = listOf(
+            "127.0.0.1",
+            "127.255.255.254",
+            "10.0.0.1",
+            "10.255.255.254",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.0.1",
+            "192.168.43.1",
+            "169.254.10.20",
+            "100.64.0.1",
+            "100.127.255.254",
+            "::1",
+            "fe80::1234:5678",
+            "fc00::1",
+            "fd12:3456:789a::42",
+        )
+        for (ip in allowedIps) {
+            assertTrue(
+                "Expected $ip to be allowed",
+                FtpServerEngine.isAllowedClientAddress(InetAddress.getByName(ip)),
+            )
+        }
+
+        val blockedIps = listOf(
+            "0.0.0.0",
+            "8.8.8.8",
+            "1.1.1.1",
+            "100.63.255.255",
+            "100.128.0.0",
+            "172.15.255.255",
+            "172.32.0.1",
+            "192.167.1.1",
+            "192.0.2.10",
+            "224.0.0.1",
+            "255.255.255.255",
+            "::",
+            "2001:4860:4860::8888",
+            "2408:8207:1234::1",
+            "2607:f8b0:4004:800::200e",
+            "fe00::1",
+            "ff02::1",
+        )
+        for (ip in blockedIps) {
+            assertFalse(
+                "Expected $ip to be blocked",
+                FtpServerEngine.isAllowedClientAddress(InetAddress.getByName(ip)),
+            )
+        }
+    }
+
+    @Test
+    fun lanAddressResolverExcludesCellularAndVpnInterfacesAndPublicIps() {
+        val blockedIfaces = listOf(
+            "rmnet_data0",
+            "rmnet0",
+            "r_rmnet_data1",
+            "ccmni0",
+            "pdp_ip0",
+            "wwan0",
+            "tun0",
+            "tap0",
+            "ppp0",
+            "wg0",
+            "ipsec0",
+            "clat4",
+            "v4-rmnet_data0",
+        )
+        for (iface in blockedIfaces) {
+            assertTrue("Expected $iface to be excluded", LanAddressResolver.isExcludedInterface(iface))
+            assertFalse("Expected $iface not allowed as LAN", LanAddressResolver.isAllowedLocalInterface(iface))
+        }
+
+        val allowedIfaces = listOf(
+            "wlan0",
+            "wlan1",
+            "ap0",
+            "swlan0",
+            "softap0",
+            "rndis0",
+            "usb0",
+            "ncm0",
+            "eth0",
+            "bridge0",
+        )
+        for (iface in allowedIfaces) {
+            assertFalse(LanAddressResolver.isExcludedInterface(iface))
+            assertTrue("Expected $iface allowed as LAN", LanAddressResolver.isAllowedLocalInterface(iface))
+        }
+
+        assertTrue(LanAddressResolver.isAllowedLanIpv4(InetAddress.getByName("192.168.1.42") as Inet4Address))
+        assertTrue(LanAddressResolver.isAllowedLanIpv4(InetAddress.getByName("100.64.10.5") as Inet4Address))
+        assertTrue(LanAddressResolver.isAllowedLanIpv4(InetAddress.getByName("169.254.5.6") as Inet4Address))
+        assertFalse(LanAddressResolver.isAllowedLanIpv4(InetAddress.getByName("127.0.0.1") as Inet4Address))
+        assertFalse(LanAddressResolver.isAllowedLanIpv4(InetAddress.getByName("8.8.8.8") as Inet4Address))
     }
 }

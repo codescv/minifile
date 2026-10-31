@@ -108,8 +108,8 @@ class MainActivity : ComponentActivity() {
             val settings by viewModel.settings.collectAsState()
             val ftpState by FtpServerHolder.state.collectAsState()
 
-            DisposableEffect(ftpState.isRunning, settings.ftpKeepScreenOn) {
-                if (ftpState.isRunning && settings.ftpKeepScreenOn) {
+            DisposableEffect(ftpState.isRunning) {
+                if (ftpState.isRunning) {
                     window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 } else {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -193,6 +193,7 @@ private fun MiniFileRoot(
 
     val activeTab by viewModel.activeTab.collectAsState()
     val overlay by viewModel.overlay.collectAsState()
+    val browser by viewModel.browser.collectAsState()
     val conflictPrompt by viewModel.conflictPrompt.collectAsState()
     val activeOps by container.operationRegistry.active.collectAsState()
     val ftpState by FtpServerHolder.state.collectAsState()
@@ -205,7 +206,13 @@ private fun MiniFileRoot(
     var showActiveOpsSheet by remember { mutableStateOf(false) }
     var dismissedOpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
-    BackHandler(enabled = viewModel.canHandleBack()) {
+    val canHandleBack = overlay != null ||
+        activeTab != MainTab.BROWSE ||
+        browser.isSelectionMode ||
+        browser.searchActive ||
+        browser.currentDir != null
+
+    BackHandler(enabled = canHandleBack) {
         viewModel.handleBack()
     }
 

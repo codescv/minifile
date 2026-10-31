@@ -18,6 +18,11 @@ class MiniFileApplication : Application() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             ZipPathValidator.clearCallback()
         }
+        // Ensure MiniFile's own external Android/data and Android/obb folders exist on disk
+        runCatching {
+            getExternalFilesDir(null)
+            obbDir
+        }
         container = AppContainer(this)
     }
 }

@@ -910,8 +910,7 @@ class AcidE2ERunner:
         )
         time.sleep(1.0)
         self.wait_for_node(text="Wireless Transfer")
-        self.wait_for_node(text_contains="50000–50004", scroll_if_missing=True)
-        self.scroll_up()
+        self.wait_for_node(text="QR Code")
 
         self.tap(text="Start", settle=1.5)
         self.wait_for_node(text="Running")
@@ -1039,19 +1038,28 @@ class AcidE2ERunner:
         self.wait_for_node(text="Updates")
         self.tap(text="Check now", settle=3.0)
 
-        # Wait until "Checking GitHub Releases…" finishes
+        # Wait until "Checking…" finishes
         deadline = time.time() + 18.0
         final_xml = ""
         while time.time() < deadline:
             _, raw_xml, _ = self.dump_ui()
             final_xml = raw_xml
-            if "Checking GitHub Releases" not in raw_xml:
+            if "Checking…" not in raw_xml and "Checking GitHub Releases" not in raw_xml:
                 break
             time.sleep(1.0)
 
         shot = self.screencap("e14_updates_check")
         _, _, xdump = self.dump_ui("e14_updates_check")
-        expected_outcomes = ("Up to date", "Update available", "Last check failed:")
+        expected_outcomes = (
+            "Up to date",
+            "New version ",
+            "Update available",
+            "rate limit",
+            "Could not",
+            "timed out",
+            "No published releases",
+            "failed",
+        )
         assert any(tok in final_xml for tok in expected_outcomes), f"Unexpected Updates card state:\n{final_xml[:800]}"
         matched = next(tok for tok in expected_outcomes if tok in final_xml)
         return {

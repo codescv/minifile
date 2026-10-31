@@ -718,7 +718,9 @@ internal class FtpSession(
             return
         }
         val addr = InetAddress.getByName(host)
-        if (!config.allowForeignDataPeer && normalizeHostIp(addr) != clientIp) {
+        if (!FtpServerEngine.isAllowedClientAddress(addr) ||
+            (!config.allowForeignDataPeer && normalizeHostIp(addr) != clientIp)
+        ) {
             reply(504, "Foreign PORT address rejected")
             return
         }
@@ -751,7 +753,9 @@ internal class FtpSession(
             return
         }
         val addr = InetAddress.getByName(host)
-        if (!config.allowForeignDataPeer && normalizeHostIp(addr) != clientIp) {
+        if (!FtpServerEngine.isAllowedClientAddress(addr) ||
+            (!config.allowForeignDataPeer && normalizeHostIp(addr) != clientIp)
+        ) {
             reply(504, "Foreign EPRT address rejected")
             return
         }
@@ -800,8 +804,12 @@ internal class FtpSession(
                 val accepted = pasv.accept()
                 runCatching { pasv.close() }
                 passiveServer = null
-                val peerIp = normalizeHostIp(accepted.inetAddress)
-                if (!config.allowForeignDataPeer && peerIp != clientIp) {
+                val peerAddr = accepted.inetAddress
+                val peerIp = normalizeHostIp(peerAddr)
+                if (peerAddr == null ||
+                    !FtpServerEngine.isAllowedClientAddress(peerAddr) ||
+                    (!config.allowForeignDataPeer && peerIp != clientIp)
+                ) {
                     runCatching { accepted.close() }
                     reply(425, "Data connection peer mismatch")
                     return

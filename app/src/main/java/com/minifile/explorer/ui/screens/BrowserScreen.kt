@@ -1,10 +1,15 @@
 package com.minifile.explorer.ui.screens
 
+import android.content.Intent
+import android.provider.DocumentsContract
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,9 +21,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
@@ -29,12 +36,15 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -71,11 +81,14 @@ import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.vfs.Volume
+import com.minifile.explorer.core.vfs.VolumeKind
 import com.minifile.explorer.data.AndroidVolumeProvider
+import com.minifile.explorer.data.PersistedTreeStore
 import com.minifile.explorer.ui.ClipboardHolder
 import com.minifile.explorer.ui.MainTab
 import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.OverlayScreen
+import com.minifile.explorer.ui.RestrictedAndroidDirKind
 import com.minifile.explorer.ui.components.AddFavoriteDialog
 import com.minifile.explorer.ui.components.BreadcrumbBar
 import com.minifile.explorer.ui.components.ClipboardBar
@@ -103,7 +116,7 @@ private data class FavoriteTransferRequest(
     val fromClipboard: Boolean,
 )
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun BrowserScreen(
     viewModel: MainViewModel,
@@ -130,6 +143,10 @@ fun BrowserScreen(
     var compressTargets by remember { mutableStateOf<List<VfsNode>?>(null) }
     var extractTarget by remember { mutableStateOf<VfsPath?>(null) }
     var favoritePickerRequest by remember { mutableStateOf<FavoriteTransferRequest?>(null) }
+
+    BackHandler(enabled = browser.isSelectionMode || browser.searchActive || browser.currentDir != null) {
+        viewModel.handleBack()
+    }
 
     // Storage Home mode when currentDir == null
     val curDir = browser.currentDir
@@ -730,17 +747,55 @@ fun BrowserScreen(
                 }
 
                 browser.visibleEntries.isEmpty() -> {
-                    EmptyFolderView(
-                        title = if (browser.searchQuery.isNotEmpty()) "No matching items" else "Nothing here yet",
-                        subtitle = if (browser.searchQuery.isNotEmpty()) {
-                            "Clear filter or search subfolders"
-                        } else {
-                            "Tap + to create a folder or file"
-                        },
-                    )
+                    val restrictedKind = MainViewModel.classifyRestrictedAndroidDir(curDir)
+                        ?: RestrictedAndroidDirKind.DATA
+                    if (browser.isRestrictedAndroidDataDir && browser.searchQuery.isEmpty()) {
+                        LazyColumn(
+                            contentPadding = PaddingValues(bottom = 92.dp),
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            item(key = "restricted-android-data-empty-banner") {
+                                RestrictedAndroidDataCard(
+                                    kind = restrictedKind,
+                                    onMountSaf = {
+                                        val vol = resolveRestrictedAndroidVolume(volumes, restrictedKind)
+                                        onMountVolumeSaf(vol)
+                                    },
+                                    onSelectApp = {
+                                        viewModel.openOverlay(OverlayScreen.InstalledApps)
+                                    },
+                                    onOpenSystemFiles = {
+                                        openInSystemFiles(
+                                            context = context,
+                                            docId = restrictedKind.defaultSafDocId,
+                                            onFallback = { viewModel.emitSimpleMessage(it) },
+                                        )
+                                    },
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                )
+                            }
+                            item(key = "restricted-android-data-empty-hint") {
+                                EmptyFolderView(
+                                    title = "No accessible app folders mounted yet",
+                                    subtitle = "Mount via SAF, select an app, or open in System Files",
+                                )
+                            }
+                        }
+                    } else {
+                        EmptyFolderView(
+                            title = if (browser.searchQuery.isNotEmpty()) "No matching items" else "Nothing here yet",
+                            subtitle = if (browser.searchQuery.isNotEmpty()) {
+                                "Clear filter or search subfolders"
+                            } else {
+                                "Tap + to create a folder or file"
+                            },
+                        )
+                    }
                 }
 
                 settings.viewMode == ViewMode.GRID -> {
+                    val restrictedKind = MainViewModel.classifyRestrictedAndroidDir(curDir)
+                        ?: RestrictedAndroidDirKind.DATA
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(minSize = 108.dp),
                         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 92.dp),
@@ -748,6 +803,31 @@ fun BrowserScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
+                        if (browser.isRestrictedAndroidDataDir) {
+                            item(
+                                key = "restricted-android-data-banner",
+                                span = { GridItemSpan(maxLineSpan) },
+                            ) {
+                                RestrictedAndroidDataCard(
+                                    kind = restrictedKind,
+                                    onMountSaf = {
+                                        val vol = resolveRestrictedAndroidVolume(volumes, restrictedKind)
+                                        onMountVolumeSaf(vol)
+                                    },
+                                    onSelectApp = {
+                                        viewModel.openOverlay(OverlayScreen.InstalledApps)
+                                    },
+                                    onOpenSystemFiles = {
+                                        openInSystemFiles(
+                                            context = context,
+                                            docId = restrictedKind.defaultSafDocId,
+                                            onFallback = { viewModel.emitSimpleMessage(it) },
+                                        )
+                                    },
+                                    modifier = Modifier.padding(bottom = 4.dp),
+                                )
+                            }
+                        }
                         items(browser.visibleEntries, key = { it.path.serialize() }) { node ->
                             FileGridCell(
                                 node = node,
@@ -765,10 +845,34 @@ fun BrowserScreen(
                 }
 
                 else -> {
+                    val restrictedKind = MainViewModel.classifyRestrictedAndroidDir(curDir)
+                        ?: RestrictedAndroidDirKind.DATA
                     LazyColumn(
                         contentPadding = PaddingValues(bottom = 92.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
+                        if (browser.isRestrictedAndroidDataDir) {
+                            item(key = "restricted-android-data-banner") {
+                                RestrictedAndroidDataCard(
+                                    kind = restrictedKind,
+                                    onMountSaf = {
+                                        val vol = resolveRestrictedAndroidVolume(volumes, restrictedKind)
+                                        onMountVolumeSaf(vol)
+                                    },
+                                    onSelectApp = {
+                                        viewModel.openOverlay(OverlayScreen.InstalledApps)
+                                    },
+                                    onOpenSystemFiles = {
+                                        openInSystemFiles(
+                                            context = context,
+                                            docId = restrictedKind.defaultSafDocId,
+                                            onFallback = { viewModel.emitSimpleMessage(it) },
+                                        )
+                                    },
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                )
+                            }
+                        }
                         items(browser.visibleEntries, key = { it.path.serialize() }) { node ->
                             FileListRow(
                                 node = node,
@@ -938,6 +1042,114 @@ fun BrowserScreen(
             },
             onDismiss = { favoritePickerRequest = null },
         )
+    }
+}
+
+private fun resolveRestrictedAndroidVolume(
+    volumes: List<Volume>,
+    kind: RestrictedAndroidDirKind,
+): Volume {
+    return volumes.firstOrNull { it.id == kind.safKey } ?: Volume(
+        id = kind.safKey,
+        name = kind.displaySubpath,
+        kind = if (kind == RestrictedAndroidDirKind.OBB) VolumeKind.APP_OBB else VolumeKind.APP_DATA,
+        root = null,
+        isMounted = true,
+        needsSafGrant = true,
+        safInitialDocId = kind.defaultSafDocId,
+    )
+}
+
+private fun openInSystemFiles(
+    context: android.content.Context,
+    docId: String,
+    onFallback: (String) -> Unit,
+) {
+    val docUri = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", docId)
+    val candidates = listOf(
+        Intent(Intent.ACTION_VIEW)
+            .setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+            .setPackage("com.google.android.documentsui")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        Intent(Intent.ACTION_VIEW)
+            .setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+            .setPackage("com.android.documentsui")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        Intent(Intent.ACTION_VIEW)
+            .setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        Intent("android.provider.action.BROWSE")
+            .setData(docUri)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+    )
+    for (intent in candidates) {
+        val launched = runCatching {
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
+        if (launched) return
+    }
+    onFallback("System Files app is unavailable on this device")
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RestrictedAndroidDataCard(
+    kind: RestrictedAndroidDirKind,
+    onMountSaf: () -> Unit,
+    onSelectApp: () -> Unit,
+    onOpenSystemFiles: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val dirLabel = kind.displaySubpath
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.padding(14.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.Info,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "Restricted $dirLabel folder",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Text(
+                text = "Android 11+ system restriction: Android hides other apps' Android/data folders from direct file listing. " +
+                    "On Android 11–12 you can mount via SAF; on Android 13–15 Google restricts third-party SAF access to Android/data " +
+                    "(only own app data, Android/media, or system Files app are allowed without ADB/root).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Button(onClick = onMountSaf) {
+                    Text("Mount via SAF", maxLines = 1, softWrap = false)
+                }
+                OutlinedButton(onClick = onSelectApp) {
+                    Text("Select App", maxLines = 1, softWrap = false)
+                }
+                OutlinedButton(onClick = onOpenSystemFiles) {
+                    Text("Open in System Files", maxLines = 1, softWrap = false)
+                }
+            }
+        }
     }
 }
 

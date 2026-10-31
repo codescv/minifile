@@ -2,7 +2,6 @@ package com.minifile.explorer.ui.screens
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -32,7 +31,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,9 +58,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.minifile.explorer.BuildConfig
-import com.minifile.explorer.core.model.SortField
-import com.minifile.explorer.core.model.ThemeMode
-import com.minifile.explorer.core.model.ViewMode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.data.AndroidVolumeProvider
 import com.minifile.explorer.data.update.InstallLaunchResult
@@ -75,7 +70,6 @@ import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -124,7 +118,7 @@ fun ToolsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            // 1. Updates Card (DESIGN.md §11.1 & E14)
+            // 1. Minimalist Updates Card
             item(key = "updates-card") {
                 SectionLabel("Updates")
                 Card(
@@ -146,40 +140,27 @@ fun ToolsScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Updates", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    "Current version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                                    "Current version: ${BuildConfig.VERSION_NAME}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                         }
 
-                        Text(
-                            text = "MiniFile checks GitHub Releases for new versions at most every 6 hours. You can turn this off below.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-
                         when (val st = updateState) {
-                            UpdateUiState.Idle -> {
-                                if (settings.updateLastCheckMs > 0L) {
-                                    Text(
-                                        "Last checked: ${UiFormatters.formatShortDate(settings.updateLastCheckMs)}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
+                            UpdateUiState.Idle -> Unit
 
                             UpdateUiState.Checking -> {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                                    Spacer(Modifier.width(10.dp))
-                                    Text("Checking GitHub Releases…", style = MaterialTheme.typography.bodyMedium)
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Checking…", style = MaterialTheme.typography.bodySmall)
                                 }
                             }
 
                             is UpdateUiState.UpToDate -> {
                                 Text(
-                                    "Up to date — you're on the latest version (${UiFormatters.formatShortDate(st.checkedAtMs)}).",
+                                    "Up to date",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.primary,
                                     fontWeight = FontWeight.Medium,
@@ -187,18 +168,14 @@ fun ToolsScreen(
                             }
 
                             is UpdateUiState.Available -> {
-                                HorizontalDivider()
+                                val rawTag = st.release.tagName.trim()
+                                val tagLabel = if (rawTag.startsWith("v", ignoreCase = true)) rawTag else "v$rawTag"
                                 Text(
-                                    "Update available: ${st.release.tagName} (${UiFormatters.formatSize(context, st.asset.size)})",
-                                    style = MaterialTheme.typography.titleSmall,
+                                    "New version $tagLabel available",
+                                    style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.primary,
                                     fontWeight = FontWeight.SemiBold,
                                 )
-                                val notes = st.release.body?.trim().orEmpty()
-                                if (notes.isNotEmpty()) {
-                                    Text("What's new", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                                    Text(notes.take(800), style = MaterialTheme.typography.bodySmall)
-                                }
                             }
 
                             is UpdateUiState.Downloading -> {
@@ -209,10 +186,7 @@ fun ToolsScreen(
                                 }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            "Downloading ${st.release.tagName}… ${UiFormatters.formatSize(context, st.downloadedBytes)} / ${UiFormatters.formatSize(context, st.totalBytes)}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                        )
+                                        Text("Downloading…", style = MaterialTheme.typography.bodySmall)
                                         Spacer(Modifier.height(4.dp))
                                         if (frac != null) {
                                             LinearProgressIndicator(progress = { frac }, modifier = Modifier.fillMaxWidth())
@@ -228,15 +202,17 @@ fun ToolsScreen(
 
                             is UpdateUiState.Verifying -> {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                                    Spacer(Modifier.width(10.dp))
-                                    Text("Verifying APK package & signature…", style = MaterialTheme.typography.bodyMedium)
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Verifying…", style = MaterialTheme.typography.bodySmall)
                                 }
                             }
 
                             is UpdateUiState.Ready -> {
+                                val rawTag = st.release.tagName.trim()
+                                val tagLabel = if (rawTag.startsWith("v", ignoreCase = true)) rawTag else "v$rawTag"
                                 Text(
-                                    "Verified ${st.release.tagName} is ready to install.",
+                                    "New version $tagLabel available",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.primary,
                                     fontWeight = FontWeight.SemiBold,
@@ -245,7 +221,7 @@ fun ToolsScreen(
 
                             is UpdateUiState.Error -> {
                                 Text(
-                                    "Last check failed: ${st.message}",
+                                    st.message,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.error,
                                 )
@@ -258,165 +234,36 @@ fun ToolsScreen(
                         ) {
                             OutlinedButton(
                                 onClick = { viewModel.container.updateManager.check(force = true) },
-                                enabled = updateState !is UpdateUiState.Checking && updateState !is UpdateUiState.Downloading,
+                                enabled = updateState !is UpdateUiState.Checking &&
+                                    updateState !is UpdateUiState.Downloading &&
+                                    updateState !is UpdateUiState.Verifying,
                             ) {
-                                Text("Check now")
+                                Text("Check now", maxLines = 1, softWrap = false)
                             }
 
-                            when (updateState) {
-                                is UpdateUiState.Available -> {
-                                    Button(
-                                        onClick = {
-                                            viewModel.container.updateManager.download(
-                                                onReadyToInstall = { triggerInstall() },
-                                            )
-                                        },
-                                    ) {
-                                        Text("Update & Install")
-                                    }
+                            if (updateState is UpdateUiState.Available || updateState is UpdateUiState.Ready) {
+                                Button(
+                                    onClick = {
+                                        when (updateState) {
+                                            is UpdateUiState.Available -> {
+                                                viewModel.container.updateManager.download(
+                                                    onReadyToInstall = { triggerInstall() },
+                                                )
+                                            }
+                                            is UpdateUiState.Ready -> triggerInstall()
+                                            else -> Unit
+                                        }
+                                    },
+                                ) {
+                                    Text("Download & Install", maxLines = 1, softWrap = false)
                                 }
-
-                                is UpdateUiState.Ready -> {
-                                    Button(onClick = { triggerInstall() }) {
-                                        Text("Install")
-                                    }
-                                }
-
-                                else -> Unit
                             }
-                        }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Check automatically (every 6 h)", style = MaterialTheme.typography.bodyMedium)
-                            Switch(
-                                checked = settings.updateAutoCheck,
-                                onCheckedChange = { v ->
-                                    viewModel.container.settingsRepository.update { it.copy(updateAutoCheck = v) }
-                                },
-                            )
-                        }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Include pre-releases", style = MaterialTheme.typography.bodyMedium)
-                            Switch(
-                                checked = settings.updateIncludePre,
-                                onCheckedChange = { v ->
-                                    viewModel.container.settingsRepository.update { it.copy(updateIncludePre = v) }
-                                },
-                            )
-                        }
-
-                        TextButton(
-                            onClick = {
-                                val open = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/codescv/minifile/releases"))
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                runCatching { context.startActivity(open) }
-                            },
-                        ) {
-                            Text("Release page")
-                            Spacer(Modifier.width(4.dp))
-                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
                         }
                     }
                 }
             }
 
-            // 2. Appearance
-            item(key = "appearance") {
-                SectionLabel("Appearance")
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Theme", style = MaterialTheme.typography.labelLarge)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            for (tm in ThemeMode.entries) {
-                                FilterChip(
-                                    selected = settings.themeMode == tm,
-                                    onClick = {
-                                        viewModel.container.settingsRepository.update { it.copy(themeMode = tm) }
-                                    },
-                                    label = { Text(tm.name.lowercase().replaceFirstChar { it.uppercase() }) },
-                                )
-                            }
-                        }
-
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                            ToggleSettingRow(
-                                label = "Dynamic color (Material You)",
-                                checked = settings.dynamicColor,
-                                onCheckedChange = { v ->
-                                    viewModel.container.settingsRepository.update { it.copy(dynamicColor = v) }
-                                },
-                            )
-                        }
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(
-                                selected = settings.viewMode == ViewMode.LIST,
-                                onClick = {
-                                    viewModel.container.settingsRepository.update { it.copy(viewMode = ViewMode.LIST) }
-                                },
-                                label = { Text("Default: List") },
-                            )
-                            FilterChip(
-                                selected = settings.viewMode == ViewMode.GRID,
-                                onClick = {
-                                    viewModel.container.settingsRepository.update { it.copy(viewMode = ViewMode.GRID) }
-                                },
-                                label = { Text("Default: Grid") },
-                            )
-                        }
-
-                        Text("Default sort", style = MaterialTheme.typography.labelLarge)
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            for (sf in SortField.entries) {
-                                FilterChip(
-                                    selected = settings.sort.by == sf,
-                                    onClick = {
-                                        viewModel.updateSort(settings.sort.copy(by = sf))
-                                    },
-                                    label = { Text(sf.name.lowercase().replaceFirstChar { it.uppercase() }) },
-                                )
-                            }
-                        }
-
-                        ToggleSettingRow(
-                            label = "Show hidden files (.dotfiles)",
-                            checked = settings.showHidden,
-                            onCheckedChange = { v ->
-                                viewModel.container.settingsRepository.update { it.copy(showHidden = v) }
-                            },
-                        )
-                        ToggleSettingRow(
-                            label = "Show image/video thumbnails",
-                            checked = settings.showThumbnails,
-                            onCheckedChange = { v ->
-                                viewModel.container.settingsRepository.update { it.copy(showThumbnails = v) }
-                            },
-                        )
-                        ToggleSettingRow(
-                            label = "Folders first",
-                            checked = settings.sort.foldersFirst,
-                            onCheckedChange = { v ->
-                                viewModel.updateSort(settings.sort.copy(foldersFirst = v))
-                            },
-                        )
-                    }
-                }
-            }
-
-            // 3. Behavior
+            // 2. Behavior
             item(key = "behavior") {
                 SectionLabel("Behavior")
                 Card(

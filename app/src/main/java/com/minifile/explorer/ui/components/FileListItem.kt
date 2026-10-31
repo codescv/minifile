@@ -281,10 +281,13 @@ fun FileGridCell(
                 onLongClick = onLongClick,
             ),
     ) {
-        Box(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+        Box(modifier = Modifier.fillMaxWidth()) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 12.dp),
             ) {
                 Box(
                     contentAlignment = Alignment.Center,
@@ -319,7 +322,7 @@ fun FileGridCell(
                         )
                     }
                 }
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(8.dp))
                 Text(
                     text = node.name,
                     style = MaterialTheme.typography.bodyMedium,
@@ -327,7 +330,9 @@ fun FileGridCell(
                     minLines = 2,
                     textAlign = TextAlign.Center,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(2.dp))
                 Text(
                     text = if (node.isDirectory) {
                         if (node.childCount >= 0) "${node.childCount} items" else "Folder"
@@ -337,69 +342,77 @@ fun FileGridCell(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
+                    textAlign = TextAlign.Center,
                 )
             }
 
-            // Top-left selection indicator
-            if (selected) {
-                Icon(
-                    imageVector = Icons.Filled.CheckCircle,
-                    contentDescription = "Selected",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.align(Alignment.TopStart).size(20.dp),
-                )
-            }
-
-            // Top-right badges & menu
+            // Top-left selection / compact status indicators (kept outside the centered 56.dp icon box)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
-                modifier = Modifier.align(Alignment.TopEnd),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = 6.dp, start = 6.dp),
             ) {
-                if (node.hasNomedia) {
+                if (selected) {
                     Icon(
-                        imageVector = Icons.Filled.VisibilityOff,
-                        contentDescription = "Hidden from gallery",
-                        tint = MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.size(15.dp),
-                    )
-                }
-                if (isFavorite) {
-                    Icon(
-                        imageVector = Icons.Filled.Star,
-                        contentDescription = "Favorite",
+                        imageVector = Icons.Filled.CheckCircle,
+                        contentDescription = "Selected",
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(15.dp),
+                        modifier = Modifier.size(18.dp),
                     )
+                } else {
+                    if (isFavorite) {
+                        Icon(
+                            imageVector = Icons.Filled.Star,
+                            contentDescription = "Favorite",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                    if (node.hasNomedia) {
+                        Icon(
+                            imageVector = Icons.Filled.VisibilityOff,
+                            contentDescription = "Hidden from gallery",
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                    if (!node.canWrite) {
+                        Icon(
+                            imageVector = Icons.Filled.Lock,
+                            contentDescription = "Read-only",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(13.dp),
+                        )
+                    }
                 }
-                if (!node.canWrite) {
-                    Icon(
-                        imageVector = Icons.Filled.Lock,
-                        contentDescription = "Read-only",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(14.dp),
-                    )
-                }
-                Box {
-                    Icon(
-                        imageVector = Icons.Filled.MoreVert,
-                        contentDescription = "More actions for ${node.name}",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .size(18.dp)
-                            .clickable { menuExpanded = true },
-                    )
-                    NodeContextMenu(
-                        expanded = menuExpanded,
-                        node = node,
-                        isFavorite = isFavorite,
-                        onDismiss = { menuExpanded = false },
-                        onAction = {
-                            menuExpanded = false
-                            onAction(it)
-                        },
-                    )
-                }
+            }
+
+            // Top-right context menu trigger (tucked cleanly in card corner)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 6.dp, end = 4.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.MoreVert,
+                    contentDescription = "More actions for ${node.name}",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clickable { menuExpanded = true },
+                )
+                NodeContextMenu(
+                    expanded = menuExpanded,
+                    node = node,
+                    isFavorite = isFavorite,
+                    onDismiss = { menuExpanded = false },
+                    onAction = {
+                        menuExpanded = false
+                        onAction(it)
+                    },
+                )
             }
         }
     }

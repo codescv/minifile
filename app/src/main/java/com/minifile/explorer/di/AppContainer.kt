@@ -23,7 +23,7 @@ import com.minifile.explorer.data.update.UpdateManager
 import com.minifile.explorer.service.OperationRegistry
 
 class AppContainer(context: Context) {
-    private val appContext = context.applicationContext
+    val appContext: Context = context.applicationContext
 
     val keyValueStore = SharedPrefsKeyValueStore(appContext)
     val settingsRepository = SettingsRepository(keyValueStore)
