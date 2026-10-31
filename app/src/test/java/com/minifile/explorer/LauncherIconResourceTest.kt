@@ -35,6 +35,16 @@ class LauncherIconResourceTest {
 
     companion object {
         private const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
+        private const val AAPT_NS = "http://schemas.android.com/aapt"
+        private val LAUNCHER_COLOR_NAMES = listOf(
+            "ic_launcher_background",
+            "ic_launcher_bg_top",
+            "ic_launcher_bg_mid",
+            "ic_launcher_bg_bottom",
+            "ic_launcher_bg_glow_start",
+            "ic_launcher_bg_glow_mid",
+            "ic_launcher_foreground",
+        )
         private const val EXPECTED_BACKGROUND_PATH = "M0,0h108v108h-108z"
         private const val LEGACY_V108_FOLDER_PATH =
             "M27,36c0,-3.3 2.7,-6 6,-6h14l6,6h22c3.3,0 6,2.7 6,6v30c0,3.3 -2.7,6 -6,6H33c-3.3,0 -6,-2.7 -6,-6V36z"
@@ -288,11 +298,6 @@ class LauncherIconResourceTest {
         }
 
         verifyVector(
-            relativePath = "drawable/ic_launcher_background.xml",
-            expectedFillColor = "@color/ic_launcher_background",
-            expectedPathData = EXPECTED_BACKGROUND_PATH,
-        )
-        verifyVector(
             relativePath = "drawable/ic_launcher_foreground.xml",
             expectedFillColor = "@color/ic_launcher_foreground",
             expectedPathData = EXPECTED_FOLDER_PATH,
@@ -301,6 +306,75 @@ class LauncherIconResourceTest {
             relativePath = "drawable/ic_launcher_monochrome.xml",
             expectedFillColor = "#FFFFFF",
             expectedPathData = EXPECTED_FOLDER_PATH,
+        )
+    }
+
+    @Test
+    fun backgroundDrawsTwoLayerFrostedCharcoalGradientPlate() {
+        val resRoot = File(locateAppMainRoot(), "res")
+        val doc = parseXml(File(resRoot, "drawable/ic_launcher_background.xml"))
+        val root = doc.documentElement
+        assertEquals("vector", root.tagName)
+        assertEquals("108dp", root.androidAttr("width"))
+        assertEquals("108dp", root.androidAttr("height"))
+        assertEquals("108", root.androidAttr("viewportWidth"))
+        assertEquals("108", root.androidAttr("viewportHeight"))
+
+        val paths = doc.childElements("path")
+        assertEquals("Expected 2 <path> layers (linear plate + radial bloom)", 2, paths.size)
+
+        fun gradientOf(path: Element): Element {
+            assertEquals(EXPECTED_BACKGROUND_PATH, path.androidAttr("pathData"))
+            assertTrue(
+                "Gradient layer must not use a flat android:fillColor",
+                path.androidAttr("fillColor").isEmpty(),
+            )
+            val attrs = path.getElementsByTagNameNS(AAPT_NS, "attr")
+            assertEquals(1, attrs.length)
+            val attr = attrs.item(0) as Element
+            assertEquals("android:fillColor", attr.getAttribute("name"))
+            val gradients = attr.getElementsByTagName("gradient")
+            assertEquals(1, gradients.length)
+            return gradients.item(0) as Element
+        }
+
+        fun stopsOf(gradient: Element): List<Pair<String, String>> {
+            val items = gradient.getElementsByTagName("item")
+            return (0 until items.length).map {
+                val item = items.item(it) as Element
+                item.androidAttr("color") to item.androidAttr("offset")
+            }
+        }
+
+        // Layer 1: vertical linear charcoal plate (y=16 -> y=92)
+        val linear = gradientOf(paths[0])
+        assertEquals("linear", linear.androidAttr("type"))
+        assertEquals("54", linear.androidAttr("startX"))
+        assertEquals("16", linear.androidAttr("startY"))
+        assertEquals("54", linear.androidAttr("endX"))
+        assertEquals("92", linear.androidAttr("endY"))
+        assertEquals(
+            listOf(
+                "@color/ic_launcher_bg_top" to "0.0",
+                "@color/ic_launcher_bg_mid" to "0.48",
+                "@color/ic_launcher_bg_bottom" to "1.0",
+            ),
+            stopsOf(linear),
+        )
+
+        // Layer 2: radial frosted-glass diffusion bloom at (48, 32), r=46
+        val radial = gradientOf(paths[1])
+        assertEquals("radial", radial.androidAttr("type"))
+        assertEquals("48", radial.androidAttr("centerX"))
+        assertEquals("32", radial.androidAttr("centerY"))
+        assertEquals("46", radial.androidAttr("gradientRadius"))
+        assertEquals(
+            listOf(
+                "@color/ic_launcher_bg_glow_start" to "0.0",
+                "@color/ic_launcher_bg_glow_mid" to "0.55",
+                "#00FFFFFF" to "1.0",
+            ),
+            stopsOf(radial),
         )
     }
 
@@ -363,11 +437,33 @@ class LauncherIconResourceTest {
         val lightColors = parseColorMap(File(resRoot, "values/colors.xml"))
         val darkColors = parseColorMap(File(resRoot, "values-night/colors.xml"))
 
+        assertEquals(LAUNCHER_COLOR_NAMES.toSet(), lightColors.keys.filter { it.startsWith("ic_launcher") }.toSet())
+        assertEquals(LAUNCHER_COLOR_NAMES.toSet(), darkColors.keys.filter { it.startsWith("ic_launcher") }.toSet())
+
+        // Light mode: flat #3366CC plate (gradient stops identical) with fully transparent bloom
         assertEquals("#3366CC", lightColors["ic_launcher_background"])
+        assertEquals("#3366CC", lightColors["ic_launcher_bg_top"])
+        assertEquals("#3366CC", lightColors["ic_launcher_bg_mid"])
+        assertEquals("#3366CC", lightColors["ic_launcher_bg_bottom"])
+        assertEquals("#00FFFFFF", lightColors["ic_launcher_bg_glow_start"])
+        assertEquals("#00FFFFFF", lightColors["ic_launcher_bg_glow_mid"])
         assertEquals("#FFFFFF", lightColors["ic_launcher_foreground"])
 
-        assertEquals("#20242D", darkColors["ic_launcher_background"])
+        // Dark mode: Frosted Charcoal Dark Plate (Play v1.0.8 / Podcasts v0.1.19) + soft white bloom
+        assertEquals("#282A30", darkColors["ic_launcher_background"])
+        assertEquals("#363940", darkColors["ic_launcher_bg_top"])
+        assertEquals("#282A30", darkColors["ic_launcher_bg_mid"])
+        assertEquals("#1E2025", darkColors["ic_launcher_bg_bottom"])
+        assertEquals("#1AFFFFFF", darkColors["ic_launcher_bg_glow_start"])
+        assertEquals("#09FFFFFF", darkColors["ic_launcher_bg_glow_mid"])
         assertEquals("#60A5FA", darkColors["ic_launcher_foreground"])
+        assertEquals(darkColors["ic_launcher_bg_mid"], darkColors["ic_launcher_background"])
+
+        // Plate brightens toward the top (top > mid > bottom)
+        val topLum = relativeLuminance(darkColors.getValue("ic_launcher_bg_top"))
+        val midLum = relativeLuminance(darkColors.getValue("ic_launcher_bg_mid"))
+        val bottomLum = relativeLuminance(darkColors.getValue("ic_launcher_bg_bottom"))
+        assertTrue("Expected top ($topLum) > mid ($midLum) > bottom ($bottomLum)", topLum > midLum && midLum > bottomLum)
 
         assertNotEquals(lightColors["ic_launcher_background"], darkColors["ic_launcher_background"])
         assertNotEquals(lightColors["ic_launcher_foreground"], darkColors["ic_launcher_foreground"])
@@ -379,16 +475,18 @@ class LauncherIconResourceTest {
             darkBgLum < lightBgLum,
         )
 
-        val lightContrast = contrastRatio(
-            lightColors.getValue("ic_launcher_background"),
-            lightColors.getValue("ic_launcher_foreground"),
-        )
-        val darkContrast = contrastRatio(
-            darkColors.getValue("ic_launcher_background"),
-            darkColors.getValue("ic_launcher_foreground"),
-        )
-        assertTrue("Expected WCAG AA contrast >= 4.5 in Light mode, got $lightContrast", lightContrast >= 4.5)
-        assertTrue("Expected WCAG AA contrast >= 4.5 in Dark mode, got $darkContrast", darkContrast >= 4.5)
+        for (plateColor in listOf("ic_launcher_background", "ic_launcher_bg_top", "ic_launcher_bg_mid", "ic_launcher_bg_bottom")) {
+            val lightContrast = contrastRatio(
+                lightColors.getValue(plateColor),
+                lightColors.getValue("ic_launcher_foreground"),
+            )
+            val darkContrast = contrastRatio(
+                darkColors.getValue(plateColor),
+                darkColors.getValue("ic_launcher_foreground"),
+            )
+            assertTrue("Expected WCAG AA contrast >= 4.5 in Light mode for $plateColor, got $lightContrast", lightContrast >= 4.5)
+            assertTrue("Expected WCAG AA contrast >= 4.5 in Dark mode for $plateColor, got $darkContrast", darkContrast >= 4.5)
+        }
     }
 
     @Test
