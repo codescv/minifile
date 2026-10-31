@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.AddToDrive
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Dns
@@ -173,6 +174,10 @@ fun StorageHomeScreen(
     onOpenQuickPath: (VfsPath, String) -> Unit,
     onOpenFavorite: (Favorite) -> Unit,
     onSeeAllFavorites: () -> Unit,
+    onRenameFavorite: (Favorite, String) -> Unit = { _, _ -> },
+    onRemoveFavorite: (Favorite) -> Unit = {},
+    onMoveFavorite: (Favorite, Int) -> Unit = { _, _ -> },
+    onShowFavoriteProperties: (Favorite) -> Unit = {},
     onClipboardToFavorite: () -> Unit,
     onClearClipboard: () -> Unit,
 ) {
@@ -180,7 +185,6 @@ fun StorageHomeScreen(
     val storageVolumes = volumes.filter {
         it.kind == VolumeKind.PRIMARY || it.kind == VolumeKind.SD_CARD || it.kind == VolumeKind.USB_OTG
     }
-    val recentFavorites = favorites.sortedByDescending { it.lastUsedAt }.take(4)
 
     val mergedServers = remember(gdriveServers, ftpServers) {
         buildList {
@@ -192,6 +196,7 @@ fun StorageHomeScreen(
     var showAddServerDialog by remember { mutableStateOf(false) }
     var editingFtpServer by remember { mutableStateOf<FtpServerBookmark?>(null) }
     var editingGDriveServer by remember { mutableStateOf<GDriveServerBookmark?>(null) }
+    var renamingFavorite by remember { mutableStateOf<Favorite?>(null) }
 
     val hasGoogleAuth = remember(context) {
         AndroidAccountTokenProvider.hasGoogleAccountAuthenticator(context)
@@ -421,41 +426,94 @@ fun StorageHomeScreen(
             }
 
             // 4. Recent Favorites
-            if (recentFavorites.isNotEmpty()) {
-                item(key = "recent-favorites") {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        SectionHeader("Recent Favorites")
-                        TextButton(onClick = onSeeAllFavorites) {
-                            Text("See all →")
-                        }
+            item(key = "recent-favorites") {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    SectionHeader("Recent Favorites")
+                    TextButton(onClick = onSeeAllFavorites) {
+                        Text("See all →")
                     }
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        for (fav in recentFavorites) {
-                            AssistChip(
-                                onClick = { onOpenFavorite(fav) },
-                                leadingIcon = {
-                                    Icon(
-                                        if (fav.isDirectory) Icons.Filled.Star else Icons.Filled.Description,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                },
-                                label = { Text(fav.name) },
+                }
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    if (favorites.isEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(onClick = onSeeAllFavorites)
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                        ) {
+                            Text(
+                                text = "No favorites yet",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
                             )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = "Bookmark any folder or file from Browse for one-tap access and quick transfers.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            favorites.forEachIndexed { idx, fav ->
+                                if (idx > 0) {
+                                    HorizontalDivider()
+                                }
+                                FavoriteRow(
+                                    favorite = fav,
+                                    canMoveUp = idx > 0,
+                                    canMoveDown = idx < favorites.lastIndex,
+                                    onClick = { onOpenFavorite(fav) },
+                                    onRename = { renamingFavorite = fav },
+                                    onProperties = { onShowFavoriteProperties(fav) },
+                                    onMoveUp = { onMoveFavorite(fav, -1) },
+                                    onMoveDown = { onMoveFavorite(fav, 1) },
+                                    onRemove = { onRemoveFavorite(fav) },
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    renamingFavorite?.let { fav ->
+        var text by remember(fav.id) { mutableStateOf(fav.name) }
+        AlertDialog(
+            onDismissRequest = { renamingFavorite = null },
+            title = { Text("Rename Favorite") },
+            text = {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onRenameFavorite(fav, text)
+                        renamingFavorite = null
+                    },
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renamingFavorite = null }) { Text("Cancel") }
+            },
+        )
     }
 
     if (showAddServerDialog) {
@@ -540,6 +598,135 @@ fun StorageHomeScreen(
                 editingGDriveServer = null
             },
         )
+    }
+}
+
+@Composable
+private fun FavoriteRow(
+    favorite: Favorite,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onClick: () -> Unit,
+    onRename: () -> Unit,
+    onProperties: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val subtitle = when (val p = favorite.path) {
+        is VfsPath.Local -> p.normalized
+        is VfsPath.Saf -> p.documentId
+        is VfsPath.Ftp -> p.serialize()
+        is VfsPath.GDrive -> p.serialize()
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(start = 16.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
+    ) {
+        Icon(
+            imageVector = if (favorite.isDirectory) Icons.Filled.Star else Icons.Filled.Description,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(24.dp),
+        )
+        Spacer(Modifier.width(14.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = favorite.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (favorite.path is VfsPath.Saf) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Filled.Usb,
+                        contentDescription = "External/SAF",
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
+                if (favorite.path is VfsPath.Ftp) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Filled.Cloud,
+                        contentDescription = "FTP",
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
+                if (favorite.path is VfsPath.GDrive) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Filled.AddToDrive,
+                        contentDescription = "Google Drive",
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
+            }
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Box {
+            IconButton(onClick = { menuOpen = true }) {
+                Icon(Icons.Filled.MoreVert, contentDescription = "More actions for ${favorite.name}")
+            }
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Rename") },
+                    onClick = {
+                        menuOpen = false
+                        onRename()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Properties") },
+                    onClick = {
+                        menuOpen = false
+                        onProperties()
+                    },
+                )
+                if (canMoveUp) {
+                    DropdownMenuItem(
+                        text = { Text("Move up") },
+                        onClick = {
+                            menuOpen = false
+                            onMoveUp()
+                        },
+                    )
+                }
+                if (canMoveDown) {
+                    DropdownMenuItem(
+                        text = { Text("Move down") },
+                        onClick = {
+                            menuOpen = false
+                            onMoveDown()
+                        },
+                    )
+                }
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("Remove", color = MaterialTheme.colorScheme.error) },
+                    onClick = {
+                        menuOpen = false
+                        onRemove()
+                    },
+                )
+            }
+        }
     }
 }
 

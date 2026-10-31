@@ -68,6 +68,8 @@ class UiModelsTest {
     fun mainTab_wirelessTabLabelIsTransferAndToolsTabLabelIsSettings() {
         assertEquals("Transfer", MainTab.WIRELESS.label)
         assertEquals("Settings", MainTab.TOOLS.label)
-        assertEquals(listOf("Browse", "Favorites", "Transfer", "Settings"), MainTab.entries.map { it.label })
+        assertEquals(listOf("Browse", "Transfer", "Settings"), MainTab.entries.map { it.label })
+        val favOverlay: OverlayScreen = OverlayScreen.Favorites
+        assertEquals(OverlayScreen.Favorites, favOverlay)
     }
 }

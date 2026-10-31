@@ -34,7 +34,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
@@ -187,6 +186,11 @@ class MainActivity : ComponentActivity() {
         }
 
         intent.getStringExtra("open_tab")?.trim()?.takeIf { it.isNotEmpty() }?.let { rawTab ->
+            if (rawTab.equals("favorites", ignoreCase = true)) {
+                viewModel.selectTab(MainTab.BROWSE)
+                viewModel.openOverlay(OverlayScreen.Favorites)
+                return@let
+            }
             val matchedTab = when {
                 rawTab.equals("transfer", ignoreCase = true) ||
                     rawTab.equals("wireless", ignoreCase = true) -> MainTab.WIRELESS
@@ -478,12 +482,6 @@ private fun MiniFileRoot(
                             label = { Text("Browse") },
                         )
                         NavigationBarItem(
-                            selected = activeTab == MainTab.FAVORITES,
-                            onClick = { viewModel.selectTab(MainTab.FAVORITES) },
-                            icon = { Icon(Icons.Filled.Star, contentDescription = "Favorites") },
-                            label = { Text("Favorites") },
-                        )
-                        NavigationBarItem(
                             selected = activeTab == MainTab.WIRELESS,
                             onClick = { viewModel.selectTab(MainTab.WIRELESS) },
                             icon = {
@@ -526,6 +524,13 @@ private fun MiniFileRoot(
                 .padding(outerPadding),
         ) {
             when (val currentOverlay = overlay) {
+                is OverlayScreen.Favorites -> {
+                    FavoritesScreen(
+                        viewModel = viewModel,
+                        onClose = { viewModel.closeOverlay() },
+                    )
+                }
+
                 is OverlayScreen.TextEditor -> {
                     TextEditorScreen(
                         initialPath = currentOverlay.path,
@@ -575,10 +580,6 @@ private fun MiniFileRoot(
                                 },
                                 onPickGoogleAccount = pickGoogleAccount,
                             )
-                        }
-
-                        MainTab.FAVORITES -> {
-                            FavoritesScreen(viewModel = viewModel)
                         }
 
                         MainTab.WIRELESS -> {

@@ -1,5 +1,6 @@
 package com.minifile.explorer.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,13 +17,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddToDrive
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.FileDownload
-import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
@@ -31,7 +31,6 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -61,7 +60,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -70,7 +68,6 @@ import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.components.PropertiesSheet
-import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -79,6 +76,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun FavoritesScreen(
     viewModel: MainViewModel,
+    onClose: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -89,8 +87,10 @@ fun FavoritesScreen(
     var renameTarget by remember { mutableStateOf<Favorite?>(null) }
     var unavailablePrompt by remember { mutableStateOf<Favorite?>(null) }
     var propertiesNode by remember { mutableStateOf<VfsNode?>(null) }
-    var exportedJson by remember { mutableStateOf<String?>(null) }
-    var showImportDialog by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = onClose != null) {
+        onClose?.invoke()
+    }
 
     LaunchedEffect(favorites) {
         for (fav in favorites) {
@@ -104,21 +104,17 @@ fun FavoritesScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Favorites", fontWeight = FontWeight.SemiBold) },
-                actions = {
-                    IconButton(
-                        onClick = {
-                            scope.launch {
-                                exportedJson = viewModel.container.favoritesRepository.exportJson()
-                            }
-                        },
-                    ) {
-                        Icon(Icons.Filled.FileUpload, contentDescription = "Export Favorites JSON")
-                    }
-                    IconButton(onClick = { showImportDialog = true }) {
-                        Icon(Icons.Filled.FileDownload, contentDescription = "Import Favorites JSON")
+                navigationIcon = {
+                    if (onClose != null) {
+                        IconButton(onClick = onClose) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                            )
+                        }
                     }
                 },
+                title = { Text("Favorites", fontWeight = FontWeight.SemiBold) },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -404,94 +400,6 @@ fun FavoritesScreen(
             onToggleNomedia = { viewModel.toggleNomedia(node.path) },
             onCopiedMessage = { viewModel.emitSimpleMessage(it) },
             onDismiss = { propertiesNode = null },
-        )
-    }
-
-    exportedJson?.let { json ->
-        AlertDialog(
-            onDismissRequest = { exportedJson = null },
-            title = { Text("Export Favorites JSON") },
-            text = {
-                OutlinedTextField(
-                    value = json,
-                    onValueChange = {},
-                    readOnly = true,
-                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    maxLines = 10,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        UiFormatters.copyToSystemClipboard(context, "Favorites JSON", json)
-                        viewModel.emitSimpleMessage("Favorites JSON copied to clipboard")
-                        exportedJson = null
-                    },
-                ) {
-                    Text("Copy JSON")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { exportedJson = null }) { Text("Close") }
-            },
-        )
-    }
-
-    if (showImportDialog) {
-        var inputJson by remember { mutableStateOf("") }
-        var merge by remember { mutableStateOf(true) }
-        var importErr by remember { mutableStateOf<String?>(null) }
-
-        AlertDialog(
-            onDismissRequest = { showImportDialog = false },
-            title = { Text("Import Favorites JSON") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = inputJson,
-                        onValueChange = {
-                            inputJson = it
-                            importErr = null
-                        },
-                        placeholder = { Text("[{\"id\": ...}]") },
-                        maxLines = 8,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (importErr != null) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(importErr!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                    }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.clickable { merge = !merge },
-                    ) {
-                        Checkbox(checked = merge, onCheckedChange = { merge = it })
-                        Spacer(Modifier.width(6.dp))
-                        Text("Merge with existing favorites")
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        scope.launch {
-                            try {
-                                viewModel.container.favoritesRepository.importJson(inputJson, merge)
-                                showImportDialog = false
-                                viewModel.emitSimpleMessage("Favorites imported")
-                            } catch (e: Exception) {
-                                importErr = e.message ?: "Invalid JSON"
-                            }
-                        }
-                    },
-                ) {
-                    Text("Import")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showImportDialog = false }) { Text("Cancel") }
-            },
         )
     }
 }

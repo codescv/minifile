@@ -60,12 +60,12 @@ import kotlinx.coroutines.withContext
 
 enum class MainTab(val label: String) {
     BROWSE("Browse"),
-    FAVORITES("Favorites"),
     WIRELESS("Transfer"),
     TOOLS("Settings"),
 }
 
 sealed interface OverlayScreen {
+    data object Favorites : OverlayScreen
     data class TextEditor(val path: VfsPath, val forceEdit: Boolean = false) : OverlayScreen
     data class ArchivePreview(val path: VfsPath) : OverlayScreen
     data class PdfViewer(val path: VfsPath) : OverlayScreen
@@ -483,6 +483,7 @@ class MainViewModel(
     }
 
     fun openFavoriteInBrowse(fav: Favorite, context: Context? = null) {
+        _overlay.value = null
         viewModelScope.launch {
             container.favoritesRepository.touch(fav.id)
             val node = withContext(Dispatchers.IO) {
@@ -1340,6 +1341,35 @@ class MainViewModel(
         viewModelScope.launch {
             container.favoritesRepository.remove(existing.id)
             emitSimpleMessage("Removed '${existing.name}' from Favorites")
+        }
+    }
+
+    fun renameFavorite(id: String, newName: String) {
+        val clean = newName.trim()
+        if (clean.isEmpty()) return
+        viewModelScope.launch {
+            container.favoritesRepository.rename(id, clean)
+            emitSimpleMessage("Renamed favorite to '$clean'")
+        }
+    }
+
+    fun removeFavorite(fav: Favorite) {
+        viewModelScope.launch {
+            container.favoritesRepository.remove(fav.id)
+            emitSimpleMessage("Removed '${fav.name}' from Favorites")
+        }
+    }
+
+    fun moveFavorite(id: String, delta: Int) {
+        viewModelScope.launch {
+            val ids = favorites.value.map { it.id }.toMutableList()
+            val idx = ids.indexOf(id)
+            if (idx < 0) return@launch
+            val targetIdx = (idx + delta).coerceIn(0, ids.lastIndex)
+            if (targetIdx == idx) return@launch
+            val moved = ids.removeAt(idx)
+            ids.add(targetIdx, moved)
+            container.favoritesRepository.reorder(ids)
         }
     }
 

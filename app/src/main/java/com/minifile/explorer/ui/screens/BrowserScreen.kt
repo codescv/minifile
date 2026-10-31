@@ -74,7 +74,6 @@ import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.vfs.Volume
 import com.minifile.explorer.data.AndroidVolumeProvider
 import com.minifile.explorer.ui.ClipboardHolder
-import com.minifile.explorer.ui.MainTab
 import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.OverlayScreen
 import com.minifile.explorer.ui.components.AddFavoriteDialog
@@ -97,7 +96,9 @@ import com.minifile.explorer.ui.components.SelectionTopBar
 import com.minifile.explorer.ui.components.SendToDeviceSheet
 import com.minifile.explorer.ui.components.SortBottomSheet
 import com.minifile.explorer.ui.util.UiFormatters
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private data class FavoriteTransferRequest(
     val items: List<VfsPath>,
@@ -199,7 +200,22 @@ fun BrowserScreen(
                 viewModel.navigateToDirectory(path, rootVolumeName = rootLabel)
             },
             onOpenFavorite = { viewModel.openFavoriteInBrowse(it, context) },
-            onSeeAllFavorites = { viewModel.selectTab(MainTab.FAVORITES) },
+            onSeeAllFavorites = { viewModel.openOverlay(OverlayScreen.Favorites) },
+            onRenameFavorite = { fav, newName -> viewModel.renameFavorite(fav.id, newName) },
+            onRemoveFavorite = { fav -> viewModel.removeFavorite(fav) },
+            onMoveFavorite = { fav, delta -> viewModel.moveFavorite(fav.id, delta) },
+            onShowFavoriteProperties = { fav ->
+                scope.launch {
+                    val st = withContext(Dispatchers.IO) {
+                        runCatching { viewModel.container.fileSystem.stat(fav.path) }.getOrNull()
+                    }
+                    if (st != null) {
+                        propertiesTarget = st
+                    } else {
+                        viewModel.emitSimpleMessage("'${fav.name}' is currently unavailable")
+                    }
+                }
+            },
             onClipboardToFavorite = {
                 val clip = clipboard ?: return@StorageHomeScreen
                 favoritePickerRequest = FavoriteTransferRequest(
@@ -210,6 +226,52 @@ fun BrowserScreen(
             },
             onClearClipboard = { ClipboardHolder.clear() },
         )
+
+        val homeFavoritePaths = remember(favorites) { favorites.map { it.path }.toSet() }
+        propertiesTarget?.let { node ->
+            PropertiesSheet(
+                node = node,
+                isFavorite = node.path in homeFavoritePaths,
+                fileOps = viewModel.container.fileOperations,
+                checksumCalculator = viewModel.container.checksumCalculator,
+                safFs = viewModel.container.safFileSystem,
+                onRequestRename = { renameTarget = node },
+                onToggleFavorite = {
+                    if (node.path in homeFavoritePaths) {
+                        viewModel.removeFavoriteByPath(node.path)
+                    } else {
+                        addFavoriteTarget = PendingFavorite(node.name, node.path, node.isDirectory)
+                    }
+                },
+                onToggleNomedia = { viewModel.toggleNomedia(node.path) },
+                onCopiedMessage = { viewModel.emitSimpleMessage(it) },
+                onDismiss = { propertiesTarget = null },
+            )
+        }
+
+        renameTarget?.let { target ->
+            RenameDialog(
+                node = target,
+                onConfirm = { newName, onErr, onSuccess ->
+                    viewModel.renameItem(target.path, newName, onErr, onSuccess)
+                },
+                onDismiss = { renameTarget = null },
+            )
+        }
+
+        addFavoriteTarget?.let { pending ->
+            AddFavoriteDialog(
+                defaultName = pending.defaultName,
+                onConfirm = { chosenName ->
+                    viewModel.addOrUpdateFavorite(
+                        name = chosenName,
+                        path = pending.path,
+                        isDirectory = pending.isDirectory,
+                    )
+                },
+                onDismiss = { addFavoriteTarget = null },
+            )
+        }
 
         favoritePickerRequest?.let { req ->
             FavoritePickerSheet(
