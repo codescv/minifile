@@ -6,5 +6,5 @@
     android:viewportHeight="108">
     <path
         android:fillColor="@color/ic_launcher_foreground"
-        android:pathData="M27,36c0,-3.3 2.7,-6 6,-6h14l6,6h22c3.3,0 6,2.7 6,6v30c0,3.3 -2.7,6 -6,6H33c-3.3,0 -6,-2.7 -6,-6V36z" />
+        android:pathData="M36,42c0,-2.2 1.8,-4 4,-4h9.33l4,4h14.67c2.2,0 4,1.8 4,4v20c0,2.2 -1.8,4 -4,4H40c-2.2,0 -4,-1.8 -4,-4V42z" />
 </vector>

@@ -13,17 +13,168 @@ import org.w3c.dom.Document
 import org.w3c.dom.Element
 import java.io.File
 import javax.xml.parsers.DocumentBuilderFactory
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
+import kotlin.math.sqrt
 
 class LauncherIconResourceTest {
+
+    data class SvgBounds(
+        val minX: Double,
+        val minY: Double,
+        val maxX: Double,
+        val maxY: Double,
+    ) {
+        val width: Double get() = maxX - minX
+        val height: Double get() = maxY - minY
+        val centerX: Double get() = (minX + maxX) / 2.0
+        val centerY: Double get() = (minY + maxY) / 2.0
+    }
 
     companion object {
         private const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
         private const val EXPECTED_BACKGROUND_PATH = "M0,0h108v108h-108z"
-        private const val EXPECTED_FOLDER_PATH =
+        private const val LEGACY_V108_FOLDER_PATH =
             "M27,36c0,-3.3 2.7,-6 6,-6h14l6,6h22c3.3,0 6,2.7 6,6v30c0,3.3 -2.7,6 -6,6H33c-3.3,0 -6,-2.7 -6,-6V36z"
+        private const val EXPECTED_FOLDER_PATH =
+            "M36,42c0,-2.2 1.8,-4 4,-4h9.33l4,4h14.67c2.2,0 4,1.8 4,4v20c0,2.2 -1.8,4 -4,4H40c-2.2,0 -4,-1.8 -4,-4V42z"
+        private const val FULL_VIEWPORT_SIZE = 108.0
+        private const val ADAPTIVE_VISIBLE_MIN = 18.0
+        private const val ADAPTIVE_VISIBLE_MAX = 90.0
+        private const val ADAPTIVE_VISIBLE_SIZE = ADAPTIVE_VISIBLE_MAX - ADAPTIVE_VISIBLE_MIN
+
+        private fun computeSvgPathBounds(pathData: String): SvgBounds {
+            val tokens = Regex("""[A-Za-z]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?""")
+                .findAll(pathData)
+                .map { it.value }
+                .toList()
+            require(tokens.isNotEmpty()) { "Empty SVG pathData" }
+
+            var minX = Double.POSITIVE_INFINITY
+            var minY = Double.POSITIVE_INFINITY
+            var maxX = Double.NEGATIVE_INFINITY
+            var maxY = Double.NEGATIVE_INFINITY
+
+            fun includePoint(x: Double, y: Double) {
+                minX = min(minX, x)
+                minY = min(minY, y)
+                maxX = max(maxX, x)
+                maxY = max(maxY, y)
+            }
+
+            fun cubicBounds1D(p0: Double, p1: Double, p2: Double, p3: Double): Pair<Double, Double> {
+                var lo = min(p0, p3)
+                var hi = max(p0, p3)
+                fun eval(t: Double): Double {
+                    val u = 1.0 - t
+                    return u * u * u * p0 + 3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t * p3
+                }
+                val a = -p0 + 3.0 * p1 - 3.0 * p2 + p3
+                val b = 2.0 * (p0 - 2.0 * p1 + p2)
+                val c = p1 - p0
+                if (abs(a) < 1e-12) {
+                    if (abs(b) > 1e-12) {
+                        val t = -c / b
+                        if (t > 0.0 && t < 1.0) {
+                            val v = eval(t)
+                            lo = min(lo, v)
+                            hi = max(hi, v)
+                        }
+                    }
+                } else {
+                    val disc = b * b - 4.0 * a * c
+                    if (disc >= 0.0) {
+                        val root = sqrt(disc)
+                        for (t in listOf((-b - root) / (2.0 * a), (-b + root) / (2.0 * a))) {
+                            if (t > 0.0 && t < 1.0) {
+                                val v = eval(t)
+                                lo = min(lo, v)
+                                hi = max(hi, v)
+                            }
+                        }
+                    }
+                }
+                return lo to hi
+            }
+
+            var idx = 0
+            var cmd = ' '
+            var curX = 0.0
+            var curY = 0.0
+            var startX = 0.0
+            var startY = 0.0
+
+            fun nextNum(): Double = tokens[idx++].toDouble()
+            fun hasNum(): Boolean = idx < tokens.size && !tokens[idx][0].isLetter()
+
+            while (idx < tokens.size) {
+                if (tokens[idx][0].isLetter()) {
+                    cmd = tokens[idx++][0]
+                }
+                when (cmd) {
+                    'M', 'm' -> {
+                        val rel = cmd == 'm'
+                        val x = nextNum() + if (rel) curX else 0.0
+                        val y = nextNum() + if (rel) curY else 0.0
+                        curX = x
+                        curY = y
+                        startX = x
+                        startY = y
+                        includePoint(curX, curY)
+                        cmd = if (rel) 'l' else 'L'
+                    }
+                    'L', 'l' -> {
+                        do {
+                            val rel = cmd == 'l'
+                            curX = nextNum() + if (rel) curX else 0.0
+                            curY = nextNum() + if (rel) curY else 0.0
+                            includePoint(curX, curY)
+                        } while (hasNum())
+                    }
+                    'H', 'h' -> {
+                        do {
+                            curX = nextNum() + if (cmd == 'h') curX else 0.0
+                            includePoint(curX, curY)
+                        } while (hasNum())
+                    }
+                    'V', 'v' -> {
+                        do {
+                            curY = nextNum() + if (cmd == 'v') curY else 0.0
+                            includePoint(curX, curY)
+                        } while (hasNum())
+                    }
+                    'C', 'c' -> {
+                        do {
+                            val rel = cmd == 'c'
+                            val x1 = nextNum() + if (rel) curX else 0.0
+                            val y1 = nextNum() + if (rel) curY else 0.0
+                            val x2 = nextNum() + if (rel) curX else 0.0
+                            val y2 = nextNum() + if (rel) curY else 0.0
+                            val x3 = nextNum() + if (rel) curX else 0.0
+                            val y3 = nextNum() + if (rel) curY else 0.0
+                            val (xLo, xHi) = cubicBounds1D(curX, x1, x2, x3)
+                            val (yLo, yHi) = cubicBounds1D(curY, y1, y2, y3)
+                            minX = min(minX, xLo)
+                            maxX = max(maxX, xHi)
+                            minY = min(minY, yLo)
+                            maxY = max(maxY, yHi)
+                            curX = x3
+                            curY = y3
+                        } while (hasNum())
+                    }
+                    'Z', 'z' -> {
+                        curX = startX
+                        curY = startY
+                        includePoint(curX, curY)
+                    }
+                    else -> error("Unsupported SVG command '$cmd' in pathData")
+                }
+            }
+
+            return SvgBounds(minX, minY, maxX, maxY)
+        }
 
         private fun locateAppMainRoot(): File {
             var dir: File? = File(System.getProperty("user.dir") ?: ".").canonicalFile
@@ -151,6 +302,59 @@ class LauncherIconResourceTest {
             expectedFillColor = "#FFFFFF",
             expectedPathData = EXPECTED_FOLDER_PATH,
         )
+    }
+
+    @Test
+    fun folderPathScaleMatchesLegacyLightIconProportionsInsideAdaptiveViewport() {
+        val resRoot = File(locateAppMainRoot(), "res")
+        val legacyBounds = computeSvgPathBounds(LEGACY_V108_FOLDER_PATH)
+        assertEquals(27.0, legacyBounds.minX, 1e-6)
+        assertEquals(81.0, legacyBounds.maxX, 1e-6)
+        assertEquals(30.0, legacyBounds.minY, 1e-6)
+        assertEquals(78.0, legacyBounds.maxY, 1e-6)
+        assertEquals(54.0, legacyBounds.width, 1e-6)
+        assertEquals(48.0, legacyBounds.height, 1e-6)
+        assertEquals(54.0, legacyBounds.centerX, 1e-6)
+        assertEquals(54.0, legacyBounds.centerY, 1e-6)
+
+        val legacyWidthRatio = legacyBounds.width / FULL_VIEWPORT_SIZE
+        val legacyHeightRatio = legacyBounds.height / FULL_VIEWPORT_SIZE
+        assertEquals(0.50, legacyWidthRatio, 1e-6)
+        assertEquals(4.0 / 9.0, legacyHeightRatio, 1e-6)
+
+        for (relativePath in listOf(
+            "drawable/ic_launcher_foreground.xml",
+            "drawable/ic_launcher_monochrome.xml",
+        )) {
+            val doc = parseXml(File(resRoot, relativePath))
+            val pathData = doc.childElements("path").single().androidAttr("pathData")
+            val bounds = computeSvgPathBounds(pathData)
+
+            // Exact 2/3-scaled bounds around (54, 54) mapped onto [18, 90] (72x72 visible safe zone)
+            assertEquals("minX in $relativePath", 36.0, bounds.minX, 1e-6)
+            assertEquals("maxX in $relativePath", 72.0, bounds.maxX, 1e-6)
+            assertEquals("minY in $relativePath", 38.0, bounds.minY, 1e-6)
+            assertEquals("maxY in $relativePath", 70.0, bounds.maxY, 1e-6)
+            assertEquals("width in $relativePath", 36.0, bounds.width, 1e-6)
+            assertEquals("height in $relativePath", 32.0, bounds.height, 1e-6)
+            assertEquals("centerX in $relativePath", 54.0, bounds.centerX, 1e-6)
+            assertEquals("centerY in $relativePath", 54.0, bounds.centerY, 1e-6)
+
+            // Strictly inside adaptive-icon visible viewport [18, 90] and 66dp keyline safe zone [21, 87]
+            assertTrue(bounds.minX >= ADAPTIVE_VISIBLE_MIN && bounds.maxX <= ADAPTIVE_VISIBLE_MAX)
+            assertTrue(bounds.minY >= ADAPTIVE_VISIBLE_MIN && bounds.maxY <= ADAPTIVE_VISIBLE_MAX)
+            assertTrue(bounds.minX >= 21.0 && bounds.maxX <= 87.0)
+            assertTrue(bounds.minY >= 21.0 && bounds.maxY <= 87.0)
+
+            // Proportions inside 72x72 visible adaptive viewport match v1.0.8's 108x108 light icon 1-to-1
+            val adaptiveWidthRatio = bounds.width / ADAPTIVE_VISIBLE_SIZE
+            val adaptiveHeightRatio = bounds.height / ADAPTIVE_VISIBLE_SIZE
+            assertEquals("width ratio in $relativePath", 0.50, adaptiveWidthRatio, 1e-6)
+            assertEquals("width ratio vs v1.0.8 in $relativePath", legacyWidthRatio, adaptiveWidthRatio, 1e-6)
+            assertEquals("height ratio vs v1.0.8 in $relativePath", legacyHeightRatio, adaptiveHeightRatio, 1e-6)
+            assertEquals("linear X scale vs v1.0.8", 2.0 / 3.0, bounds.width / legacyBounds.width, 1e-6)
+            assertEquals("linear Y scale vs v1.0.8", 2.0 / 3.0, bounds.height / legacyBounds.height, 1e-6)
+        }
     }
 
     @Test
