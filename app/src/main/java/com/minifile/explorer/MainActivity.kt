@@ -68,6 +68,7 @@ import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.data.update.UpdateUiState
 import com.minifile.explorer.service.FtpServerHolder
+import com.minifile.explorer.service.HttpServerHolder
 import com.minifile.explorer.service.VolumeChangeReceiver
 import com.minifile.explorer.ui.MainTab
 import com.minifile.explorer.ui.MainViewModel
@@ -77,7 +78,7 @@ import com.minifile.explorer.ui.components.ConflictDialog
 import com.minifile.explorer.ui.screens.ArchivePreviewScreen
 import com.minifile.explorer.ui.screens.BrowserScreen
 import com.minifile.explorer.ui.screens.FavoritesScreen
-import com.minifile.explorer.ui.screens.InstalledAppsScreen
+import com.minifile.explorer.ui.screens.PdfViewerScreen
 import com.minifile.explorer.ui.screens.TextEditorScreen
 import com.minifile.explorer.ui.screens.ToolsScreen
 import com.minifile.explorer.ui.screens.WirelessScreen
@@ -106,9 +107,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             val settings by viewModel.settings.collectAsState()
             val ftpState by FtpServerHolder.state.collectAsState()
+            val httpState by HttpServerHolder.state.collectAsState()
+            val anyTransferRunning = ftpState.isRunning || httpState.isRunning
 
-            DisposableEffect(ftpState.isRunning) {
-                if (ftpState.isRunning) {
+            DisposableEffect(anyTransferRunning) {
+                if (anyTransferRunning) {
                     window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 } else {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -158,13 +161,23 @@ class MainActivity : ComponentActivity() {
                     pasvMax = pasvMax,
                 )
             }
+            val httpPort = readOptionalIntExtra(intent, "http_port")
+            if (httpPort != null && httpPort in 1024..65535) {
+                container.settingsRepository.update { it.copy(httpPort = httpPort) }
+            }
         }
 
         intent.getStringExtra("open_tab")?.trim()?.takeIf { it.isNotEmpty() }?.let { rawTab ->
-            MainTab.entries.firstOrNull {
-                it.name.equals(rawTab, ignoreCase = true) ||
-                    it.label.equals(rawTab, ignoreCase = true)
-            }?.let { tab ->
+            val matchedTab = when {
+                rawTab.equals("transfer", ignoreCase = true) ||
+                    rawTab.equals("wireless", ignoreCase = true) -> MainTab.WIRELESS
+
+                else -> MainTab.entries.firstOrNull {
+                    it.name.equals(rawTab, ignoreCase = true) ||
+                        it.label.equals(rawTab, ignoreCase = true)
+                }
+            }
+            matchedTab?.let { tab ->
                 viewModel.selectTab(tab)
             }
         }
@@ -196,6 +209,7 @@ private fun MiniFileRoot(
     val conflictPrompt by viewModel.conflictPrompt.collectAsState()
     val activeOps by container.operationRegistry.active.collectAsState()
     val ftpState by FtpServerHolder.state.collectAsState()
+    val httpState by HttpServerHolder.state.collectAsState()
     val updateState by container.updateManager.state.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -379,6 +393,7 @@ private fun MiniFileRoot(
                     NavigationBar {
                         val hasUpdateDot = updateState is UpdateUiState.Available ||
                             updateState is UpdateUiState.Ready
+                        val hasTransferDot = ftpState.isRunning || httpState.isRunning
 
                         NavigationBarItem(
                             selected = activeTab == MainTab.BROWSE,
@@ -398,15 +413,15 @@ private fun MiniFileRoot(
                             icon = {
                                 BadgedBox(
                                     badge = {
-                                        if (ftpState.isRunning) {
+                                        if (hasTransferDot) {
                                             Badge()
                                         }
                                     },
                                 ) {
-                                    Icon(Icons.Filled.Wifi, contentDescription = "Wireless")
+                                    Icon(Icons.Filled.Wifi, contentDescription = MainTab.WIRELESS.label)
                                 }
                             },
-                            label = { Text("Wireless") },
+                            label = { Text(MainTab.WIRELESS.label) },
                         )
                         NavigationBarItem(
                             selected = activeTab == MainTab.TOOLS,
@@ -452,8 +467,9 @@ private fun MiniFileRoot(
                     )
                 }
 
-                OverlayScreen.InstalledApps -> {
-                    InstalledAppsScreen(
+                is OverlayScreen.PdfViewer -> {
+                    PdfViewerScreen(
+                        pdfPath = currentOverlay.path,
                         viewModel = viewModel,
                         onClose = { viewModel.closeOverlay() },
                     )
@@ -475,22 +491,6 @@ private fun MiniFileRoot(
                                     runCatching {
                                         safTreeLauncher.launch(
                                             container.volumeProvider.buildOpenTreeIntent(volume = volume),
-                                        )
-                                    }.onFailure { e ->
-                                        pendingSafMount = null
-                                        viewModel.emitSimpleMessage("Could not open system folder picker: ${e.message}")
-                                    }
-                                },
-                                onMountPackageSaf = { safKey, initialDocId, label ->
-                                    pendingSafMount = SafMountRequest(
-                                        key = safKey,
-                                        expectedDocIdPrefix = initialDocId,
-                                        label = label,
-                                        navigateOnMount = true,
-                                    )
-                                    runCatching {
-                                        safTreeLauncher.launch(
-                                            container.volumeProvider.buildOpenTreeIntent(initialDocId = initialDocId),
                                         )
                                     }.onFailure { e ->
                                         pendingSafMount = null

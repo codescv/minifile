@@ -9,7 +9,6 @@ import android.graphics.BitmapFactory
 import android.media.ThumbnailUtils
 import android.net.Uri
 import android.os.Build
-import android.os.Bundle
 import android.provider.Settings
 import android.text.format.DateUtils
 import android.text.format.Formatter
@@ -113,7 +112,7 @@ object UiFormatters {
         if (mime.startsWith("text/") || mime == "application/json" || mime == "application/xml") {
             return true
         }
-        if (ext in PathUtils.ARCHIVE_EXTENSIONS || mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/")) {
+        if (ext == "pdf" || ext in PathUtils.ARCHIVE_EXTENSIONS || mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/")) {
             return false
         }
         if (node.size in 0L..(1024L * 1024L)) {
@@ -270,59 +269,5 @@ object UiFormatters {
                 Uri.parse("package:${context.packageName}"),
             )
         }
-    }
-
-    fun buildAppDetailsIntent(packageName: String): Intent =
-        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
-    const val WIRELESS_DEBUGGING_FRAGMENT_KEY = "toggle_adb_wireless"
-    private const val EXTRA_FRAGMENT_ARGS_KEY = ":settings:fragment_args_key"
-    private const val EXTRA_SHOW_FRAGMENT_ARGS = ":settings:show_fragment_args"
-
-    @Suppress("UNUSED_PARAMETER")
-    fun buildWirelessDebuggingIntent(context: Context): Intent {
-        val showArgs = Bundle().apply {
-            putString(EXTRA_FRAGMENT_ARGS_KEY, WIRELESS_DEBUGGING_FRAGMENT_KEY)
-        }
-        return Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).apply {
-            putExtra(EXTRA_FRAGMENT_ARGS_KEY, WIRELESS_DEBUGGING_FRAGMENT_KEY)
-            putExtra(EXTRA_SHOW_FRAGMENT_ARGS, showArgs)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-    }
-
-    fun launchWirelessDebuggingSettings(
-        context: Context,
-        onStatusMessage: (String) -> Unit,
-    ) {
-        val devEnabled = runCatching {
-            Settings.Global.getInt(context.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) == 1
-        }.getOrDefault(true)
-
-        if (devEnabled) {
-            val wirelessIntent = buildWirelessDebuggingIntent(context)
-            if (runCatching { context.startActivity(wirelessIntent); true }.getOrDefault(false)) {
-                onStatusMessage("Enable Wireless Debugging, then start Shizuku")
-                return
-            }
-            val devIntent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (runCatching { context.startActivity(devIntent); true }.getOrDefault(false)) {
-                onStatusMessage("Scroll to Wireless Debugging and turn it on")
-                return
-            }
-        }
-
-        val aboutIntent = Intent(Settings.ACTION_DEVICE_INFO_SETTINGS)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (runCatching { context.startActivity(aboutIntent); true }.getOrDefault(false)) {
-            onStatusMessage("Tap 'Build number' 7 times in About Phone to enable Developer Options, then open Wireless Debugging")
-            return
-        }
-
-        val fallback = Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { context.startActivity(fallback) }
-        onStatusMessage("Open Settings -> Developer Options -> Wireless Debugging")
     }
 }

@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Image
@@ -36,8 +35,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -47,7 +44,6 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -75,7 +71,6 @@ fun StorageHomeScreen(
     onOpenQuickPath: (VfsPath, String) -> Unit,
     onOpenFavorite: (Favorite) -> Unit,
     onSeeAllFavorites: () -> Unit,
-    onOpenInstalledApps: () -> Unit,
     onClipboardToFavorite: () -> Unit,
     onClearClipboard: () -> Unit,
 ) {
@@ -197,35 +192,7 @@ fun StorageHomeScreen(
                 }
             }
 
-            // 2. App Data (Installed Apps only)
-            item(key = "appdata-section") {
-                SectionHeader("App Data")
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            leadingContent = {
-                                Icon(
-                                    imageVector = Icons.Filled.Apps,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            },
-                            headlineContent = { Text("Installed Apps", fontWeight = FontWeight.Medium) },
-                            supportingContent = { Text("Browse app data, open via Shizuku/SAF & export APKs") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(onClick = onOpenInstalledApps),
-                        )
-                    }
-                }
-            }
-
-            // 3. Quick Access
+            // 2. Quick Access
             item(key = "quick-access") {
                 SectionHeader("Quick Access")
                 FlowRow(
@@ -243,7 +210,7 @@ fun StorageHomeScreen(
                 }
             }
 
-            // 4. Recent Favorites
+            // 3. Recent Favorites
             if (recentFavorites.isNotEmpty()) {
                 item(key = "recent-favorites") {
                     Row(

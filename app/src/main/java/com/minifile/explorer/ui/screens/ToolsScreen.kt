@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -30,7 +29,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -39,7 +37,6 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -60,13 +57,9 @@ import androidx.compose.ui.unit.dp
 import com.minifile.explorer.BuildConfig
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.data.AndroidVolumeProvider
-import com.minifile.explorer.data.shizuku.PrivilegedShellBridge
 import com.minifile.explorer.data.update.InstallLaunchResult
 import com.minifile.explorer.data.update.UpdateUiState
-import com.minifile.explorer.service.FtpServerHolder
-import com.minifile.explorer.ui.MainTab
 import com.minifile.explorer.ui.MainViewModel
-import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -81,21 +74,8 @@ fun ToolsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val settings by viewModel.settings.collectAsState()
-    val volumes by viewModel.volumes.collectAsState()
     val updateState by viewModel.container.updateManager.state.collectAsState()
-    val opHistory by viewModel.container.operationRegistry.history.collectAsState()
-    val privilegedState by PrivilegedShellBridge.state.collectAsState()
-
-    LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
-            PrivilegedShellBridge.hasPrivilegedAccess(context)
-        }
-    }
-
     var showNomediaScanner by remember { mutableStateOf(false) }
-    var showTasksHistory by remember { mutableStateOf(false) }
-    var showVolumesDiag by remember { mutableStateOf(false) }
 
     val hasAllFiles = AndroidVolumeProvider.hasAllFilesAccess(context)
 
@@ -269,48 +249,7 @@ fun ToolsScreen(
                 }
             }
 
-            // 2. Behavior
-            item(key = "behavior") {
-                SectionLabel("Behavior")
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        ToggleSettingRow(
-                            label = "Confirm before overwriting files",
-                            checked = settings.confirmOverwrite,
-                            onCheckedChange = { v ->
-                                viewModel.container.settingsRepository.update { it.copy(confirmOverwrite = v) }
-                            },
-                        )
-                        ToggleSettingRow(
-                            label = "Open text files in built-in editor",
-                            checked = settings.openTextInBuiltInEditor,
-                            onCheckedChange = { v ->
-                                viewModel.container.settingsRepository.update { it.copy(openTextInBuiltInEditor = v) }
-                            },
-                        )
-                        ToggleSettingRow(
-                            label = "Remember last opened folder",
-                            checked = settings.rememberLastFolder,
-                            onCheckedChange = { v ->
-                                viewModel.container.settingsRepository.update { it.copy(rememberLastFolder = v) }
-                            },
-                        )
-                        ToggleSettingRow(
-                            label = "Sort 'Copy/Move to Favorite' sheet by recency",
-                            checked = settings.favoritePickerSortByRecency,
-                            onCheckedChange = { v ->
-                                viewModel.container.settingsRepository.update { it.copy(favoritePickerSortByRecency = v) }
-                            },
-                        )
-                    }
-                }
-            }
-
-            // 4. Storage Access
+            // 2. Storage Access (All-files access only)
             item(key = "storage-access") {
                 SectionLabel("Storage access")
                 Card(
@@ -331,52 +270,11 @@ fun ToolsScreen(
                                 }
                             },
                         )
-                        HorizontalDivider()
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text("Wireless debugging settings") },
-                            supportingContent = {
-                                val privSummary = when {
-                                    privilegedState.shizukuRunning && privilegedState.shizukuGranted ->
-                                        "Shizuku connected (UID ${privilegedState.shizukuUid}) — full App Data access"
-                                    privilegedState.rootAvailable ->
-                                        "Root (su) active — full App Data access"
-                                    privilegedState.shizukuRunning ->
-                                        "Shizuku running — authorize Files to browse Android/data"
-                                    else ->
-                                        "Open Developer Options to start Shizuku for Android/data access"
-                                }
-                                Text(privSummary)
-                            },
-                            trailingContent = {
-                                OutlinedButton(
-                                    onClick = {
-                                        UiFormatters.launchWirelessDebuggingSettings(context) {
-                                            viewModel.emitSimpleMessage(it)
-                                        }
-                                    },
-                                ) {
-                                    Text("Open")
-                                }
-                            },
-                            modifier = Modifier.clickable {
-                                UiFormatters.launchWirelessDebuggingSettings(context) {
-                                    viewModel.emitSimpleMessage(it)
-                                }
-                            },
-                        )
-                        HorizontalDivider()
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text("Volumes diagnostics (${volumes.size})") },
-                            supportingContent = { Text("View mount paths, states, and capacities") },
-                            modifier = Modifier.clickable { showVolumesDiag = true },
-                        )
                     }
                 }
             }
 
-            // 5. Utilities
+            // 3. Utilities (.nomedia Overview only)
             item(key = "utilities") {
                 SectionLabel("Utilities")
                 Card(
@@ -391,40 +289,11 @@ fun ToolsScreen(
                             supportingContent = { Text("Scan folders hidden from gallery and toggle in bulk") },
                             modifier = Modifier.clickable { showNomediaScanner = true },
                         )
-                        HorizontalDivider()
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text("Operation tasks (${opHistory.size})") },
-                            supportingContent = { Text("Recent copy, move, delete, and ZIP tasks") },
-                            modifier = Modifier.clickable { showTasksHistory = true },
-                        )
-                        HorizontalDivider()
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text("Favorites backup / restore") },
-                            supportingContent = { Text("Open Favorites tab to export or import JSON") },
-                            modifier = Modifier.clickable { viewModel.selectTab(MainTab.FAVORITES) },
-                        )
-                        HorizontalDivider()
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text("Export FTP log") },
-                            supportingContent = { Text("Copy or save current FTP server activity log") },
-                            modifier = Modifier.clickable {
-                                val text = FtpServerHolder.exportLogText()
-                                if (text.isBlank()) {
-                                    viewModel.emitSimpleMessage("FTP log is currently empty")
-                                } else {
-                                    UiFormatters.copyToSystemClipboard(context, "FTP Log", text)
-                                    viewModel.emitSimpleMessage("FTP log copied to clipboard")
-                                }
-                            },
-                        )
                     }
                 }
             }
 
-            // 6. About
+            // 4. About
             item(key = "about") {
                 SectionLabel("About")
                 Card(
@@ -438,11 +307,11 @@ fun ToolsScreen(
                     ) {
                         Text("Files ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Minimalist, offline-first file manager with built-in RFC 959/3659 FTP server and PC Companion.",
+                            "Minimalist, offline-first file manager with built-in HTTP QR Share, RFC 959/3659 FTP server, PDF viewer, and PC Companion.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Text(
-                            "Privacy: No ads, no analytics, and no network access except the LAN FTP server you start and the optional GitHub Releases update check.",
+                            "Privacy: No ads, no analytics, and no network access except the LAN HTTP/FTP servers you start and the optional GitHub Releases update check.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -472,7 +341,7 @@ fun ToolsScreen(
         var scanning by remember { mutableStateOf(true) }
         var foundDirs by remember { mutableStateOf<List<VfsPath>>(emptyList()) }
 
-        androidx.compose.runtime.LaunchedEffect(Unit) {
+        LaunchedEffect(Unit) {
             scanning = true
             val root = VfsPath.Local(Environment.getExternalStorageDirectory().absolutePath)
             foundDirs = withContext(Dispatchers.IO) {
@@ -525,89 +394,6 @@ fun ToolsScreen(
             },
         )
     }
-
-    if (showTasksHistory) {
-        AlertDialog(
-            onDismissRequest = { showTasksHistory = false },
-            title = { Text("Recent Tasks") },
-            text = {
-                if (opHistory.isEmpty()) {
-                    Text("No completed operations in this session yet.")
-                } else {
-                    LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
-                        items(opHistory, key = { it.id }) { op ->
-                            ListItem(
-                                headlineContent = { Text(op.title) },
-                                supportingContent = {
-                                    val status = when {
-                                        op.cancelled -> "Cancelled"
-                                        op.errorSummary != null -> "Failed: ${op.errorSummary}"
-                                        op.unsafeSkipped > 0 -> "Completed (${op.unsafeSkipped} unsafe skipped)"
-                                        else -> "Completed"
-                                    }
-                                    Text(status)
-                                },
-                                trailingContent = {
-                                    if (viewModel.container.operationRegistry.canRetry(op.id)) {
-                                        IconButton(
-                                            onClick = {
-                                                viewModel.container.operationRegistry.retry(op.id)
-                                                showTasksHistory = false
-                                            },
-                                        ) {
-                                            Icon(Icons.Filled.Refresh, contentDescription = "Retry")
-                                        }
-                                    }
-                                },
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showTasksHistory = false }) { Text("Close") }
-            },
-            dismissButton = {
-                if (opHistory.isNotEmpty()) {
-                    TextButton(
-                        onClick = {
-                            viewModel.container.operationRegistry.clearHistory()
-                            showTasksHistory = false
-                        },
-                    ) {
-                        Text("Clear")
-                    }
-                }
-            },
-        )
-    }
-
-    if (showVolumesDiag) {
-        AlertDialog(
-            onDismissRequest = { showVolumesDiag = false },
-            title = { Text("Volumes Diagnostics") },
-            text = {
-                LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
-                    items(volumes, key = { it.id }) { v ->
-                        Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                            Text("${v.name} (${v.kind})", fontWeight = FontWeight.SemiBold)
-                            Text("Root: ${v.root?.serialize() ?: "unmounted"}", style = MaterialTheme.typography.bodySmall)
-                            if (v.totalBytes > 0L) {
-                                Text(
-                                    "Space: ${UiFormatters.formatSize(context, v.freeBytes)} free / ${UiFormatters.formatSize(context, v.totalBytes)} total",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
-                        HorizontalDivider()
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showVolumesDiag = false }) { Text("Close") }
-            },
-        )
-    }
 }
 
 @Composable
@@ -619,24 +405,4 @@ private fun SectionLabel(text: String) {
         fontWeight = FontWeight.SemiBold,
         modifier = Modifier.padding(bottom = 6.dp),
     )
-}
-
-@Composable
-private fun ToggleSettingRow(
-    label: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
-            .padding(vertical = 2.dp),
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-        Spacer(Modifier.width(12.dp))
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
-    }
 }

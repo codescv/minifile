@@ -141,6 +141,9 @@ data class AppSettings(
     val rememberLastFolder: Boolean = false,
     val lastFolder: String? = null,
     val onboardingDone: Boolean = false,
+    val httpPort: Int = 8080,
+    val httpRoot: String? = null,
+    val httpReadOnly: Boolean = false,
     val ftpPort: Int = 2121,
     val ftpRoot: String? = null,
     val ftpAnonymous: Boolean = true,
@@ -164,7 +167,6 @@ enum class OperationKind {
     DELETE,
     COMPRESS,
     EXTRACT,
-    EXPORT_APK,
     COMPUTE_SIZE,
 }
 

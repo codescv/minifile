@@ -30,6 +30,10 @@ class SettingsRepository(
         const val KEY_LAST_FOLDER = "last_folder"
         const val KEY_ONBOARDING_DONE = "onboarding_done"
 
+        const val KEY_HTTP_PORT = "http_port"
+        const val KEY_HTTP_ROOT = "http_root"
+        const val KEY_HTTP_READ_ONLY = "http_read_only"
+
         const val KEY_FTP_PORT = "ftp_port"
         const val KEY_FTP_ROOT = "ftp_root"
         const val KEY_FTP_AUTH_MODE = "ftp_auth_mode"
@@ -96,6 +100,9 @@ class SettingsRepository(
             rememberLastFolder = store.getBoolean(KEY_REMEMBER_LAST_FOLDER, false),
             lastFolder = store.getString(KEY_LAST_FOLDER, null),
             onboardingDone = store.getBoolean(KEY_ONBOARDING_DONE, false),
+            httpPort = store.getInt(KEY_HTTP_PORT, 8080).coerceIn(1024, 65535),
+            httpRoot = store.getString(KEY_HTTP_ROOT, null),
+            httpReadOnly = store.getBoolean(KEY_HTTP_READ_ONLY, false),
             ftpPort = store.getInt(KEY_FTP_PORT, 2121).coerceIn(1024, 65535),
             ftpRoot = store.getString(KEY_FTP_ROOT, null),
             ftpAnonymous = authMode != "credentials",
@@ -170,6 +177,10 @@ class SettingsRepository(
         store.putBoolean(KEY_REMEMBER_LAST_FOLDER, s.rememberLastFolder)
         store.putString(KEY_LAST_FOLDER, s.lastFolder)
         store.putBoolean(KEY_ONBOARDING_DONE, s.onboardingDone)
+
+        store.putInt(KEY_HTTP_PORT, s.httpPort)
+        store.putString(KEY_HTTP_ROOT, s.httpRoot)
+        store.putBoolean(KEY_HTTP_READ_ONLY, s.httpReadOnly)
 
         store.putInt(KEY_FTP_PORT, s.ftpPort)
         store.putString(KEY_FTP_ROOT, s.ftpRoot)

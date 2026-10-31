@@ -21,6 +21,8 @@ import com.minifile.explorer.R
 import com.minifile.explorer.core.ftp.FtpAuth
 import com.minifile.explorer.core.ftp.FtpConfig
 import com.minifile.explorer.core.ftp.FtpServerEngine
+import com.minifile.explorer.core.http.HttpConfig
+import com.minifile.explorer.core.http.HttpFileServerEngine
 import com.minifile.explorer.core.vfs.VfsPath
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +41,9 @@ class FtpServerService : Service() {
 
         const val ACTION_START = "com.minifile.explorer.action.FTP_START"
         const val ACTION_STOP = "com.minifile.explorer.action.FTP_STOP"
+        const val ACTION_HTTP_START = "com.minifile.explorer.action.HTTP_START"
+        const val ACTION_HTTP_STOP = "com.minifile.explorer.action.HTTP_STOP"
+        const val ACTION_STOP_ALL = "com.minifile.explorer.action.STOP_ALL"
 
         fun start(context: Context) {
             FtpServerHolder.markStarting()
@@ -50,15 +55,40 @@ class FtpServerService : Service() {
             val intent = Intent(context, FtpServerService::class.java).setAction(ACTION_STOP)
             context.startService(intent)
         }
+
+        fun startHttp(context: Context) {
+            HttpServerHolder.markStarting()
+            val intent = Intent(context, FtpServerService::class.java).setAction(ACTION_HTTP_START)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun stopHttp(context: Context) {
+            val intent = Intent(context, FtpServerService::class.java).setAction(ACTION_HTTP_STOP)
+            context.startService(intent)
+        }
+
+        fun stopAll(context: Context) {
+            val intent = Intent(context, FtpServerService::class.java).setAction(ACTION_STOP_ALL)
+            context.startService(intent)
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var engine: FtpServerEngine? = null
-    private var eventsJob: Job? = null
-    private var sessionsJob: Job? = null
+
+    private var ftpEngine: FtpServerEngine? = null
+    private var ftpEventsJob: Job? = null
+    private var ftpSessionsJob: Job? = null
+
+    private var httpEngine: HttpFileServerEngine? = null
+    private var httpEventsJob: Job? = null
+    private var httpClientsJob: Job? = null
+
     private var networkJob: Job? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
+
+    private val isAnyServerActive: Boolean
+        get() = ftpEngine != null || httpEngine != null
 
     override fun onCreate() {
         super.onCreate()
@@ -67,23 +97,61 @@ class FtpServerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> {
-                shutdownServer(errorMessage = null, removeNotification = true)
+            ACTION_STOP_ALL -> {
+                shutdownAll(errorMessage = null, removeNotification = true)
                 stopSelf()
                 return START_NOT_STICKY
             }
 
-            ACTION_START, null -> {
-                if (engine != null && FtpServerHolder.state.value.isRunning) {
+            ACTION_STOP -> {
+                shutdownFtp(errorMessage = null)
+                if (!isAnyServerActive) {
+                    teardownServiceResources(removeNotification = true)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                refreshRunningNotification()
+                return START_STICKY
+            }
+
+            ACTION_HTTP_STOP -> {
+                shutdownHttp(errorMessage = null)
+                if (!isAnyServerActive) {
+                    teardownServiceResources(removeNotification = true)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                refreshRunningNotification()
+                return START_STICKY
+            }
+
+            ACTION_HTTP_START -> {
+                startForegroundCompat(
+                    currentRunningNotificationOrNull()
+                        ?: buildRunningNotification("Starting HTTP Share…", "Preparing listener"),
+                )
+                if (httpEngine != null && HttpServerHolder.state.value.isRunning) {
                     refreshRunningNotification()
                     return START_STICKY
                 }
-                startForegroundCompat(buildRunningNotification("Starting FTP server…", "Preparing listener"))
-                launchEngine()
-                return START_STICKY
+                launchHttpEngine()
+                return if (isAnyServerActive) START_STICKY else START_NOT_STICKY
+            }
+
+            ACTION_START, null -> {
+                startForegroundCompat(
+                    currentRunningNotificationOrNull()
+                        ?: buildRunningNotification("Starting FTP server…", "Preparing listener"),
+                )
+                if (ftpEngine != null && FtpServerHolder.state.value.isRunning) {
+                    refreshRunningNotification()
+                    return START_STICKY
+                }
+                launchFtpEngine()
+                return if (isAnyServerActive) START_STICKY else START_NOT_STICKY
             }
         }
-        return START_NOT_STICKY
+        return if (isAnyServerActive) START_STICKY else START_NOT_STICKY
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
@@ -95,7 +163,7 @@ class FtpServerService : Service() {
     }
 
     private fun handleSystemTimeout() {
-        shutdownServer(
+        shutdownAll(
             errorMessage = "Stopped by Android foreground service timeout",
             removeNotification = true,
         )
@@ -106,12 +174,12 @@ class FtpServerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        shutdownServer(errorMessage = null, removeNotification = true)
+        shutdownAll(errorMessage = null, removeNotification = true)
         scope.cancel()
         super.onDestroy()
     }
 
-    private fun launchEngine() {
+    private fun launchFtpEngine() {
         val container = (application as MiniFileApplication).container
         val settings = container.settingsRepository.settings.value
         val rootPath: VfsPath = settings.ftpRoot
@@ -148,58 +216,162 @@ class FtpServerService : Service() {
         try {
             srv.start()
         } catch (_: BindException) {
-            val msg = "Port ${settings.ftpPort} is already in use. Choose another port in Wireless settings."
-            shutdownServer(errorMessage = msg, removeNotification = true)
-            FtpServerHolder.markStopped(errorMessage = msg)
-            stopSelf()
+            val msg = "Port ${settings.ftpPort} is already in use. Choose another port in Transfer settings."
+            shutdownFtp(errorMessage = msg)
+            if (!isAnyServerActive) {
+                teardownServiceResources(removeNotification = true)
+                stopSelf()
+            } else {
+                refreshRunningNotification()
+            }
             return
         } catch (e: Exception) {
             val msg = "Could not start FTP server: ${e.message ?: "unknown error"}"
-            shutdownServer(errorMessage = msg, removeNotification = true)
-            FtpServerHolder.markStopped(errorMessage = msg)
-            stopSelf()
+            shutdownFtp(errorMessage = msg)
+            if (!isAnyServerActive) {
+                teardownServiceResources(removeNotification = true)
+                stopSelf()
+            } else {
+                refreshRunningNotification()
+            }
             return
         }
 
-        engine = srv
-        acquireLocks()
+        ftpEngine = srv
+        ensureLocksAndNetworkObserver(container)
 
         val initialIps = container.lanAddressResolver.currentIpv4List()
         FtpServerHolder.markStarted(srv.boundPort, initialIps)
         refreshRunningNotification()
 
-        eventsJob = scope.launch {
+        ftpEventsJob = scope.launch {
             srv.events.collect { ev ->
                 FtpServerHolder.onEvent(ev)
                 refreshRunningNotification()
             }
         }
-        sessionsJob = scope.launch {
+        ftpSessionsJob = scope.launch {
             srv.activeSessions.collect { count ->
                 FtpServerHolder.updateActiveClients(count)
                 refreshRunningNotification()
             }
         }
-        networkJob = scope.launch {
-            container.lanAddressResolver.observeEndpoints().collect { endpoints ->
-                FtpServerHolder.updateLanIps(endpoints.map { it.ipv4 })
+    }
+
+    private fun launchHttpEngine() {
+        val container = (application as MiniFileApplication).container
+        val settings = container.settingsRepository.settings.value
+        val rootPath: VfsPath = settings.httpRoot
+            ?.let { runCatching { VfsPath.parse(it) }.getOrNull() }
+            ?: VfsPath.Local(Environment.getExternalStorageDirectory().absolutePath)
+
+        val config = HttpConfig(
+            port = settings.httpPort,
+            bindAddress = "0.0.0.0",
+            root = rootPath,
+            readOnly = settings.httpReadOnly,
+            showHidden = settings.showHidden,
+            serverName = "Files HTTP",
+        )
+
+        val srv = HttpFileServerEngine(
+            config = config,
+            fs = container.fileSystem,
+        )
+
+        try {
+            srv.start()
+        } catch (_: BindException) {
+            val msg = "Port ${settings.httpPort} is already in use. Choose another port in Transfer settings."
+            shutdownHttp(errorMessage = msg)
+            if (!isAnyServerActive) {
+                teardownServiceResources(removeNotification = true)
+                stopSelf()
+            } else {
+                refreshRunningNotification()
+            }
+            return
+        } catch (e: Exception) {
+            val msg = "Could not start HTTP server: ${e.message ?: "unknown error"}"
+            shutdownHttp(errorMessage = msg)
+            if (!isAnyServerActive) {
+                teardownServiceResources(removeNotification = true)
+                stopSelf()
+            } else {
+                refreshRunningNotification()
+            }
+            return
+        }
+
+        httpEngine = srv
+        ensureLocksAndNetworkObserver(container)
+
+        val initialIps = container.lanAddressResolver.currentIpv4List()
+        HttpServerHolder.markStarted(srv.boundPort, initialIps)
+        refreshRunningNotification()
+
+        httpEventsJob = scope.launch {
+            srv.events.collect { ev ->
+                HttpServerHolder.onEvent(ev)
+                refreshRunningNotification()
+            }
+        }
+        httpClientsJob = scope.launch {
+            srv.activeClients.collect { count ->
+                HttpServerHolder.updateActiveClients(count)
                 refreshRunningNotification()
             }
         }
     }
 
-    private fun shutdownServer(errorMessage: String?, removeNotification: Boolean) {
-        eventsJob?.cancel()
-        eventsJob = null
-        sessionsJob?.cancel()
-        sessionsJob = null
+    private fun ensureLocksAndNetworkObserver(container: com.minifile.explorer.di.AppContainer) {
+        if (wifiLock == null && wakeLock == null) {
+            acquireLocks()
+        }
+        if (networkJob == null) {
+            networkJob = scope.launch {
+                container.lanAddressResolver.observeEndpoints().collect { endpoints ->
+                    val ips = endpoints.map { it.ipv4 }
+                    FtpServerHolder.updateLanIps(ips)
+                    HttpServerHolder.updateLanIps(ips)
+                    refreshRunningNotification()
+                }
+            }
+        }
+    }
+
+    private fun shutdownFtp(errorMessage: String?) {
+        ftpEventsJob?.cancel()
+        ftpEventsJob = null
+        ftpSessionsJob?.cancel()
+        ftpSessionsJob = null
+
+        ftpEngine?.let { runCatching { it.stop() } }
+        ftpEngine = null
+        FtpServerHolder.markStopped(errorMessage)
+    }
+
+    private fun shutdownHttp(errorMessage: String?) {
+        httpEventsJob?.cancel()
+        httpEventsJob = null
+        httpClientsJob?.cancel()
+        httpClientsJob = null
+
+        httpEngine?.let { runCatching { it.stop() } }
+        httpEngine = null
+        HttpServerHolder.markStopped(errorMessage)
+    }
+
+    private fun shutdownAll(errorMessage: String?, removeNotification: Boolean) {
+        shutdownHttp(errorMessage)
+        shutdownFtp(errorMessage)
+        teardownServiceResources(removeNotification)
+    }
+
+    private fun teardownServiceResources(removeNotification: Boolean) {
         networkJob?.cancel()
         networkJob = null
-
-        engine?.let { runCatching { it.stop() } }
-        engine = null
         releaseLocks()
-        FtpServerHolder.markStopped(errorMessage)
 
         if (removeNotification) {
             runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
@@ -254,24 +426,57 @@ class FtpServerService : Service() {
         }
     }
 
-    private fun refreshRunningNotification() {
-        val st = FtpServerHolder.state.value
-        if (!st.isRunning) return
-        val primaryUrl = st.urls.firstOrNull() ?: "ftp://127.0.0.1:${st.boundPort}"
-        val clientLabel = if (st.activeClients == 1) "1 client" else "${st.activeClients} clients"
-        val transfers = if (st.uploadsCount > 0 || st.downloadsCount > 0) {
-            " · ↑ ${st.uploadsCount} ↓ ${st.downloadsCount}"
-        } else {
-            ""
+    private fun currentRunningNotificationOrNull(): Notification? {
+        val ftpSt = FtpServerHolder.state.value
+        val httpSt = HttpServerHolder.state.value
+        if (!ftpSt.isRunning && !httpSt.isRunning) return null
+
+        return when {
+            httpSt.isRunning && ftpSt.isRunning -> {
+                val httpUrl = httpSt.urls.firstOrNull() ?: "http://127.0.0.1:${httpSt.boundPort}"
+                val ftpUrl = ftpSt.urls.firstOrNull() ?: "ftp://127.0.0.1:${ftpSt.boundPort}"
+                val totalClients = httpSt.activeClients + ftpSt.activeClients
+                val clientLabel = if (totalClients == 1) "1 active connection" else "$totalClients active connections"
+                buildRunningNotification(
+                    title = "Files Transfer · HTTP & FTP active",
+                    subtitle = "$httpUrl · $ftpUrl · $clientLabel",
+                )
+            }
+
+            httpSt.isRunning -> {
+                val primaryUrl = httpSt.urls.firstOrNull() ?: "http://127.0.0.1:${httpSt.boundPort}"
+                val clientLabel = if (httpSt.activeClients == 1) "1 active request" else "${httpSt.activeClients} active requests"
+                val transfers = if (httpSt.uploadsCount > 0 || httpSt.downloadsCount > 0) {
+                    " · ↑ ${httpSt.uploadsCount} ↓ ${httpSt.downloadsCount}"
+                } else {
+                    ""
+                }
+                buildRunningNotification(
+                    title = "Files HTTP · $primaryUrl",
+                    subtitle = "$clientLabel$transfers",
+                )
+            }
+
+            else -> {
+                val primaryUrl = ftpSt.urls.firstOrNull() ?: "ftp://127.0.0.1:${ftpSt.boundPort}"
+                val clientLabel = if (ftpSt.activeClients == 1) "1 client" else "${ftpSt.activeClients} clients"
+                val transfers = if (ftpSt.uploadsCount > 0 || ftpSt.downloadsCount > 0) {
+                    " · ↑ ${ftpSt.uploadsCount} ↓ ${ftpSt.downloadsCount}"
+                } else {
+                    ""
+                }
+                buildRunningNotification(
+                    title = "Files FTP · $primaryUrl",
+                    subtitle = "$clientLabel$transfers",
+                )
+            }
         }
+    }
+
+    private fun refreshRunningNotification() {
+        val notif = currentRunningNotificationOrNull() ?: return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(
-            NOTIF_ID_RUNNING,
-            buildRunningNotification(
-                title = "MiniFile FTP · $primaryUrl",
-                subtitle = "$clientLabel$transfers",
-            ),
-        )
+        nm.notify(NOTIF_ID_RUNNING, notif)
     }
 
     private fun buildRunningNotification(title: String, subtitle: String): Notification {
@@ -280,14 +485,14 @@ class FtpServerService : Service() {
             10,
             Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                putExtra("open_tab", "wireless")
+                putExtra("open_tab", "transfer")
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val stopIntent = PendingIntent.getService(
             this,
             11,
-            Intent(this, FtpServerService::class.java).setAction(ACTION_STOP),
+            Intent(this, FtpServerService::class.java).setAction(ACTION_STOP_ALL),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
@@ -309,14 +514,14 @@ class FtpServerService : Service() {
             12,
             Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                putExtra("open_tab", "wireless")
+                putExtra("open_tab", "transfer")
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("MiniFile FTP was stopped by the system")
-            .setContentText("Tap to open Wireless Transfer and restart")
+            .setContentTitle("Wireless Transfer was stopped by the system")
+            .setContentText("Tap to open Transfer and restart")
             .setAutoCancel(true)
             .setContentIntent(openIntent)
             .build()
@@ -329,10 +534,10 @@ class FtpServerService : Service() {
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
                 val ch = NotificationChannel(
                     CHANNEL_ID,
-                    "Wireless FTP Server",
+                    "Wireless Transfer",
                     NotificationManager.IMPORTANCE_LOW,
                 ).apply {
-                    description = "Active status and Stop action for MiniFile's LAN FTP server"
+                    description = "Active status and Stop action for Files HTTP & FTP LAN servers"
                 }
                 nm.createNotificationChannel(ch)
             }

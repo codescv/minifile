@@ -3,7 +3,6 @@ package com.minifile.explorer.ui.screens
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
-import android.os.Environment
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
@@ -32,7 +31,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.QrCode
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -64,7 +62,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,15 +82,20 @@ import androidx.core.content.ContextCompat
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.service.FtpServerHolder
 import com.minifile.explorer.service.FtpServerService
+import com.minifile.explorer.service.HttpServerHolder
 import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.util.QrCodeGenerator
 import com.minifile.explorer.ui.util.UiFormatters
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
-import java.net.URLEncoder
 import kotlin.math.floor
+
+private data class TransferLogRow(
+    val key: String,
+    val timestampMs: Long,
+    val formattedTime: String,
+    val protocol: String,
+    val clientIp: String,
+    val summary: String,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -101,38 +103,61 @@ fun WirelessScreen(
     viewModel: MainViewModel,
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
     val settings by viewModel.settings.collectAsState()
     val volumes by viewModel.volumes.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
+    val httpState by HttpServerHolder.state.collectAsState()
     val ftpState by FtpServerHolder.state.collectAsState()
     val lanEndpoints by viewModel.container.lanAddressResolver.observeEndpoints()
         .collectAsState(initial = viewModel.container.lanAddressResolver.currentEndpoints())
 
-    var showPortDialog by remember { mutableStateOf(false) }
-    var showRootDialog by remember { mutableStateOf(false) }
-    var showAuthDialog by remember { mutableStateOf(false) }
-    var showQrDialog by remember { mutableStateOf(false) }
+    var showHttpPortDialog by remember { mutableStateOf(false) }
+    var showHttpRootDialog by remember { mutableStateOf(false) }
+    var showHttpQrDialog by remember { mutableStateOf(false) }
+
+    var showFtpPortDialog by remember { mutableStateOf(false) }
+    var showFtpRootDialog by remember { mutableStateOf(false) }
+    var showFtpAuthDialog by remember { mutableStateOf(false) }
+
+    var pendingStartAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     val notifPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) {
-        // Start foreground FTP service regardless of whether notification permission was granted
-        FtpServerService.start(context)
+        val action = pendingStartAction
+        pendingStartAction = null
+        action?.invoke()
     }
 
-    fun startFtpServer() {
+    fun launchWithNotificationCheck(startAction: () -> Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
+            pendingStartAction = startAction
             notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            FtpServerService.start(context)
+            startAction()
         }
     }
 
-    val rootDisplayLabel = remember(settings.ftpRoot, volumes, favorites) {
+    fun startHttpServer() {
+        launchWithNotificationCheck { FtpServerService.startHttp(context) }
+    }
+
+    fun startFtpServer() {
+        launchWithNotificationCheck { FtpServerService.start(context) }
+    }
+
+    val httpRootDisplayLabel = remember(settings.httpRoot, volumes, favorites) {
+        val raw = settings.httpRoot ?: return@remember "Internal"
+        val parsed = runCatching { VfsPath.parse(raw) }.getOrNull() ?: return@remember "Internal"
+        volumes.firstOrNull { it.root == parsed }?.name
+            ?: favorites.firstOrNull { it.path == parsed }?.let { "★ ${it.name}" }
+            ?: parsed.displayName
+    }
+
+    val ftpRootDisplayLabel = remember(settings.ftpRoot, volumes, favorites) {
         val raw = settings.ftpRoot ?: return@remember "Internal"
         val parsed = runCatching { VfsPath.parse(raw) }.getOrNull() ?: return@remember "Internal"
         volumes.firstOrNull { it.root == parsed }?.name
@@ -140,7 +165,15 @@ fun WirelessScreen(
             ?: parsed.displayName
     }
 
-    val previewUrls = if (ftpState.isRunning) {
+    val httpPreviewUrls = if (httpState.isRunning) {
+        httpState.urls
+    } else if (lanEndpoints.isNotEmpty()) {
+        lanEndpoints.map { "http://${it.ipv4}:${settings.httpPort}" }
+    } else {
+        listOf("http://127.0.0.1:${settings.httpPort}")
+    }
+
+    val ftpPreviewUrls = if (ftpState.isRunning) {
         ftpState.urls
     } else if (lanEndpoints.isNotEmpty()) {
         lanEndpoints.map { "ftp://${it.ipv4}:${settings.ftpPort}" }
@@ -148,10 +181,46 @@ fun WirelessScreen(
         listOf("ftp://127.0.0.1:${settings.ftpPort}")
     }
 
+    val combinedLog = remember(httpState.log, ftpState.log) {
+        val merged = ArrayList<TransferLogRow>(httpState.log.size + ftpState.log.size)
+        for (e in httpState.log) {
+            merged.add(
+                TransferLogRow(
+                    key = "http-${e.id}",
+                    timestampMs = e.timestampMs,
+                    formattedTime = e.formattedTime,
+                    protocol = "HTTP",
+                    clientIp = e.clientIp,
+                    summary = e.summary,
+                ),
+            )
+        }
+        for (e in ftpState.log) {
+            merged.add(
+                TransferLogRow(
+                    key = "ftp-${e.id}",
+                    timestampMs = e.timestampMs,
+                    formattedTime = e.formattedTime,
+                    protocol = "FTP",
+                    clientIp = e.clientIp,
+                    summary = e.summary,
+                ),
+            )
+        }
+        merged.sortByDescending { it.timestampMs }
+        merged
+    }
+
+    val ifaceSubtitle = if (lanEndpoints.isEmpty()) {
+        "No Wi-Fi LAN IPv4 detected — reachable via hotspot, USB tethering, or adb forward."
+    } else {
+        lanEndpoints.joinToString(" · ") { "${it.categoryLabel} (${it.interfaceName})" }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Wireless Transfer", fontWeight = FontWeight.SemiBold) },
+                title = { Text("Transfer", fontWeight = FontWeight.SemiBold) },
             )
         },
     ) { innerPadding ->
@@ -165,8 +234,180 @@ fun WirelessScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            // Status Card
-            item(key = "status-card") {
+            // 1. HTTP Share (Browser / QR Code) Card
+            item(key = "http-status-card") {
+                TransferSectionTitle("HTTP Share (Browser / QR Code)")
+                Card(
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (httpState.isRunning) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.padding(18.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (httpState.isRunning) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outline,
+                                        ),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = when {
+                                        httpState.isRunning -> "Running"
+                                        httpState.isStarting -> "Starting…"
+                                        else -> "Stopped"
+                                    },
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                            if (httpState.isRunning) {
+                                AssistChip(
+                                    onClick = {},
+                                    label = {
+                                        Text("↑ ${httpState.uploadsCount} · ↓ ${httpState.downloadsCount}")
+                                    },
+                                )
+                            }
+                        }
+
+                        for (url in httpPreviewUrls) {
+                            Text(
+                                text = url,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+
+                        Text(
+                            text = ifaceSubtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        if (httpState.lastError != null) {
+                            Text(
+                                text = httpState.lastError!!,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+
+                        val primaryHttpUrl = "${httpPreviewUrls.first().trimEnd('/')}/"
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            if (httpState.isRunning || httpState.isStarting) {
+                                Button(
+                                    onClick = { FtpServerService.stopHttp(context) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.error,
+                                        contentColor = MaterialTheme.colorScheme.onError,
+                                    ),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Stop", maxLines = 1, softWrap = false)
+                                }
+                            } else {
+                                Button(
+                                    onClick = { startHttpServer() },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Start", maxLines = 1, softWrap = false)
+                                }
+                            }
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        UiFormatters.copyToSystemClipboard(context, "HTTP URL", primaryHttpUrl)
+                                        viewModel.emitSimpleMessage("Copied $primaryHttpUrl")
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Copy URL", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                }
+                                OutlinedButton(
+                                    onClick = { showHttpQrDialog = true },
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Icon(Icons.Filled.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("QR Code", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. HTTP Settings Card
+            item(key = "http-settings") {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        SettingRow(
+                            title = "Port",
+                            value = settings.httpPort.toString(),
+                            enabled = !httpState.isRunning,
+                            onClick = { showHttpPortDialog = true },
+                        )
+                        HorizontalDivider()
+                        SettingRow(
+                            title = "Root folder",
+                            value = httpRootDisplayLabel,
+                            enabled = !httpState.isRunning,
+                            onClick = { showHttpRootDialog = true },
+                        )
+                        HorizontalDivider()
+                        ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            headlineContent = { Text("Read-only") },
+                            supportingContent = { Text("Disable browser file uploads and new folder creation") },
+                            trailingContent = {
+                                Switch(
+                                    checked = settings.httpReadOnly,
+                                    enabled = !httpState.isRunning,
+                                    onCheckedChange = { ro ->
+                                        viewModel.container.settingsRepository.update { it.copy(httpReadOnly = ro) }
+                                    },
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+
+            // 3. FTP Server (PC Companion) Card — Start/Stop only (no Copy URL, no QR Code)
+            item(key = "ftp-status-card") {
+                Spacer(Modifier.height(4.dp))
+                TransferSectionTitle("FTP Server (PC Companion)")
                 Card(
                     shape = RoundedCornerShape(18.dp),
                     colors = CardDefaults.cardColors(
@@ -219,27 +460,12 @@ fun WirelessScreen(
                             }
                         }
 
-                        for (url in previewUrls) {
+                        for (url in ftpPreviewUrls) {
                             Text(
                                 text = url,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.SemiBold,
-                            )
-                        }
-
-                        if (lanEndpoints.isEmpty()) {
-                            Text(
-                                text = "No Wi-Fi LAN IPv4 detected — server reachable via hotspot, USB tethering, or adb forward.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        } else {
-                            val ifaceDesc = lanEndpoints.joinToString(" · ") { "${it.categoryLabel} (${it.interfaceName})" }
-                            Text(
-                                text = ifaceDesc,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
 
@@ -251,96 +477,31 @@ fun WirelessScreen(
                             )
                         }
 
-                        val primaryUrl = previewUrls.first()
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            if (ftpState.isRunning || ftpState.isStarting) {
-                                Button(
-                                    onClick = { FtpServerService.stop(context) },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.error,
-                                        contentColor = MaterialTheme.colorScheme.onError,
-                                    ),
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text("Stop", maxLines = 1, softWrap = false)
-                                }
-                            } else {
-                                Button(
-                                    onClick = { startFtpServer() },
-                                    modifier = Modifier.fillMaxWidth(),
-                                ) {
-                                    Text("Start", maxLines = 1, softWrap = false)
-                                }
-                            }
-
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        if (ftpState.isRunning || ftpState.isStarting) {
+                            Button(
+                                onClick = { FtpServerService.stop(context) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError,
+                                ),
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
-                                OutlinedButton(
-                                    onClick = {
-                                        UiFormatters.copyToSystemClipboard(context, "FTP URL", primaryUrl)
-                                        viewModel.emitSimpleMessage("Copied $primaryUrl")
-                                    },
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Copy URL", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                                }
-                                OutlinedButton(
-                                    onClick = { showQrDialog = true },
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Icon(Icons.Filled.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("QR Code", maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
-                                }
+                                Text("Stop", maxLines = 1, softWrap = false)
+                            }
+                        } else {
+                            Button(
+                                onClick = { startFtpServer() },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Start", maxLines = 1, softWrap = false)
                             }
                         }
                     }
                 }
             }
 
-            // LAN-only firewall & plaintext notice
-            item(key = "ftp-warning") {
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(12.dp),
-                    ) {
-                        Icon(
-                            Icons.Filled.Shield,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            text = "Local network only — connections from cellular/public WAN are blocked. Use on trusted Wi-Fi or hotspot.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-
-            // Simplified Settings card
+            // 4. FTP Settings Card
             item(key = "ftp-settings") {
-                Text(
-                    "Settings",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.height(6.dp))
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -351,21 +512,21 @@ fun WirelessScreen(
                             title = "Port",
                             value = settings.ftpPort.toString(),
                             enabled = !ftpState.isRunning,
-                            onClick = { showPortDialog = true },
+                            onClick = { showFtpPortDialog = true },
                         )
                         HorizontalDivider()
                         SettingRow(
                             title = "Root folder",
-                            value = rootDisplayLabel,
+                            value = ftpRootDisplayLabel,
                             enabled = !ftpState.isRunning,
-                            onClick = { showRootDialog = true },
+                            onClick = { showFtpRootDialog = true },
                         )
                         HorizontalDivider()
                         SettingRow(
                             title = "Authentication",
                             value = if (settings.ftpAnonymous) "Anonymous" else "User: ${settings.ftpUsername}",
                             enabled = !ftpState.isRunning,
-                            onClick = { showAuthDialog = true },
+                            onClick = { showFtpAuthDialog = true },
                         )
                         HorizontalDivider()
                         ListItem(
@@ -386,67 +547,43 @@ fun WirelessScreen(
                 }
             }
 
-            // Live Activity Log
-            item(key = "ftp-log-header") {
+            // 5. Live Activity Log
+            item(key = "transfer-log-header") {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
-                        "Activity (${ftpState.log.size})",
+                        "Activity (${combinedLog.size})",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold,
                     )
-                    Row {
-                        TextButton(
-                            onClick = {
-                                scope.launch {
-                                    val content = FtpServerHolder.exportLogText()
-                                    val saved = withContext(Dispatchers.IO) {
-                                        runCatching {
-                                            val dl = File(Environment.getExternalStorageDirectory(), "Download")
-                                            dl.mkdirs()
-                                            val f = File(dl, "minifile-ftp.log")
-                                            f.writeText(content)
-                                            f.absolutePath
-                                        }.getOrNull()
-                                    }
-                                    if (saved != null) {
-                                        viewModel.emitSimpleMessage("Exported FTP log to $saved")
-                                    } else {
-                                        UiFormatters.copyToSystemClipboard(context, "FTP Log", content)
-                                        viewModel.emitSimpleMessage("Copied FTP log to clipboard")
-                                    }
-                                }
-                            },
-                            enabled = ftpState.log.isNotEmpty(),
-                        ) {
-                            Text("Export")
-                        }
-                        TextButton(
-                            onClick = { FtpServerHolder.clearLog() },
-                            enabled = ftpState.log.isNotEmpty(),
-                        ) {
-                            Text("Clear")
-                        }
+                    TextButton(
+                        onClick = {
+                            HttpServerHolder.clearLog()
+                            FtpServerHolder.clearLog()
+                        },
+                        enabled = combinedLog.isNotEmpty(),
+                    ) {
+                        Text("Clear")
                     }
                 }
             }
 
-            if (ftpState.log.isEmpty()) {
-                item(key = "ftp-log-empty") {
+            if (combinedLog.isEmpty()) {
+                item(key = "transfer-log-empty") {
                     Text(
-                        text = "No FTP activity yet. Start the server and connect from MiniFile PC Companion or any FTP client.",
+                        text = "No transfer activity yet. Start HTTP Share to scan the QR code from another phone/browser, or start FTP Server for PC Companion.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             } else {
-                items(ftpState.log.asReversed(), key = { it.id }) { entry ->
+                items(combinedLog, key = { it.key }) { entry ->
                     Text(
-                        text = "${entry.formattedTime}  ${entry.clientIp}  ${entry.summary}",
+                        text = "${entry.formattedTime}  [${entry.protocol}] ${entry.clientIp}  ${entry.summary}",
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace,
                         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
@@ -456,37 +593,37 @@ fun WirelessScreen(
         }
     }
 
-    if (showQrDialog) {
-        var selectedUrlIdx by remember(previewUrls) { mutableIntStateOf(0) }
-        val chosenBaseUrl = previewUrls.getOrElse(selectedUrlIdx) { previewUrls.first() }
-        val fullQrUrl = remember(chosenBaseUrl, settings.ftpAnonymous, settings.ftpUsername, settings.ftpPassword) {
-            buildFullFtpUrl(
-                baseUrl = chosenBaseUrl,
-                anonymous = settings.ftpAnonymous,
-                username = settings.ftpUsername,
-                password = settings.ftpPassword,
-            )
-        }
-        val qrResult = remember(fullQrUrl) {
-            runCatching { QrCodeGenerator.encode(fullQrUrl) }
+    if (showHttpQrDialog) {
+        var selectedUrlIdx by remember(httpPreviewUrls) { mutableIntStateOf(0) }
+        val chosenBaseUrl = httpPreviewUrls.getOrElse(selectedUrlIdx) { httpPreviewUrls.first() }
+        val qrHttpUrl = remember(chosenBaseUrl) { "${chosenBaseUrl.trimEnd('/')}/" }
+        val qrResult = remember(qrHttpUrl) {
+            runCatching { QrCodeGenerator.encode(qrHttpUrl) }
         }
 
         AlertDialog(
-            onDismissRequest = { showQrDialog = false },
-            title = { Text("FTP QR Code") },
+            onDismissRequest = { showHttpQrDialog = false },
+            title = { Text("HTTP Share QR Code") },
             text = {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    if (previewUrls.size > 1) {
+                    Text(
+                        text = "Scan with any phone camera or open in a browser on the same Wi-Fi / hotspot.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+
+                    if (httpPreviewUrls.size > 1) {
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            previewUrls.forEachIndexed { idx, u ->
-                                val hostLabel = u.removePrefix("ftp://").substringBefore(':')
+                            httpPreviewUrls.forEachIndexed { idx, u ->
+                                val hostLabel = u.removePrefix("http://").substringBefore(':')
                                 FilterChip(
                                     selected = selectedUrlIdx == idx,
                                     onClick = { selectedUrlIdx = idx },
@@ -540,7 +677,7 @@ fun WirelessScreen(
                         }
                     } else {
                         Text(
-                            text = "URL is too long to encode into QR code (${fullQrUrl.length} characters).",
+                            text = "URL is too long to encode into QR code (${qrHttpUrl.length} characters).",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                             textAlign = TextAlign.Center,
@@ -548,116 +685,85 @@ fun WirelessScreen(
                     }
 
                     Text(
-                        text = fullQrUrl,
+                        text = qrHttpUrl,
                         style = MaterialTheme.typography.bodyMedium,
                         fontFamily = FontFamily.Monospace,
                         textAlign = TextAlign.Center,
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                UiFormatters.copyToSystemClipboard(context, "FTP URL", fullQrUrl)
-                                viewModel.emitSimpleMessage("Copied $fullQrUrl")
+                                UiFormatters.copyToSystemClipboard(context, "HTTP URL", qrHttpUrl)
+                                viewModel.emitSimpleMessage("Copied $qrHttpUrl")
                             },
                     )
                 }
             },
             confirmButton = {
-                Button(onClick = { showQrDialog = false }) {
+                Button(onClick = { showHttpQrDialog = false }) {
                     Text("Close")
                 }
             },
         )
     }
 
-    if (showPortDialog) {
-        var portText by remember { mutableStateOf(settings.ftpPort.toString()) }
-        var err by remember { mutableStateOf<String?>(null) }
-        AlertDialog(
-            onDismissRequest = { showPortDialog = false },
-            title = { Text("FTP Port") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = portText,
-                        onValueChange = {
-                            portText = it
-                            err = null
-                        },
-                        label = { Text("Port (1024–65535)") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (err != null) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(err!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
+    if (showHttpPortDialog) {
+        PortEditDialog(
+            title = "HTTP Port",
+            initialPort = settings.httpPort,
+            onSave = { p ->
+                viewModel.container.settingsRepository.update { it.copy(httpPort = p) }
+                showHttpPortDialog = false
             },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val p = portText.trim().toIntOrNull()
-                        if (p == null || p !in 1024..65535) {
-                            err = "Enter a valid port between 1024 and 65535"
-                        } else {
-                            viewModel.container.settingsRepository.update { it.copy(ftpPort = p) }
-                            showPortDialog = false
-                        }
-                    },
-                ) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { showPortDialog = false }) { Text("Cancel") } },
+            onDismiss = { showHttpPortDialog = false },
         )
     }
 
-    if (showRootDialog) {
-        AlertDialog(
-            onDismissRequest = { showRootDialog = false },
-            title = { Text("FTP Root Folder") },
-            text = {
-                LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
-                    val readyVolumes = volumes.filter { it.root != null }
-                    items(readyVolumes, key = { it.id }) { vol ->
-                        ListItem(
-                            headlineContent = { Text(vol.name) },
-                            supportingContent = vol.subtitle?.let { { Text(it, maxLines = 1) } },
-                            modifier = Modifier.clickable {
-                                viewModel.container.settingsRepository.update {
-                                    it.copy(ftpRoot = vol.root!!.serialize())
-                                }
-                                showRootDialog = false
-                            },
-                        )
-                    }
-                    items(favorites, key = { "fav-${it.id}" }) { fav ->
-                        ListItem(
-                            headlineContent = { Text("★ ${fav.name}") },
-                            supportingContent = { Text(fav.path.displayName) },
-                            modifier = Modifier.clickable {
-                                viewModel.container.settingsRepository.update {
-                                    it.copy(ftpRoot = fav.path.serialize())
-                                }
-                                showRootDialog = false
-                            },
-                        )
-                    }
-                }
+    if (showHttpRootDialog) {
+        RootFolderPickerDialog(
+            title = "HTTP Root Folder",
+            volumes = volumes,
+            favorites = favorites,
+            onSelect = { path ->
+                viewModel.container.settingsRepository.update { it.copy(httpRoot = path.serialize()) }
+                showHttpRootDialog = false
             },
-            confirmButton = {
-                TextButton(onClick = { showRootDialog = false }) { Text("Cancel") }
-            },
+            onDismiss = { showHttpRootDialog = false },
         )
     }
 
-    if (showAuthDialog) {
+    if (showFtpPortDialog) {
+        PortEditDialog(
+            title = "FTP Port",
+            initialPort = settings.ftpPort,
+            onSave = { p ->
+                viewModel.container.settingsRepository.update { it.copy(ftpPort = p) }
+                showFtpPortDialog = false
+            },
+            onDismiss = { showFtpPortDialog = false },
+        )
+    }
+
+    if (showFtpRootDialog) {
+        RootFolderPickerDialog(
+            title = "FTP Root Folder",
+            volumes = volumes,
+            favorites = favorites,
+            onSelect = { path ->
+                viewModel.container.settingsRepository.update { it.copy(ftpRoot = path.serialize()) }
+                showFtpRootDialog = false
+            },
+            onDismiss = { showFtpRootDialog = false },
+        )
+    }
+
+    if (showFtpAuthDialog) {
         var anon by remember { mutableStateOf(settings.ftpAnonymous) }
         var user by remember { mutableStateOf(settings.ftpUsername) }
         var pass by remember { mutableStateOf(settings.ftpPassword) }
         var showPass by remember { mutableStateOf(false) }
 
         AlertDialog(
-            onDismissRequest = { showAuthDialog = false },
+            onDismissRequest = { showFtpAuthDialog = false },
             title = { Text("FTP Authentication") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -714,29 +820,111 @@ fun WirelessScreen(
                                 ftpPassword = pass,
                             )
                         }
-                        showAuthDialog = false
+                        showFtpAuthDialog = false
                     },
                 ) { Text("Save") }
             },
-            dismissButton = { TextButton(onClick = { showAuthDialog = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { showFtpAuthDialog = false }) { Text("Cancel") } },
         )
     }
 }
 
-internal fun buildFullFtpUrl(
-    baseUrl: String,
-    anonymous: Boolean,
-    username: String,
-    password: String,
-): String {
-    val hostPort = baseUrl.trim().removePrefix("ftp://").trimEnd('/')
-    if (anonymous) {
-        return "ftp://$hostPort/"
-    }
-    val cleanUser = username.ifEmpty { "minifile" }
-    val encUser = URLEncoder.encode(cleanUser, "UTF-8").replace("+", "%20")
-    val encPass = URLEncoder.encode(password, "UTF-8").replace("+", "%20")
-    return "ftp://$encUser:$encPass@$hostPort/"
+@Composable
+private fun TransferSectionTitle(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(bottom = 6.dp),
+    )
+}
+
+@Composable
+private fun PortEditDialog(
+    title: String,
+    initialPort: Int,
+    onSave: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var portText by remember { mutableStateOf(initialPort.toString()) }
+    var err by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = portText,
+                    onValueChange = {
+                        portText = it
+                        err = null
+                    },
+                    label = { Text("Port (1024–65535)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (err != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(err!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val p = portText.trim().toIntOrNull()
+                    if (p == null || p !in 1024..65535) {
+                        err = "Enter a valid port between 1024 and 65535"
+                    } else {
+                        onSave(p)
+                    }
+                },
+            ) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun RootFolderPickerDialog(
+    title: String,
+    volumes: List<com.minifile.explorer.core.vfs.Volume>,
+    favorites: List<com.minifile.explorer.core.model.Favorite>,
+    onSelect: (VfsPath) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
+                val readyVolumes = volumes.filter { it.root != null }
+                items(readyVolumes, key = { it.id }) { vol ->
+                    ListItem(
+                        headlineContent = { Text(vol.name) },
+                        supportingContent = vol.subtitle?.let { { Text(it, maxLines = 1) } },
+                        modifier = Modifier.clickable {
+                            onSelect(vol.root!!)
+                        },
+                    )
+                }
+                items(favorites, key = { "fav-${it.id}" }) { fav ->
+                    ListItem(
+                        headlineContent = { Text("★ ${fav.name}") },
+                        supportingContent = { Text(fav.path.displayName) },
+                        modifier = Modifier.clickable {
+                            onSelect(fav.path)
+                        },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable

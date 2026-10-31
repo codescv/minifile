@@ -1,6 +1,6 @@
 # MiniFile
 
-Minimalist, offline-first **Android File Manager** with a built-in **RFC 959 / RFC 3659 Wireless FTP Server** and a zero-dependency **Python 3 PC Companion** (CLI + Dual-Pane Web & Tkinter GUI).
+Minimalist, offline-first **Android File Manager** with a built-in **HTTP QR File Share Server**, **RFC 959 / RFC 3659 Wireless FTP Server**, **Built-in PDF Viewer**, and a zero-dependency **Python 3 PC Companion** (CLI + Dual-Pane Web & Tkinter GUI).
 
 ---
 
@@ -10,21 +10,21 @@ Minimalist, offline-first **Android File Manager** with a built-in **RFC 959 / R
   - Edge-to-edge Material 3 UI with Dynamic Color (Material You) and System / Light / Dark themes.
   - List & adaptive Grid views, breadcrumb bar with long-press path copy, natural sorting (`file2` < `file10`), instant filter & recursive subfolder search, and multi-select range gestures.
   - Non-blocking foreground file operations (`Copy`, `Move`/`Cut`, `Delete`, `Rename`, `Create Folder/File`) with live byte throughput, cancellation, and interactive conflict resolution (`Skip`, `Overwrite`, `Keep both`, `Apply to all`).
-- **Wireless FTP Server & PC Companion**:
-  - Built-in Android foreground FTP server (`MLSD`, `MLST`, `UTF8`, `SIZE`, `MDTM`, `PASV` / `EPSV`, `REST STREAM`, `RNFR` / `RNTO`) supporting Anonymous or Username/Password authentication, Read-Only mode, bounded passive port windows, peer-IP data-channel validation, and live activity logs.
+- **Wireless Transfer — HTTP QR Share & FTP PC Companion**:
+  - **Built-in HTTP/1.1 File Share Server** (`HttpFileServerEngine`, default port `8080`) with instant **QR Code** for phones & browsers on the same Wi-Fi/hotspot: responsive dark/light HTML5 Web UI, `206 Partial Content` byte-range media/PDF streaming, on-the-fly `.zip` folder downloads, folder creation, and multi-file uploads with progress bar.
+  - **Built-in Android foreground FTP server** (`MLSD`, `MLST`, `UTF8`, `SIZE`, `MDTM`, `PASV` / `EPSV`, `REST STREAM`, `RNFR` / `RNTO`) supporting Anonymous or Username/Password authentication, Read-Only mode, bounded passive port windows, and peer-IP data-channel validation.
   - Zero-dependency Python 3.10+ PC Companion (`minifile` / `minifile-companion` via `uv tool install`, or standalone `python3 -m minifile_companion`):
     - **CLI**: `scan`, `ls`, `tree`, `get`, `put`, `sync` (`--to-phone`, `--to-pc`, `--both`, `--delete`, `--dry-run`), `cat`, `edit`, `mkdir`, `rm`, `mv`, `nomedia`, `shell`, `update`.
     - **Desktop GUI**: Localhost-bound dual-pane Web UI (`127.0.0.1` with CSRF token & DNS-rebinding guards) + optional Tkinter launcher (`--tk`).
 - **Power Tools**:
   - Global hidden dotfiles (`.hidden`) toggle.
+  - **Built-in PDF Viewer** (`PdfRenderer`) supporting both local and SAF documents with crisp high-DPI page rendering, pinch-to-zoom, page jump, and external app handoff.
   - Built-in text viewer & editor (`UTF-8`, `UTF-16 LE/BE`, `ISO-8859-1`, `Windows-1252`) with BOM & `LF`/`CRLF` preservation, line numbers, undo/redo, find & replace, and JSON pretty-printing.
   - Streaming ZIP archive preview, selective/full extraction, and multi-level compression with strict **Zip-Slip** path sanitization and **zip-bomb** expansion guards.
   - `.nomedia` row badge (`Hidden from gallery`), 1-tap toggle, and bulk storage scanner.
   - File & folder Properties sheet with asynchronous `MD5` & `SHA-256` checksum calculation and hash verification.
-- **Storage Volumes & App Data**:
-  - Internal Storage, removable SD cards, and hot-plugged USB OTG drives.
-  - Installed app directory enumeration (`Android/data` & `Android/obb`) with zero-dependency **Shizuku** (Wireless Debugging) & **Root (`su`)** privileged shell VFS access on Android 11–16, plus per-app SAF & System Files fallbacks.
-  - Installed Apps browser with package storage inspection and 1-tap APK backup/export.
+- **Storage Volumes**:
+  - Internal Storage, removable SD cards, and hot-plugged USB OTG drives via local file I/O and Storage Access Framework (SAF).
 - **Favorites & 1-Tap Copy/Move to Favorite**:
   - Bookmark local or SAF directories, reorder/rename, export/import Favorites JSON, and copy or move any selection directly to a Favorite folder in one tap via `FavoritePickerSheet`.
 - **Verified Updates via GitHub Releases**:
@@ -40,8 +40,8 @@ Grab the latest release from [**GitHub Releases**](https://github.com/codescv/mi
 
 | Asset | Description |
 |-------|-------------|
-| `minifile-v1.0.3-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
-| `minifile-companion-v1.0.3.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
+| `minifile-v1.0.4-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
+| `minifile-companion-v1.0.4.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
 | `SHA256SUMS.txt` | SHA-256 checksums for release assets |
 
 ### Install PC Companion with `uv` (Recommended)
@@ -76,7 +76,7 @@ minifile update --apply
 With `minifile` installed via `uv tool install`:
 
 ```bash
-# Discover your phone running MiniFile -> Wireless -> Start on the same Wi-Fi LAN
+# Discover your phone running MiniFile -> Transfer -> FTP Server -> Start on the same Wi-Fi LAN
 minifile scan --save
 
 # List, transfer, or synchronize folders

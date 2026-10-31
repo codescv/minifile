@@ -243,35 +243,4 @@ object PathUtils {
         }
         return String.format(Locale.US, "%.1f %s", value, units[unitIdx])
     }
-
-    /**
-     * Returns true if [normalizedPath] points to `<storage>/Android/data[...]` or `<storage>/Android/obb[...]`.
-     */
-    fun isRestrictedAndroidSubtree(normalizedPath: String): Boolean {
-        val segs = normalizeLocalPath(normalizedPath).split('/').filter { it.isNotEmpty() }
-        for (i in 1 until segs.size - 1) {
-            if (segs[i].equals("Android", ignoreCase = true) &&
-                (segs[i + 1].equals("data", ignoreCase = true) || segs[i + 1].equals("obb", ignoreCase = true))
-            ) {
-                return true
-            }
-        }
-        return false
-    }
-
-    /**
-     * Returns true if [normalizedPath] is inside `<storage>/Android/(data|obb)/<ownPkg>[...]`.
-     */
-    fun isOwnPackageSubtree(normalizedPath: String, ownPkg: String?): Boolean {
-        if (ownPkg.isNullOrEmpty()) return false
-        val segs = normalizeLocalPath(normalizedPath).split('/').filter { it.isNotEmpty() }
-        for (i in 1 until segs.size - 2) {
-            if (segs[i].equals("Android", ignoreCase = true) &&
-                (segs[i + 1].equals("data", ignoreCase = true) || segs[i + 1].equals("obb", ignoreCase = true))
-            ) {
-                return segs[i + 2] == ownPkg
-            }
-        }
-        return false
-    }
 }

@@ -13,13 +13,11 @@ import com.minifile.explorer.data.AndroidMediaScanNotifier
 import com.minifile.explorer.data.AndroidVolumeProvider
 import com.minifile.explorer.data.DefaultFavoritesRepository
 import com.minifile.explorer.data.FavoritesRepository
-import com.minifile.explorer.data.InstalledAppsRepository
 import com.minifile.explorer.data.LanAddressResolver
 import com.minifile.explorer.data.PersistedTreeStore
 import com.minifile.explorer.data.SafFileSystem
 import com.minifile.explorer.data.SettingsRepository
 import com.minifile.explorer.data.SharedPrefsKeyValueStore
-import com.minifile.explorer.data.shizuku.PrivilegedShellBridge
 import com.minifile.explorer.data.update.UpdateManager
 import com.minifile.explorer.service.OperationRegistry
 
@@ -30,8 +28,7 @@ class AppContainer(context: Context) {
     val settingsRepository = SettingsRepository(keyValueStore)
     val persistedTreeStore = PersistedTreeStore(appContext, keyValueStore)
 
-    val privilegedFallback = PrivilegedShellBridge.createLocalFallback(appContext)
-    val localFileSystem = LocalFileSystem(privilegedFallback)
+    val localFileSystem = LocalFileSystem()
     val safFileSystem = SafFileSystem(appContext)
     val fileSystem = FileSystemRepository(listOf(localFileSystem, safFileSystem))
 
@@ -47,7 +44,6 @@ class AppContainer(context: Context) {
     val fileOperations = FileOperations(fileSystem, Clock.SYSTEM)
     val zipArchiver = ZipArchiver(fileSystem)
     val checksumCalculator = ChecksumCalculator(fileSystem)
-    val installedAppsRepository = InstalledAppsRepository(appContext, fileSystem)
     val lanAddressResolver = LanAddressResolver(appContext)
     val updateManager = UpdateManager(appContext, settingsRepository)
     val operationRegistry = OperationRegistry.instance

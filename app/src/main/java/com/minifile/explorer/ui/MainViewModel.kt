@@ -1,9 +1,6 @@
 package com.minifile.explorer.ui
 
-import android.annotation.SuppressLint
 import android.content.Context
-import android.content.pm.ApplicationInfo
-import android.os.Build
 import android.os.Environment
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -26,12 +23,9 @@ import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.vfs.Volume
-import com.minifile.explorer.data.PersistedTreeStore
-import com.minifile.explorer.data.shizuku.PrivilegedShellBridge
 import com.minifile.explorer.di.AppContainer
 import com.minifile.explorer.service.OperationCompletionEvent
 import com.minifile.explorer.service.OperationRunOutcome
-import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -47,14 +41,14 @@ import kotlinx.coroutines.withContext
 enum class MainTab(val label: String) {
     BROWSE("Browse"),
     FAVORITES("Favorites"),
-    WIRELESS("Wireless"),
+    WIRELESS("Transfer"),
     TOOLS("Tools"),
 }
 
 sealed interface OverlayScreen {
     data class TextEditor(val path: VfsPath, val forceEdit: Boolean = false) : OverlayScreen
     data class ArchivePreview(val path: VfsPath) : OverlayScreen
-    data object InstalledApps : OverlayScreen
+    data class PdfViewer(val path: VfsPath) : OverlayScreen
 }
 
 data class BreadcrumbCrumb(
@@ -68,37 +62,6 @@ data class ConflictPrompt(
     val deferred: CompletableDeferred<Pair<ConflictResolution, Boolean>>,
 )
 
-enum class RestrictedAndroidDirKind(
-    val safKey: String,
-    val pkgGrantPrefix: String,
-    val defaultSafDocId: String,
-    val displaySubpath: String,
-) {
-    DATA(
-        safKey = PersistedTreeStore.KEY_ANDROID_DATA,
-        pkgGrantPrefix = "pkg_data:",
-        defaultSafDocId = "primary:Android/data",
-        displaySubpath = "Android/data",
-    ),
-    OBB(
-        safKey = PersistedTreeStore.KEY_ANDROID_OBB,
-        pkgGrantPrefix = "pkg_obb:",
-        defaultSafDocId = "primary:Android/obb",
-        displaySubpath = "Android/obb",
-    ),
-}
-
-data class RestrictedPackageTarget(
-    val kind: RestrictedAndroidDirKind,
-    val packageName: String,
-    val appLabel: String,
-) {
-    val safKey: String get() = "${kind.pkgGrantPrefix}$packageName"
-    val safInitialDocId: String get() = "${kind.defaultSafDocId}/$packageName"
-    val safMountLabel: String
-        get() = if (kind == RestrictedAndroidDirKind.OBB) "$appLabel obb" else "$appLabel data"
-}
-
 data class BrowserUiState(
     val currentDir: VfsPath? = null, // null = Storage Home
     val currentDirNode: VfsNode? = null,
@@ -110,8 +73,6 @@ data class BrowserUiState(
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
     val permissionRequired: Boolean = false,
-    val isRestrictedAndroidDataDir: Boolean = false,
-    val restrictedPackageTarget: RestrictedPackageTarget? = null,
     val searchActive: Boolean = false,
     val searchQuery: String = "",
     val recursiveSearch: Boolean = false,
@@ -133,33 +94,6 @@ class MainViewModel(
         private const val STATE_DIR = "saved_dir"
         private const val STATE_ROOT_NAME = "saved_root_name"
         private const val STATE_ROOT_BASE = "saved_root_base"
-
-        fun classifyRestrictedAndroidDir(path: VfsPath): RestrictedAndroidDirKind? {
-            val local = path as? VfsPath.Local ?: return null
-            val norm = local.normalized
-            return when {
-                norm.endsWith("/Android/data", ignoreCase = true) -> RestrictedAndroidDirKind.DATA
-                norm.endsWith("/Android/obb", ignoreCase = true) -> RestrictedAndroidDirKind.OBB
-                else -> null
-            }
-        }
-
-        fun classifyRestrictedPackageDir(path: VfsPath): Pair<RestrictedAndroidDirKind, String>? {
-            val local = path as? VfsPath.Local ?: return null
-            val segs = local.normalized.split('/').filter { it.isNotEmpty() }
-            if (segs.size < 4) return null
-            val androidIdx = segs.indexOfFirst { it.equals("Android", ignoreCase = true) }
-            if (androidIdx < 1 || androidIdx + 2 != segs.size - 1) return null
-            val kindSeg = segs[androidIdx + 1]
-            val pkgSeg = segs[androidIdx + 2]
-            if (pkgSeg.isBlank() || pkgSeg == "." || pkgSeg == "..") return null
-            val kind = when {
-                kindSeg.equals("data", ignoreCase = true) -> RestrictedAndroidDirKind.DATA
-                kindSeg.equals("obb", ignoreCase = true) -> RestrictedAndroidDirKind.OBB
-                else -> return null
-            }
-            return kind to pkgSeg
-        }
 
         fun factory(container: AppContainer): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
@@ -206,17 +140,6 @@ class MainViewModel(
                     lastShowHidden = s.showHidden
                     if (_browser.value.currentDir != null) {
                         reloadCurrentDirectory(silent = true)
-                    }
-                }
-            }
-        }
-        var lastPrivilegedActive = PrivilegedShellBridge.state.value.isActive
-        viewModelScope.launch {
-            PrivilegedShellBridge.state.collect { st ->
-                if (st.isActive != lastPrivilegedActive) {
-                    lastPrivilegedActive = st.isActive
-                    if (_browser.value.currentDir != null) {
-                        reloadCurrentDirectory(silent = false)
                     }
                 }
             }
@@ -277,17 +200,8 @@ class MainViewModel(
             // If currently browsing an unmounted volume, step back to Storage Home gracefully
             val cur = _browser.value.currentDir
             if (cur != null) {
-                val keepOnRestrictedPrimary = cur is VfsPath.Local &&
-                    isPrimaryStorageAndroidDir(cur) &&
-                    PathUtils.isRestrictedAndroidSubtree(cur.normalized) &&
-                    (Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED ||
-                        Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED_READ_ONLY)
-                val stillExists = if (keepOnRestrictedPrimary) {
-                    true
-                } else {
-                    withContext(Dispatchers.IO) {
-                        runCatching { container.fileSystem.exists(cur) }.getOrDefault(false)
-                    }
+                val stillExists = withContext(Dispatchers.IO) {
+                    runCatching { container.fileSystem.exists(cur) }.getOrDefault(false)
                 }
                 if (!stillExists) {
                     navigateToStorageHome()
@@ -368,8 +282,6 @@ class MainViewModel(
             isLoading = true,
             errorMessage = null,
             permissionRequired = false,
-            isRestrictedAndroidDataDir = false,
-            restrictedPackageTarget = null,
             searchActive = false,
             searchQuery = "",
             recursiveSearch = false,
@@ -391,17 +303,6 @@ class MainViewModel(
         loadDirectoryInternal(dir, showSpinner = !silent)
     }
 
-    @SuppressLint("SdCardPath")
-    private fun isPrimaryStorageAndroidDir(local: VfsPath.Local): Boolean {
-        val primaryRoot = runCatching {
-            PathUtils.normalizeLocalPath(Environment.getExternalStorageDirectory().absolutePath)
-        }.getOrDefault("/storage/emulated/0")
-        val norm = local.normalized
-        return norm.startsWith("$primaryRoot/", ignoreCase = true) ||
-            norm.startsWith("/storage/emulated/0/", ignoreCase = true) ||
-            norm.startsWith("/sdcard/", ignoreCase = true)
-    }
-
     private fun loadDirectoryInternal(dir: VfsPath, showSpinner: Boolean) {
         directoryLoadJob?.cancel()
         directoryLoadJob = viewModelScope.launch {
@@ -409,378 +310,6 @@ class MainViewModel(
                 _browser.value = _browser.value.copy(isLoading = true, errorMessage = null)
             }
             try {
-                val restrictedKind = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    classifyRestrictedAndroidDir(dir)
-                } else {
-                    null
-                }
-
-                // Case 1: Browsing /Android/data or /Android/obb parent directory on Android 11+
-                if (restrictedKind != null && dir is VfsPath.Local) {
-                    val isPrimary = isPrimaryStorageAndroidDir(dir)
-                    val privilegedActive = withContext(Dispatchers.IO) {
-                        PrivilegedShellBridge.hasPrivilegedAccess(container.appContext)
-                    }
-
-                    // Scheme 2: Privileged Shell (Shizuku / Root) lists real directories directly
-                    if (privilegedActive) {
-                        val (privDirStat, privChildren) = withContext(Dispatchers.IO) {
-                            val byName = LinkedHashMap<String, VfsNode>()
-                            val shellChildren = PrivilegedShellBridge.listDirectory(dir.normalized, includeHidden = true)
-                                .orEmpty()
-                            for (child in shellChildren) {
-                                byName[child.name] = child
-                            }
-                            ensureOwnPackageEntry(byName, dir, restrictedKind, isPrimary)
-                            val st = PrivilegedShellBridge.stat(dir.normalized)
-                                ?: VfsNode(
-                                    path = dir,
-                                    name = dir.displayName,
-                                    isDirectory = true,
-                                    size = 0L,
-                                    lastModified = 0L,
-                                    canRead = true,
-                                    canWrite = true,
-                                )
-                            st.copy(canWrite = true) to byName.values.toList()
-                        }
-                        val validSelected = _browser.value.selectedPaths.intersect(privChildren.map { it.path }.toSet())
-                        _browser.value = _browser.value.copy(
-                            currentDirNode = privDirStat,
-                            rawEntries = privChildren,
-                            isLoading = false,
-                            errorMessage = null,
-                            permissionRequired = false,
-                            isRestrictedAndroidDataDir = false,
-                            restrictedPackageTarget = null,
-                            selectedPaths = validSelected,
-                        )
-                        recomputeVisibleEntries(settings.value)
-                        return@launch
-                    }
-
-                    // Existing whole-tree SAF grant (Android 11–12)
-                    val existingTreeGrant = if (isPrimary) {
-                        container.persistedTreeStore.getGrant(restrictedKind.safKey)
-                    } else {
-                        null
-                    }
-                    if (existingTreeGrant != null) {
-                        val safRoot = existingTreeGrant.toVfsPath()
-                        savedStateHandle[STATE_DIR] = safRoot.serialize()
-                        savedStateHandle[STATE_ROOT_NAME] = existingTreeGrant.label
-                        savedStateHandle[STATE_ROOT_BASE] = safRoot.serialize()
-                        container.settingsRepository.update { s ->
-                            if (s.rememberLastFolder) s.copy(lastFolder = safRoot.serialize()) else s
-                        }
-                        val (safStat, safChildren) = withContext(Dispatchers.IO) {
-                            val st = container.fileSystem.stat(safRoot)
-                            val list = container.fileSystem.list(safRoot, includeHidden = true)
-                            st to list
-                        }
-                        _browser.value = _browser.value.copy(
-                            currentDir = safRoot,
-                            currentDirNode = safStat,
-                            rootVolumeName = existingTreeGrant.label,
-                            rootVolumeBase = safRoot,
-                            breadcrumbs = buildBreadcrumbs(safRoot, existingTreeGrant.label, safRoot),
-                            rawEntries = safChildren,
-                            isLoading = false,
-                            errorMessage = null,
-                            permissionRequired = false,
-                            isRestrictedAndroidDataDir = false,
-                            restrictedPackageTarget = null,
-                            selectedPaths = emptySet(),
-                        )
-                        recomputeVisibleEntries(settings.value)
-                        return@launch
-                    }
-
-                    // Scheme 1: Synthesize installed app folders via QUERY_ALL_PACKAGES so Android/data is never empty
-                    val includeSystemApps = settings.value.showHidden
-                    val (restrictedDirNode, mergedChildren) = withContext(Dispatchers.IO) {
-                        val byName = LinkedHashMap<String, VfsNode>()
-                        val directList = runCatching {
-                            container.fileSystem.list(dir, includeHidden = true)
-                        }.getOrDefault(emptyList())
-                        for (child in directList) {
-                            byName[child.name] = child
-                        }
-
-                        ensureOwnPackageEntry(byName, dir, restrictedKind, isPrimary)
-
-                        // Include any per-package SAF grants (pkg_data:<pkg> / pkg_obb:<pkg>)
-                        if (isPrimary) {
-                            for ((key, grant) in container.persistedTreeStore.grants.value) {
-                                val matchesPkgKey = key.startsWith(restrictedKind.pkgGrantPrefix)
-                                val matchesDocId = grant.rootDocumentId.startsWith(
-                                    "${restrictedKind.defaultSafDocId}/",
-                                    ignoreCase = true,
-                                )
-                                if (!matchesPkgKey && !matchesDocId) continue
-                                val pkgFolderName = if (matchesPkgKey) {
-                                    key.removePrefix(restrictedKind.pkgGrantPrefix)
-                                } else {
-                                    grant.rootDocumentId.substringAfterLast('/')
-                                }.trim()
-                                if (pkgFolderName.isEmpty() || pkgFolderName in byName) continue
-                                val grantPath = grant.toVfsPath()
-                                val grantNode = runCatching { container.fileSystem.stat(grantPath) }.getOrNull()
-                                    ?: VfsNode(
-                                        path = grantPath,
-                                        name = pkgFolderName,
-                                        isDirectory = true,
-                                        size = 0L,
-                                        lastModified = 0L,
-                                        canRead = true,
-                                        canWrite = grant.isWritable,
-                                    )
-                                byName[pkgFolderName] = grantNode.copy(name = pkgFolderName)
-                            }
-                        }
-
-                        // Synthesize virtual package folders via PackageManager (QUERY_ALL_PACKAGES)
-                        if (isPrimary) {
-                            val pm = container.appContext.packageManager
-                            @Suppress("DEPRECATION")
-                            val installedApps = runCatching { pm.getInstalledApplications(0) }.getOrDefault(emptyList())
-                            val baseDirFile = File(dir.normalized)
-                            for (appInfo in installedApps) {
-                                val pkg = appInfo.packageName ?: continue
-                                if (pkg in byName) continue
-                                val isUpdatedSys = (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
-                                val isSys = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0 && !isUpdatedSys
-                                val existsLocally = runCatching { File(baseDirFile, pkg).exists() }.getOrDefault(false)
-                                if (isSys && !includeSystemApps && !existsLocally) continue
-                                val lastUpdate = runCatching {
-                                    @Suppress("DEPRECATION")
-                                    pm.getPackageInfo(pkg, 0).lastUpdateTime
-                                }.getOrDefault(0L)
-                                byName[pkg] = VfsNode(
-                                    path = VfsPath.Local("${dir.normalized}/$pkg"),
-                                    name = pkg,
-                                    isDirectory = true,
-                                    size = 0L,
-                                    lastModified = lastUpdate,
-                                    mimeType = "inode/directory",
-                                    isHidden = false,
-                                    canRead = true,
-                                    canWrite = false,
-                                    childCount = -1,
-                                )
-                            }
-                        }
-
-                        val rawDirStat = runCatching { container.fileSystem.stat(dir) }.getOrNull()
-                        val effectiveDirStat = (
-                            rawDirStat ?: VfsNode(
-                                path = dir,
-                                name = dir.displayName,
-                                isDirectory = true,
-                                size = 0L,
-                                lastModified = 0L,
-                                canRead = true,
-                                canWrite = false,
-                            )
-                            ).copy(canWrite = false)
-                        effectiveDirStat to byName.values.toList()
-                    }
-
-                    val validSelected = _browser.value.selectedPaths.intersect(mergedChildren.map { it.path }.toSet())
-                    _browser.value = _browser.value.copy(
-                        currentDirNode = restrictedDirNode,
-                        rawEntries = mergedChildren,
-                        isLoading = false,
-                        errorMessage = null,
-                        permissionRequired = false,
-                        isRestrictedAndroidDataDir = true,
-                        restrictedPackageTarget = null,
-                        selectedPaths = validSelected,
-                    )
-                    recomputeVisibleEntries(settings.value)
-                    return@launch
-                }
-
-                // Case 2: Browsing a specific app's /Android/(data|obb)/<pkg> on Android 11+
-                val restrictedPkgTarget = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    classifyRestrictedPackageDir(dir)
-                } else {
-                    null
-                }
-                if (restrictedPkgTarget != null && dir is VfsPath.Local) {
-                    val (pkgKind, pkgName) = restrictedPkgTarget
-                    val isPrimary = isPrimaryStorageAndroidDir(dir)
-                    val ownPkg = container.appContext.packageName
-
-                    // Priority 1a: Own package or directly readable via File
-                    if (pkgName == ownPkg) {
-                        withContext(Dispatchers.IO) {
-                            when (pkgKind) {
-                                RestrictedAndroidDirKind.DATA -> runCatching { container.appContext.getExternalFilesDir(null) }
-                                RestrictedAndroidDirKind.OBB -> runCatching { container.appContext.obbDir }
-                            }
-                        }
-                    }
-                    val directLocalResult: Pair<VfsNode?, List<VfsNode>>? = withContext(Dispatchers.IO) {
-                        val localFile = File(dir.normalized)
-                        if (pkgName == ownPkg && localFile.exists() && localFile.isDirectory && localFile.canRead()) {
-                            val st = runCatching { container.fileSystem.stat(dir) }.getOrNull()
-                            val kids = runCatching { container.fileSystem.list(dir, includeHidden = true) }.getOrNull()
-                            if (kids != null) st to kids else null
-                        } else if (localFile.exists() && localFile.isDirectory && localFile.canRead()) {
-                            val rawFiles = localFile.listFiles()
-                            if (rawFiles != null && rawFiles.isNotEmpty()) {
-                                val st = runCatching { container.fileSystem.stat(dir) }.getOrNull()
-                                val kids = runCatching { container.fileSystem.list(dir, includeHidden = true) }.getOrNull()
-                                if (kids != null) st to kids else null
-                            } else {
-                                null
-                            }
-                        } else {
-                            null
-                        }
-                    }
-                    if (directLocalResult != null) {
-                        val (dirStat, allChildren) = directLocalResult
-                        val validSelected = _browser.value.selectedPaths.intersect(allChildren.map { it.path }.toSet())
-                        _browser.value = _browser.value.copy(
-                            currentDirNode = dirStat,
-                            rawEntries = allChildren,
-                            isLoading = false,
-                            errorMessage = null,
-                            permissionRequired = false,
-                            isRestrictedAndroidDataDir = false,
-                            restrictedPackageTarget = null,
-                            selectedPaths = validSelected,
-                        )
-                        recomputeVisibleEntries(settings.value)
-                        return@launch
-                    }
-
-                    // Priority 1b: Readable via PrivilegedShellBridge (Shizuku / Root)
-                    val privilegedActive = withContext(Dispatchers.IO) {
-                        PrivilegedShellBridge.hasPrivilegedAccess(container.appContext)
-                    }
-                    if (privilegedActive) {
-                        val (privStat, privKids) = withContext(Dispatchers.IO) {
-                            val st = PrivilegedShellBridge.stat(dir.normalized)
-                                ?: VfsNode(
-                                    path = dir,
-                                    name = pkgName,
-                                    isDirectory = true,
-                                    size = 0L,
-                                    lastModified = 0L,
-                                    canRead = true,
-                                    canWrite = true,
-                                )
-                            val kids = PrivilegedShellBridge.listDirectory(dir.normalized, includeHidden = true)
-                                ?: emptyList()
-                            st.copy(canWrite = true) to kids
-                        }
-                        val validSelected = _browser.value.selectedPaths.intersect(privKids.map { it.path }.toSet())
-                        _browser.value = _browser.value.copy(
-                            currentDirNode = privStat,
-                            rawEntries = privKids,
-                            isLoading = false,
-                            errorMessage = null,
-                            permissionRequired = false,
-                            isRestrictedAndroidDataDir = false,
-                            restrictedPackageTarget = null,
-                            selectedPaths = validSelected,
-                        )
-                        recomputeVisibleEntries(settings.value)
-                        return@launch
-                    }
-
-                    // Priority 2: Per-package SAF grant (`pkg_data:<pkg>` / `pkg_obb:<pkg>`) or whole-tree SAF grant
-                    if (isPrimary) {
-                        val expectedDocId = "${pkgKind.defaultSafDocId}/$pkgName"
-                        val pkgGrant = container.persistedTreeStore.getGrant("${pkgKind.pkgGrantPrefix}$pkgName")
-                            ?: container.persistedTreeStore.grants.value.values.firstOrNull {
-                                it.rootDocumentId.equals(expectedDocId, ignoreCase = true)
-                            }
-                        val safTarget: Pair<VfsPath.Saf, String>? = if (pkgGrant != null) {
-                            pkgGrant.toVfsPath() to pkgGrant.label
-                        } else {
-                            val parentTreeGrant = container.persistedTreeStore.getGrant(pkgKind.safKey)
-                            if (parentTreeGrant != null) {
-                                val candidateSaf = VfsPath.Saf(parentTreeGrant.treeUri, expectedDocId)
-                                val existsInTree = withContext(Dispatchers.IO) {
-                                    runCatching { container.fileSystem.stat(candidateSaf) != null }.getOrDefault(false)
-                                }
-                                if (existsInTree) candidateSaf to pkgName else null
-                            } else {
-                                null
-                            }
-                        }
-
-                        if (safTarget != null) {
-                            val (safDir, safLabel) = safTarget
-                            savedStateHandle[STATE_DIR] = safDir.serialize()
-                            savedStateHandle[STATE_ROOT_NAME] = safLabel
-                            savedStateHandle[STATE_ROOT_BASE] = safDir.serialize()
-                            container.settingsRepository.update { s ->
-                                if (s.rememberLastFolder) s.copy(lastFolder = safDir.serialize()) else s
-                            }
-                            val (safStat, safKids) = withContext(Dispatchers.IO) {
-                                val st = container.fileSystem.stat(safDir)
-                                val list = container.fileSystem.list(safDir, includeHidden = true)
-                                st to list
-                            }
-                            _browser.value = _browser.value.copy(
-                                currentDir = safDir,
-                                currentDirNode = safStat,
-                                rootVolumeName = safLabel,
-                                rootVolumeBase = safDir,
-                                breadcrumbs = buildBreadcrumbs(safDir, safLabel, safDir),
-                                rawEntries = safKids,
-                                isLoading = false,
-                                errorMessage = null,
-                                permissionRequired = false,
-                                isRestrictedAndroidDataDir = false,
-                                restrictedPackageTarget = null,
-                                selectedPaths = emptySet(),
-                            )
-                            recomputeVisibleEntries(settings.value)
-                            return@launch
-                        }
-                    }
-
-                    // Priority 3: Show App Data Access & Wireless Debugging Card inside /Android/(data|obb)/<pkg>
-                    val appLabel = withContext(Dispatchers.IO) {
-                        runCatching {
-                            @Suppress("DEPRECATION")
-                            val ai = container.appContext.packageManager.getApplicationInfo(pkgName, 0)
-                            container.appContext.packageManager.getApplicationLabel(ai).toString()
-                        }.getOrDefault(pkgName)
-                    }
-                    val placeholderDirNode = VfsNode(
-                        path = dir,
-                        name = pkgName,
-                        isDirectory = true,
-                        size = 0L,
-                        lastModified = 0L,
-                        canRead = false,
-                        canWrite = false,
-                    )
-                    _browser.value = _browser.value.copy(
-                        currentDirNode = placeholderDirNode,
-                        rawEntries = emptyList(),
-                        visibleEntries = emptyList(),
-                        isLoading = false,
-                        errorMessage = null,
-                        permissionRequired = false,
-                        isRestrictedAndroidDataDir = false,
-                        restrictedPackageTarget = RestrictedPackageTarget(
-                            kind = pkgKind,
-                            packageName = pkgName,
-                            appLabel = appLabel,
-                        ),
-                        selectedPaths = emptySet(),
-                    )
-                    return@launch
-                }
-
                 // Always fetch hidden entries into rawEntries so toggling show_hidden is instant,
                 // and filter according to settings in recomputeVisibleEntries.
                 val (dirStat, allChildren) = withContext(Dispatchers.IO) {
@@ -795,8 +324,6 @@ class MainViewModel(
                     isLoading = false,
                     errorMessage = null,
                     permissionRequired = false,
-                    isRestrictedAndroidDataDir = false,
-                    restrictedPackageTarget = null,
                     selectedPaths = validSelected,
                 )
                 recomputeVisibleEntries(settings.value)
@@ -810,45 +337,7 @@ class MainViewModel(
                     isLoading = false,
                     errorMessage = msg,
                     permissionRequired = needsPerm,
-                    isRestrictedAndroidDataDir = false,
-                    restrictedPackageTarget = null,
                 )
-            }
-        }
-    }
-
-    private suspend fun ensureOwnPackageEntry(
-        byName: MutableMap<String, VfsNode>,
-        dir: VfsPath.Local,
-        restrictedKind: RestrictedAndroidDirKind,
-        isPrimary: Boolean,
-    ) {
-        val ownPkgName = container.appContext.packageName
-        if (ownPkgName in byName) return
-        val candidateUnderDir = File(File(dir.normalized), ownPkgName)
-        val fallbackOwnDir = if (isPrimary) {
-            when (restrictedKind) {
-                RestrictedAndroidDirKind.DATA ->
-                    runCatching { container.appContext.getExternalFilesDir(null)?.parentFile }.getOrNull()
-                RestrictedAndroidDirKind.OBB ->
-                    runCatching { container.appContext.obbDir }.getOrNull()
-            }
-        } else {
-            null
-        }
-        val resolvedOwnDir = when {
-            candidateUnderDir.exists() && candidateUnderDir.canRead() -> candidateUnderDir
-            fallbackOwnDir != null && fallbackOwnDir.exists() && fallbackOwnDir.canRead() -> fallbackOwnDir
-            else -> null
-        }
-        if (resolvedOwnDir != null) {
-            val ownPath = VfsPath.Local(File(File(dir.normalized), ownPkgName).path)
-                .takeIf { File(it.normalized).exists() }
-                ?: VfsPath.Local(resolvedOwnDir.path)
-            val st = runCatching { container.fileSystem.stat(ownPath) }.getOrNull()
-            if (st != null) {
-                val count = resolvedOwnDir.list()?.size ?: -1
-                byName[ownPkgName] = st.copy(name = ownPkgName, childCount = count)
             }
         }
     }

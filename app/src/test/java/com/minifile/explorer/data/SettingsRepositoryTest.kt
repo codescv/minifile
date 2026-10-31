@@ -7,6 +7,7 @@ import com.minifile.explorer.core.model.ThemeMode
 import com.minifile.explorer.core.model.ViewMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -18,6 +19,9 @@ class SettingsRepositoryTest {
         val repo1 = SettingsRepository(store)
         assertFalse(repo1.settings.value.showHidden)
         assertEquals(ViewMode.LIST, repo1.settings.value.viewMode)
+        assertEquals(8080, repo1.settings.value.httpPort)
+        assertNull(repo1.settings.value.httpRoot)
+        assertFalse(repo1.settings.value.httpReadOnly)
         assertEquals(2121, repo1.settings.value.ftpPort)
 
         repo1.update {
@@ -26,6 +30,9 @@ class SettingsRepositoryTest {
                 viewMode = ViewMode.GRID,
                 sort = SortSpec(by = SortField.SIZE, ascending = false, foldersFirst = true),
                 themeMode = ThemeMode.DARK,
+                httpPort = 8888,
+                httpRoot = "file:///storage/emulated/0/Download",
+                httpReadOnly = true,
                 ftpPort = 2222,
                 ftpPasvStart = 51000,
                 ftpPasvEnd = 51020,
@@ -52,6 +59,9 @@ class SettingsRepositoryTest {
         assertEquals(SortField.SIZE, repo2.settings.value.sort.by)
         assertFalse(repo2.settings.value.sort.ascending)
         assertEquals(ThemeMode.DARK, repo2.settings.value.themeMode)
+        assertEquals(8888, repo2.settings.value.httpPort)
+        assertEquals("file:///storage/emulated/0/Download", repo2.settings.value.httpRoot)
+        assertTrue(repo2.settings.value.httpReadOnly)
         assertEquals(2222, repo2.settings.value.ftpPort)
         assertEquals(51000, repo2.settings.value.ftpPasvStart)
         assertEquals(51020, repo2.settings.value.ftpPasvEnd)
