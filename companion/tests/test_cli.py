@@ -275,7 +275,7 @@ class TestCli(FtpServerTestCase):
         code, out, _ = self.run_cli("--version")
         self.assertEqual(code, EXIT_OK)
         self.assertIn(minifile_companion.__version__, out)
-        self.assertEqual(minifile_companion.__version__, "1.0.12")
+        self.assertEqual(minifile_companion.__version__, "1.0.13")
 
         repo_root = Path(_COMPANION_ROOT).parent
         comp_pyproject = Path(_COMPANION_ROOT) / "pyproject.toml"

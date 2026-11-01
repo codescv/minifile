@@ -641,18 +641,20 @@ class PeerDiscoveryEngine(
         for (extra in extraBroadcastTargets) {
             seen.add(extra)
         }
-        runCatching {
-            seen.add(InetSocketAddress(InetAddress.getByName("255.255.255.255"), targetDiscoveryPort))
-        }
-        runCatching {
-            val ifaces = NetworkInterface.getNetworkInterfaces()
-            while (ifaces != null && ifaces.hasMoreElements()) {
-                val nif = ifaces.nextElement()
-                if (!nif.isUp || nif.isLoopback) continue
-                for (ia in nif.interfaceAddresses) {
-                    val bcast = ia.broadcast
-                    if (bcast is Inet4Address) {
-                        seen.add(InetSocketAddress(bcast, targetDiscoveryPort))
+        if (targetDiscoveryPort in 1..65535) {
+            runCatching {
+                seen.add(InetSocketAddress(InetAddress.getByName("255.255.255.255"), targetDiscoveryPort))
+            }
+            runCatching {
+                val ifaces = NetworkInterface.getNetworkInterfaces()
+                while (ifaces != null && ifaces.hasMoreElements()) {
+                    val nif = ifaces.nextElement()
+                    if (!nif.isUp || nif.isLoopback) continue
+                    for (ia in nif.interfaceAddresses) {
+                        val bcast = ia.broadcast
+                        if (bcast is Inet4Address) {
+                            seen.add(InetSocketAddress(bcast, targetDiscoveryPort))
+                        }
                     }
                 }
             }

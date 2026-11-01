@@ -182,7 +182,7 @@ class PeerDiscoveryEngineTest {
                 portProvider = { null },
                 readOnlyProvider = { false },
                 discoveryPort = 0,
-                targetDiscoveryPort = receiverUdpPort,
+                targetDiscoveryPort = 0,
                 extraBroadcastTargets = listOf(InetSocketAddress("127.0.0.1", receiverUdpPort)),
                 clock = clock,
             ).use { browser ->
