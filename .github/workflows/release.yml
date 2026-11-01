@@ -106,6 +106,19 @@ jobs:
             echo "::error::Signing keystore SHA-1 mismatch (expected $EXPECTED_SHA1, got $ACTUAL_SHA1); refusing to publish differently-signed APK"
             exit 1
           fi
+          # Wire explicit release signingConfig env vars in app/build.gradle.kts so AGP
+          # never falls back to auto-generating a fresh debug.keystore under ANDROID_USER_HOME
+          # (which android-actions/setup-android redirects away from $HOME/.android).
+          if [ -n "${ANDROID_USER_HOME:-}" ]; then
+            mkdir -p "$ANDROID_USER_HOME"
+            cp "$HOME/.android/debug.keystore" "$ANDROID_USER_HOME/debug.keystore"
+          fi
+          {
+            echo "MINIFILE_KEYSTORE=$HOME/.android/debug.keystore"
+            echo "MINIFILE_KEYSTORE_PASSWORD=android"
+            echo "MINIFILE_KEY_ALIAS=androiddebugkey"
+            echo "MINIFILE_KEY_PASSWORD=android"
+          } >> "$GITHUB_ENV"
       - name: Build and unit-test Android app
         run: |
           ./gradlew assembleRelease testDebugUnitTest --no-daemon
