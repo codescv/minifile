@@ -34,6 +34,9 @@ object AgentFeedbackBuilder {
     const val EMAIL_PLACEHOLDER = "agent@example.com"
     const val DEFAULT_SUMMARY = "App feedback"
     const val SCREENSHOT_SUMMARY = "Screenshot feedback"
+    const val IMAGE_ATTACHMENT_SUMMARY = "Image attachment"
+    const val TITLE_LABEL = "Title"
+    const val DESCRIPTION_LABEL = "Issue Description"
     const val MAX_SUMMARY_LENGTH = 80
 
     private const val MAX_EMAIL_LENGTH = 254
@@ -109,6 +112,7 @@ object AgentFeedbackBuilder {
         fallbackBody: String = "",
         hasScreenshot: Boolean = false,
         maxLength: Int = MAX_SUMMARY_LENGTH,
+        screenshotSummary: String = SCREENSHOT_SUMMARY,
     ): String {
         val explicit = sanitizeSingleLine(rawSummary)
         val candidate = if (explicit.isNotEmpty()) {
@@ -121,7 +125,7 @@ object AgentFeedbackBuilder {
                 .orEmpty()
             when {
                 firstNonBlankLine.isNotEmpty() -> firstNonBlankLine
-                hasScreenshot -> SCREENSHOT_SUMMARY
+                hasScreenshot -> screenshotSummary.ifBlank { SCREENSHOT_SUMMARY }
                 else -> DEFAULT_SUMMARY
             }
         }
@@ -138,12 +142,14 @@ object AgentFeedbackBuilder {
         summary: String?,
         fallbackBody: String = "",
         hasScreenshot: Boolean = false,
+        screenshotSummary: String = SCREENSHOT_SUMMARY,
     ): String {
         val tag = normalizeVersionTag(versionName)
         val cleanSummary = extractSummary(
             rawSummary = summary,
             fallbackBody = fallbackBody,
             hasScreenshot = hasScreenshot,
+            screenshotSummary = screenshotSummary,
         )
         return "$PROJECT_PREFIX: [$tag] $cleanSummary"
     }
@@ -152,7 +158,9 @@ object AgentFeedbackBuilder {
         feedbackText: String,
         metadata: FeedbackMetadata,
         screenshotName: String? = null,
+        title: String? = null,
     ): String {
+        val cleanTitle = sanitizeSingleLine(title)
         val normalizedMessage = feedbackText
             .replace("\r\n", "\n")
             .replace('\r', '\n')
@@ -170,6 +178,10 @@ object AgentFeedbackBuilder {
             .joinToString(" ")
 
         return buildString {
+            if (cleanTitle.isNotEmpty()) {
+                append(TITLE_LABEL).append(": ").append(cleanTitle).append("\n\n")
+                append(DESCRIPTION_LABEL).append(":\n")
+            }
             append(messageSection)
             append("\n\n---\n")
             append("App: ").append(metadata.appName.ifBlank { "Files" })
@@ -229,23 +241,29 @@ object AgentFeedbackBuilder {
         metadata: FeedbackMetadata,
         summary: String? = null,
         screenshotName: String? = null,
+        title: String = "",
     ): BuiltAgentFeedback {
         val normalizedEmail = normalizeEmail(recipientEmail)
         require(isValidEmail(normalizedEmail)) { "Invalid Agent feedback email address." }
         val hasScreenshot = !screenshotName.isNullOrBlank()
-        require(feedbackText.isNotBlank() || !summary.isNullOrBlank() || hasScreenshot) {
-            "Feedback text or screenshot attachment is required."
+        val hasTitle = title.isNotBlank()
+        require(feedbackText.isNotBlank() || !summary.isNullOrBlank() || hasTitle || hasScreenshot) {
+            "Feedback title, text, or screenshot attachment is required."
         }
+        // Subject summary priority: explicit title > legacy summary > first non-empty line of
+        // feedbackText > "Image attachment" (image-only feedback) > DEFAULT_SUMMARY.
         val builtSubject = buildSubject(
             versionName = metadata.versionName,
-            summary = summary,
+            summary = if (hasTitle) title else summary,
             fallbackBody = feedbackText,
             hasScreenshot = hasScreenshot,
+            screenshotSummary = IMAGE_ATTACHMENT_SUMMARY,
         )
         val builtBody = buildBody(
             feedbackText = feedbackText,
             metadata = metadata,
             screenshotName = screenshotName,
+            title = title,
         )
         val uri = buildMailtoUri(
             recipientEmail = normalizedEmail,

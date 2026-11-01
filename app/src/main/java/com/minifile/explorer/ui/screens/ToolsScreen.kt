@@ -112,6 +112,7 @@ fun ToolsScreen(
     var emailDraft by rememberSaveable(settings.agentFeedbackEmail) {
         mutableStateOf(settings.agentFeedbackEmail)
     }
+    var feedbackTitle by rememberSaveable { mutableStateOf("") }
     var feedbackText by rememberSaveable { mutableStateOf("") }
     var attachedImageUri by remember { mutableStateOf<Uri?>(null) }
     var attachedImageName by remember { mutableStateOf<String?>(null) }
@@ -139,7 +140,6 @@ fun ToolsScreen(
     val normalizedDraftEmail = AgentFeedbackBuilder.normalizeEmail(emailDraft)
     val isEmailValid = AgentFeedbackBuilder.isValidEmail(normalizedDraftEmail)
     val isEmailDirty = normalizedDraftEmail != settings.agentFeedbackEmail
-    val hasFeedbackPayload = feedbackText.isNotBlank() || attachedImageUri != null
     val versionTag = AgentFeedbackBuilder.normalizeVersionTag(BuildConfig.VERSION_NAME)
 
     Scaffold(
@@ -459,10 +459,20 @@ fun ToolsScreen(
                     )
 
                     OutlinedTextField(
+                        value = feedbackTitle,
+                        onValueChange = { feedbackTitle = it },
+                        label = { Text("标题") },
+                        placeholder = { Text("简短概括问题或需求标题") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    OutlinedTextField(
                         value = feedbackText,
                         onValueChange = { feedbackText = it },
-                        label = { Text("反馈内容") },
-                        placeholder = { Text("描述遇到的 Bug、改进建议或新功能需求（首行将作为邮件摘要）") },
+                        label = { Text("问题描述") },
+                        placeholder = { Text("详细描述复现步骤、期望行为或改进建议") },
                         minLines = 3,
                         maxLines = 6,
                         modifier = Modifier.fillMaxWidth(),
@@ -501,7 +511,7 @@ fun ToolsScreen(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Filled.Close,
-                                        contentDescription = "Remove screenshot",
+                                        contentDescription = "移除图片",
                                         modifier = Modifier.size(18.dp),
                                     )
                                 }
@@ -520,7 +530,7 @@ fun ToolsScreen(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            if (attachedImageUri == null) "添加截图" else "更换截图",
+                            if (attachedImageUri == null) "增加图片" else "更换图片",
                             maxLines = 1,
                             softWrap = false,
                         )
@@ -536,6 +546,7 @@ fun ToolsScreen(
                             return@Button
                         }
                         viewModel.container.settingsRepository.setAgentFeedbackEmail(targetEmail)
+                        val currentTitle = feedbackTitle
                         val currentFeedback = feedbackText
                         val currentUri = attachedImageUri
                         val currentAttachmentName = attachedImageName
@@ -568,6 +579,7 @@ fun ToolsScreen(
                                     feedbackText = currentFeedback,
                                     metadata = metadata,
                                     screenshotName = staged?.displayName,
+                                    title = currentTitle,
                                 )
                                 launchFeedbackEmailIntent(
                                     context = context,
@@ -577,6 +589,7 @@ fun ToolsScreen(
                             }
                             sendingFeedback = false
                             result.onSuccess {
+                                feedbackTitle = ""
                                 feedbackText = ""
                                 attachedImageUri = null
                                 attachedImageName = null
@@ -588,7 +601,9 @@ fun ToolsScreen(
                             }
                         }
                     },
-                    enabled = isEmailValid && hasFeedbackPayload && !sendingFeedback,
+                    enabled = isEmailValid &&
+                        (feedbackTitle.isNotBlank() || feedbackText.isNotBlank() || attachedImageUri != null) &&
+                        !sendingFeedback,
                 ) {
                     if (sendingFeedback) {
                         CircularProgressIndicator(

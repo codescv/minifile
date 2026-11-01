@@ -165,4 +165,67 @@ class AgentFeedbackBuilderTest {
             screenshotName = null,
         )
     }
+
+    @Test
+    fun build_withTitleDescriptionAndScreenshot_usesTitleAsSubjectAndIncludesBothInBody() {
+        val built = AgentFeedbackBuilder.build(
+            recipientEmail = "agent@example.com",
+            feedbackText = "打开 50 页 PDF 后快速滑动\n页面出现闪烁",
+            metadata = sampleMetadata,
+            screenshotName = "pdf_flicker.png",
+            title = "  PDF   翻页闪烁  ",
+        )
+
+        assertEquals("minifile: [v1.0.12] PDF 翻页闪烁", built.subject)
+        assertTrue(built.body.startsWith("Title: PDF 翻页闪烁\n\nIssue Description:\n打开 50 页 PDF 后快速滑动\n页面出现闪烁"))
+        assertTrue(built.body.contains("Attachment: pdf_flicker.png"))
+        assertTrue(built.body.contains("Version: 1.0.12 (versionCode 10012)"))
+        assertTrue(URI(built.mailtoUri).rawSchemeSpecificPart.startsWith("agent@example.com?subject="))
+    }
+
+    @Test
+    fun build_titleOnly_isAcceptedAndBodyNotesMissingDescription() {
+        val built = AgentFeedbackBuilder.build(
+            recipientEmail = "agent@example.com",
+            feedbackText = "",
+            metadata = sampleMetadata,
+            title = "支持 WebDAV 书签",
+        )
+        assertEquals("minifile: [v1.0.12] 支持 WebDAV 书签", built.subject)
+        assertTrue(built.body.startsWith("Title: 支持 WebDAV 书签\n\nIssue Description:\n(No description provided)"))
+    }
+
+    @Test
+    fun build_blankTitle_fallsBackToFirstLineOrImageAttachment() {
+        val fromText = AgentFeedbackBuilder.build(
+            recipientEmail = "agent@example.com",
+            feedbackText = "\n  首行摘要  \n第二行",
+            metadata = sampleMetadata,
+            title = "   ",
+        )
+        assertEquals("minifile: [v1.0.12] 首行摘要", fromText.subject)
+        assertFalse(fromText.body.contains("Title:"))
+
+        val imageOnly = AgentFeedbackBuilder.build(
+            recipientEmail = "agent@example.com",
+            feedbackText = "",
+            metadata = sampleMetadata,
+            screenshotName = "shot.png",
+        )
+        assertEquals("minifile: [v1.0.12] Image attachment", imageOnly.subject)
+        assertTrue(imageOnly.body.startsWith("(See attached screenshot: shot.png)"))
+    }
+
+    @Test
+    fun build_legacyPositionalOverloadStillWorksWithoutTitle() {
+        val built = AgentFeedbackBuilder.build(
+            "agent@example.com",
+            "Legacy feedback line",
+            sampleMetadata,
+            null,
+            null,
+        )
+        assertEquals("minifile: [v1.0.12] Legacy feedback line", built.subject)
+        assertTrue(built.body.startsWith("Legacy feedback line\n\n---\n"))
+    }
 }
