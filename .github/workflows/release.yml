@@ -110,9 +110,15 @@ jobs:
         run: |
           ./gradlew assembleRelease testDebugUnitTest --no-daemon
           # Double-check the produced APK is signed with the pinned certificate.
-          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1)
+          if [ -x "$ANDROID_HOME/build-tools/35.0.0/apksigner" ]; then
+            APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          else
+            APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1)
+          fi
           if [ -n "$APKSIGNER" ]; then
-            APK_SHA256=$("$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk | sed -n 's/^Signer #1 certificate SHA-256 digest:[[:space:]]*//p' | head -n1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+            APKSIGNER_OUT=$("$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk)
+            printf '%s\n' "$APKSIGNER_OUT"
+            APK_SHA256=$(printf '%s\n' "$APKSIGNER_OUT" | sed -n 's/^.*certificate SHA-256 digest:[[:space:]]*//p' | head -n1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
             echo "APK signer SHA-256: $APK_SHA256"
             if [ "$APK_SHA256" != "a2be41f8d6d8ade3f4c4cc618259114bc1c50a98f94032ea5ac94c310628dcf5" ]; then
               echo "::error::Release APK signer SHA-256 mismatch (got ${APK_SHA256:-<none>}); refusing to publish"
