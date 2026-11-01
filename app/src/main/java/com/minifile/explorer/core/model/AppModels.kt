@@ -309,6 +309,7 @@ data class AppSettings(
     val updateDismissedTag: String? = null,
     val gdriveLastClientId: String = "",
     val gdriveLastClientSecret: String = "",
+    val agentFeedbackEmail: String = "",
 )
 
 enum class OperationKind {

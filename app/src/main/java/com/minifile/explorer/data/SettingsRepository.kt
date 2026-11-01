@@ -1,5 +1,6 @@
 package com.minifile.explorer.data
 
+import com.minifile.explorer.core.feedback.AgentFeedbackBuilder
 import com.minifile.explorer.core.model.AppSettings
 import com.minifile.explorer.core.model.JsonValue
 import com.minifile.explorer.core.model.KeyValueStore
@@ -58,6 +59,7 @@ class SettingsRepository(
 
         const val KEY_GDRIVE_LAST_CLIENT_ID = "gdrive_last_client_id"
         const val KEY_GDRIVE_LAST_CLIENT_SECRET = "gdrive_last_client_secret"
+        const val KEY_AGENT_FEEDBACK_EMAIL = "agent_feedback_email"
     }
 
     private data class DebugFtpOverrides(
@@ -143,6 +145,7 @@ class SettingsRepository(
             updateDismissedTag = store.getString(KEY_UPDATE_DISMISSED_TAG, null),
             gdriveLastClientId = store.getString(KEY_GDRIVE_LAST_CLIENT_ID, "") ?: "",
             gdriveLastClientSecret = store.getString(KEY_GDRIVE_LAST_CLIENT_SECRET, "") ?: "",
+            agentFeedbackEmail = AgentFeedbackBuilder.normalizeEmail(store.getString(KEY_AGENT_FEEDBACK_EMAIL, "")),
         )
     }
 
@@ -201,6 +204,11 @@ class SettingsRepository(
         update { it.copy(peerDeviceName = clean) }
     }
 
+    fun setAgentFeedbackEmail(raw: String) {
+        val normalized = AgentFeedbackBuilder.normalizeEmail(raw)
+        update { it.copy(agentFeedbackEmail = normalized) }
+    }
+
     private fun persist(s: AppSettings) {
         store.putBoolean(KEY_SHOW_HIDDEN, s.showHidden)
         store.putString(KEY_VIEW_MODE, s.viewMode.name)
@@ -247,5 +255,6 @@ class SettingsRepository(
 
         store.putString(KEY_GDRIVE_LAST_CLIENT_ID, s.gdriveLastClientId)
         store.putString(KEY_GDRIVE_LAST_CLIENT_SECRET, s.gdriveLastClientSecret)
+        store.putString(KEY_AGENT_FEEDBACK_EMAIL, AgentFeedbackBuilder.normalizeEmail(s.agentFeedbackEmail))
     }
 }

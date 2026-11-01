@@ -89,4 +89,22 @@ class SettingsRepositoryTest {
         assertEquals(generatedId, repo3.settings.value.peerDeviceId)
         assertEquals("Chii's Fold", repo3.settings.value.peerDeviceName)
     }
+
+    @Test
+    fun agentFeedbackEmail_defaultsToEmptyAndPersistsNormalizedValue() {
+        val store = InMemoryKeyValueStore()
+        val repo1 = SettingsRepository(store)
+        assertEquals("", repo1.settings.value.agentFeedbackEmail)
+
+        repo1.setAgentFeedbackEmail("  agent@example.com  ")
+        assertEquals("agent@example.com", repo1.settings.value.agentFeedbackEmail)
+        assertEquals("agent@example.com", store.getString(SettingsRepository.KEY_AGENT_FEEDBACK_EMAIL, null))
+
+        val repo2 = SettingsRepository(store)
+        assertEquals("agent@example.com", repo2.settings.value.agentFeedbackEmail)
+
+        repo2.setAgentFeedbackEmail("   ")
+        assertEquals("", repo2.settings.value.agentFeedbackEmail)
+        assertEquals("", SettingsRepository(store).settings.value.agentFeedbackEmail)
+    }
 }

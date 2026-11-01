@@ -41,6 +41,7 @@ class SecretScanTest {
             "Google OAuth client secret" to Regex("GOC" + "SPX-" + "[A-Za-z0-9_-]{20,}"),
             "Google OAuth access token" to Regex("ya" + "29\\." + "[A-Za-z0-9_-]{20,}"),
             "Google Cloud API key" to Regex("AI" + "za" + "[0-9A-Za-z_-]{35}"),
+            "Hardcoded corporate email" to Regex("[A-Za-z0-9._%+-]+@" + "google\\.com\\b", RegexOption.IGNORE_CASE),
         )
 
         private val FORBIDDEN_CORE_IMPORT = Regex("""^\s*import\s+(android|androidx|dalvik)\.""")
@@ -115,6 +116,16 @@ class SecretScanTest {
 
         val hits = scanTreeForSecrets(root)
         assertEquals("Expected 3 violations, got: $hits", 3, hits.size)
+    }
+
+    @Test
+    fun scannerDetectsSyntheticHardcodedCorporateEmail() {
+        val root = tempFolder.newFolder("synthetic_corp_email")
+        val fakeCorpEmail = "some.user" + "@" + "google.com"
+        File(root, "Config.kt").writeText("const val DEFAULT_EMAIL = \"$fakeCorpEmail\"\n")
+
+        val hits = scanTreeForSecrets(root)
+        assertEquals("Expected 1 violation, got: $hits", 1, hits.size)
     }
 
     @Test
