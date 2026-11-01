@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.0.13"
+__version__ = "1.0.14"
 
 from .client import (
     ConnectionAuthError,

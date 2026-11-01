@@ -24,8 +24,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -105,6 +107,7 @@ fun ToolsScreen(
     val settings by viewModel.settings.collectAsState()
     val updateState by viewModel.container.updateManager.state.collectAsState()
     var showNomediaScanner by remember { mutableStateOf(false) }
+    var showFeedbackDialog by rememberSaveable { mutableStateOf(false) }
 
     var emailDraft by rememberSaveable(settings.agentFeedbackEmail) {
         mutableStateOf(settings.agentFeedbackEmail)
@@ -208,218 +211,33 @@ fun ToolsScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                    ) {
-                        Text(
-                            "配置本地 Agent 反馈邮箱后，可一键发送带版本与设备信息的任务邮件（主题自动附加 ${AgentFeedbackBuilder.PROJECT_PREFIX}: [$versionTag] 前缀）。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-
-                        OutlinedTextField(
-                            value = emailDraft,
-                            onValueChange = { emailDraft = it },
-                            label = { Text("Agent 反馈邮箱") },
-                            placeholder = { Text(AgentFeedbackBuilder.EMAIL_PLACEHOLDER) },
-                            singleLine = true,
-                            isError = normalizedDraftEmail.isNotEmpty() && !isEmailValid,
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Email,
-                                imeAction = ImeAction.Done,
-                            ),
-                            trailingIcon = {
-                                if (isEmailDirty && (normalizedDraftEmail.isEmpty() || isEmailValid)) {
-                                    TextButton(
-                                        onClick = {
-                                            viewModel.container.settingsRepository.setAgentFeedbackEmail(normalizedDraftEmail)
-                                            viewModel.emitSimpleMessage(
-                                                if (normalizedDraftEmail.isEmpty()) {
-                                                    "已清除 Agent 反馈邮箱"
-                                                } else {
-                                                    "Agent 反馈邮箱已保存"
-                                                },
-                                            )
-                                        },
-                                    ) {
-                                        Text("保存")
-                                    }
-                                }
-                            },
-                            supportingText = {
-                                when {
-                                    normalizedDraftEmail.isNotEmpty() && !isEmailValid -> {
-                                        Text("请输入有效的邮箱地址（如 ${AgentFeedbackBuilder.EMAIL_PLACEHOLDER}）")
-                                    }
-                                    isEmailDirty -> {
-                                        Text("点击右侧“保存”或直接发送反馈时会自动保存在本机")
-                                    }
-                                    settings.agentFeedbackEmail.isNotEmpty() -> {
-                                        Text("仅保存在本机 SharedPreferences")
-                                    }
-                                    else -> {
-                                        Text("未设置，仅保存在本机 SharedPreferences")
-                                    }
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-
-                        OutlinedTextField(
-                            value = feedbackText,
-                            onValueChange = { feedbackText = it },
-                            label = { Text("反馈内容") },
-                            placeholder = { Text("描述遇到的 Bug、改进建议或新功能需求（首行将作为邮件摘要）") },
-                            minLines = 3,
-                            maxLines = 6,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-
-                        if (attachedImageUri != null) {
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = MaterialTheme.colorScheme.secondaryContainer,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.Image,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        text = attachedImageName ?: "screenshot.png",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    IconButton(
-                                        onClick = {
-                                            attachedImageUri = null
-                                            attachedImageName = null
-                                        },
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Close,
-                                            contentDescription = "Remove screenshot",
-                                            modifier = Modifier.size(18.dp),
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            OutlinedButton(
-                                onClick = { screenshotPickerLauncher.launch("image/*") },
-                                enabled = !sendingFeedback,
-                            ) {
+                    ListItem(
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        headlineContent = { Text("反馈给 Agent") },
+                        supportingContent = {
+                            Text(
+                                if (settings.agentFeedbackEmail.isNotEmpty()) {
+                                    "已配置邮箱：${settings.agentFeedbackEmail}"
+                                } else {
+                                    "一键发送带版本与设备信息的反馈邮件"
+                                },
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        trailingContent = {
+                            Button(onClick = { showFeedbackDialog = true }) {
                                 Icon(
-                                    imageVector = Icons.Filled.Image,
+                                    imageVector = Icons.AutoMirrored.Filled.Send,
                                     contentDescription = null,
                                     modifier = Modifier.size(18.dp),
                                 )
                                 Spacer(Modifier.width(6.dp))
-                                Text(
-                                    if (attachedImageUri == null) "添加截图" else "更换截图",
-                                    maxLines = 1,
-                                    softWrap = false,
-                                )
+                                Text("撰写反馈", maxLines = 1, softWrap = false)
                             }
-
-                            Button(
-                                onClick = {
-                                    val targetEmail = AgentFeedbackBuilder.normalizeEmail(emailDraft)
-                                    if (!AgentFeedbackBuilder.isValidEmail(targetEmail)) {
-                                        viewModel.emitSimpleMessage("请先填写有效的 Agent 反馈邮箱")
-                                        return@Button
-                                    }
-                                    viewModel.container.settingsRepository.setAgentFeedbackEmail(targetEmail)
-                                    val currentFeedback = feedbackText
-                                    val currentUri = attachedImageUri
-                                    val currentAttachmentName = attachedImageName
-                                    sendingFeedback = true
-                                    scope.launch {
-                                        val result = runCatching {
-                                            val staged = if (currentUri != null) {
-                                                withContext(Dispatchers.IO) {
-                                                    stageScreenshotForShare(
-                                                        context = context,
-                                                        sourceUri = currentUri,
-                                                        preferredName = currentAttachmentName,
-                                                    )
-                                                }
-                                            } else {
-                                                null
-                                            }
-                                            val metadata = FeedbackMetadata(
-                                                appName = "Files",
-                                                packageName = context.packageName,
-                                                versionName = BuildConfig.VERSION_NAME,
-                                                versionCode = BuildConfig.VERSION_CODE,
-                                                deviceManufacturer = Build.MANUFACTURER.orEmpty(),
-                                                deviceModel = Build.MODEL.orEmpty(),
-                                                androidRelease = Build.VERSION.RELEASE.orEmpty(),
-                                                sdkInt = Build.VERSION.SDK_INT,
-                                            )
-                                            val built = AgentFeedbackBuilder.build(
-                                                recipientEmail = targetEmail,
-                                                feedbackText = currentFeedback,
-                                                metadata = metadata,
-                                                screenshotName = staged?.displayName,
-                                            )
-                                            launchFeedbackEmailIntent(
-                                                context = context,
-                                                built = built,
-                                                stagedScreenshot = staged,
-                                            )
-                                        }
-                                        sendingFeedback = false
-                                        result.onSuccess {
-                                            feedbackText = ""
-                                            attachedImageUri = null
-                                            attachedImageName = null
-                                        }.onFailure { err ->
-                                            viewModel.emitSimpleMessage(
-                                                "无法打开邮件应用：${err.message ?: "未找到可用的邮件客户端"}",
-                                            )
-                                        }
-                                    }
-                                },
-                                enabled = isEmailValid && hasFeedbackPayload && !sendingFeedback,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                if (sendingFeedback) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        strokeWidth = 2.dp,
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.Send,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
-                                Spacer(Modifier.width(6.dp))
-                                Text("发送反馈给 Agent", maxLines = 1, softWrap = false)
-                            }
-                        }
-                    }
+                        },
+                        modifier = Modifier.clickable { showFeedbackDialog = true },
+                    )
                 }
             }
 
@@ -573,6 +391,230 @@ fun ToolsScreen(
                 }
             }
         }
+    }
+
+    if (showFeedbackDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!sendingFeedback) showFeedbackDialog = false },
+            title = { Text("反馈给 Agent") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(
+                        "配置本地 Agent 反馈邮箱后，可一键发送带版本与设备信息的任务邮件（主题自动附加 ${AgentFeedbackBuilder.PROJECT_PREFIX}: [$versionTag] 前缀）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    OutlinedTextField(
+                        value = emailDraft,
+                        onValueChange = { emailDraft = it },
+                        label = { Text("Agent 反馈邮箱") },
+                        placeholder = { Text(AgentFeedbackBuilder.EMAIL_PLACEHOLDER) },
+                        singleLine = true,
+                        isError = normalizedDraftEmail.isNotEmpty() && !isEmailValid,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Email,
+                            imeAction = ImeAction.Done,
+                        ),
+                        trailingIcon = {
+                            if (isEmailDirty && (normalizedDraftEmail.isEmpty() || isEmailValid)) {
+                                TextButton(
+                                    onClick = {
+                                        viewModel.container.settingsRepository.setAgentFeedbackEmail(normalizedDraftEmail)
+                                        viewModel.emitSimpleMessage(
+                                            if (normalizedDraftEmail.isEmpty()) {
+                                                "已清除 Agent 反馈邮箱"
+                                            } else {
+                                                "Agent 反馈邮箱已保存"
+                                            },
+                                        )
+                                    },
+                                ) {
+                                    Text("保存")
+                                }
+                            }
+                        },
+                        supportingText = {
+                            when {
+                                normalizedDraftEmail.isNotEmpty() && !isEmailValid -> {
+                                    Text("请输入有效的邮箱地址（如 ${AgentFeedbackBuilder.EMAIL_PLACEHOLDER}）")
+                                }
+                                isEmailDirty -> {
+                                    Text("点击右侧“保存”或直接发送反馈时会自动保存在本机")
+                                }
+                                settings.agentFeedbackEmail.isNotEmpty() -> {
+                                    Text("仅保存在本机 SharedPreferences")
+                                }
+                                else -> {
+                                    Text("未设置，仅保存在本机 SharedPreferences")
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    OutlinedTextField(
+                        value = feedbackText,
+                        onValueChange = { feedbackText = it },
+                        label = { Text("反馈内容") },
+                        placeholder = { Text("描述遇到的 Bug、改进建议或新功能需求（首行将作为邮件摘要）") },
+                        minLines = 3,
+                        maxLines = 6,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    if (attachedImageUri != null) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Image,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = attachedImageName ?: "screenshot.png",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconButton(
+                                    onClick = {
+                                        attachedImageUri = null
+                                        attachedImageName = null
+                                    },
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Close,
+                                        contentDescription = "Remove screenshot",
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = { screenshotPickerLauncher.launch("image/*") },
+                        enabled = !sendingFeedback,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Image,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (attachedImageUri == null) "添加截图" else "更换截图",
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val targetEmail = AgentFeedbackBuilder.normalizeEmail(emailDraft)
+                        if (!AgentFeedbackBuilder.isValidEmail(targetEmail)) {
+                            viewModel.emitSimpleMessage("请先填写有效的 Agent 反馈邮箱")
+                            return@Button
+                        }
+                        viewModel.container.settingsRepository.setAgentFeedbackEmail(targetEmail)
+                        val currentFeedback = feedbackText
+                        val currentUri = attachedImageUri
+                        val currentAttachmentName = attachedImageName
+                        sendingFeedback = true
+                        scope.launch {
+                            val result = runCatching {
+                                val staged = if (currentUri != null) {
+                                    withContext(Dispatchers.IO) {
+                                        stageScreenshotForShare(
+                                            context = context,
+                                            sourceUri = currentUri,
+                                            preferredName = currentAttachmentName,
+                                        )
+                                    }
+                                } else {
+                                    null
+                                }
+                                val metadata = FeedbackMetadata(
+                                    appName = "Files",
+                                    packageName = context.packageName,
+                                    versionName = BuildConfig.VERSION_NAME,
+                                    versionCode = BuildConfig.VERSION_CODE,
+                                    deviceManufacturer = Build.MANUFACTURER.orEmpty(),
+                                    deviceModel = Build.MODEL.orEmpty(),
+                                    androidRelease = Build.VERSION.RELEASE.orEmpty(),
+                                    sdkInt = Build.VERSION.SDK_INT,
+                                )
+                                val built = AgentFeedbackBuilder.build(
+                                    recipientEmail = targetEmail,
+                                    feedbackText = currentFeedback,
+                                    metadata = metadata,
+                                    screenshotName = staged?.displayName,
+                                )
+                                launchFeedbackEmailIntent(
+                                    context = context,
+                                    built = built,
+                                    stagedScreenshot = staged,
+                                )
+                            }
+                            sendingFeedback = false
+                            result.onSuccess {
+                                feedbackText = ""
+                                attachedImageUri = null
+                                attachedImageName = null
+                                showFeedbackDialog = false
+                            }.onFailure { err ->
+                                viewModel.emitSimpleMessage(
+                                    "无法打开邮件应用：${err.message ?: "未找到可用的邮件客户端"}",
+                                )
+                            }
+                        }
+                    },
+                    enabled = isEmailValid && hasFeedbackPayload && !sendingFeedback,
+                ) {
+                    if (sendingFeedback) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text("发送反馈给 Agent", maxLines = 1, softWrap = false)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showFeedbackDialog = false },
+                    enabled = !sendingFeedback,
+                ) {
+                    Text("取消")
+                }
+            },
+        )
     }
 
     if (showNomediaScanner) {
