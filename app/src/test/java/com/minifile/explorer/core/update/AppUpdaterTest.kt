@@ -364,4 +364,94 @@ class AppUpdaterTest {
             assertFalse(File(cancelDest.path + ".tmp").exists())
         }
     }
+
+    @Test
+    fun sha256SumsParserHandlesBinaryMarkerPathsCommentsAndCase() {
+        val hashA = "A".repeat(64)
+        val hashB = "0123456789abcdef".repeat(4)
+        val parsed = Sha256SumsParser.parse(
+            "\uFEFF# comment\n$hashA  minifile-v1.0.16-release.apk\n$hashB *dist/Minifile-Companion-v1.0.16.zip\nnot a line\n",
+        )
+        assertEquals("a".repeat(64), parsed["minifile-v1.0.16-release.apk"])
+        assertEquals(hashB, parsed["minifile-companion-v1.0.16.zip"])
+        assertEquals(2, parsed.size)
+        assertTrue(Sha256SumsParser.isValidHex64(hashB))
+        assertFalse(Sha256SumsParser.isValidHex64("abc"))
+        assertFalse(Sha256SumsParser.isValidHex64(null))
+    }
+
+    @Test
+    fun checkFetchesSha256SumsAndDownloadVerifiesApkDigestBeforeValidator() {
+        val apkBytes = buildValidApkBytes(8 * 1024)
+        val apkFileForHash = tempFolder.newFile("hash-src.apk").apply { writeBytes(apkBytes) }
+        val goodSha = AppUpdater.sha256HexOfFile(apkFileForHash)
+        server.route("/apk.bin") { HttpResponse(200, body = apkBytes) }
+        server.route("/SHA256SUMS.txt") {
+            HttpResponse(200, body = "$goodSha  minifile-v1.1.0-release.apk\n".toByteArray())
+        }
+        server.route("/releases/latest") {
+            val body = """
+                {
+                  "tag_name": "v1.1.0",
+                  "prerelease": false,
+                  "draft": false,
+                  "assets": [
+                    {"name": "minifile-v1.1.0-release.apk", "browser_download_url": "http://127.0.0.1:$port/apk.bin", "size": ${apkBytes.size}},
+                    {"name": "SHA256SUMS.txt", "browser_download_url": "http://127.0.0.1:$port/SHA256SUMS.txt", "size": 100}
+                  ]
+                }
+            """.trimIndent().toByteArray()
+            HttpResponse(200, mapOf("Content-Type" to "application/json"), body)
+        }
+        val updater = AppUpdater(
+            latestUrl = "http://127.0.0.1:$port/releases/latest",
+            listUrl = "",
+            allowInsecureLoopback = true,
+        )
+        val check = updater.checkLatestRelease("1.0.16")
+        assertTrue(check.updateAvailable)
+        assertEquals(goodSha, check.expectedSha256)
+
+        val dir = tempFolder.newFolder("sha")
+        var validatorCalls = 0
+        val ok = updater.downloadApk(
+            url = check.apk!!.url,
+            dest = File(dir, "ok.apk"),
+            expectedSize = check.apk!!.size,
+            expectedSha256 = check.expectedSha256,
+            validator = { validatorCalls++ },
+        )
+        assertTrue(ok.isFile)
+        assertEquals(1, validatorCalls)
+
+        // Mismatched digest: VERIFY_FAILED, validator never called, .tmp + dest cleaned up
+        val badDest = File(dir, "bad.apk")
+        try {
+            updater.downloadApk(
+                url = check.apk!!.url,
+                dest = badDest,
+                expectedSize = check.apk!!.size,
+                expectedSha256 = "0".repeat(64),
+                validator = { validatorCalls++ },
+            )
+            fail("Expected VERIFY_FAILED on SHA-256 mismatch")
+        } catch (e: UpdateException) {
+            assertEquals(UpdateErrorCode.VERIFY_FAILED, e.code)
+            assertTrue(e.message.orEmpty().contains("SHA-256"))
+            assertEquals(1, validatorCalls)
+            assertFalse(badDest.exists())
+            assertFalse(File(badDest.path + ".tmp").exists())
+        }
+
+        // SHA256SUMS.txt without an entry for the APK fails closed at check time
+        server.route("/SHA256SUMS.txt") {
+            HttpResponse(200, body = "$goodSha  something-else.apk\n".toByteArray())
+        }
+        try {
+            updater.checkLatestRelease("1.0.16")
+            fail("Expected VERIFY_FAILED when SHA256SUMS.txt lacks the APK entry")
+        } catch (e: UpdateException) {
+            assertEquals(UpdateErrorCode.VERIFY_FAILED, e.code)
+        }
+    }
 }

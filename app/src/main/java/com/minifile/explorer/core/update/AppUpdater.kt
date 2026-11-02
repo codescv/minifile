@@ -10,12 +10,15 @@ import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.UnknownHostException
 import java.net.UnknownServiceException
+import java.security.MessageDigest
+import java.util.Locale
 import java.util.zip.ZipFile
 
 /**
  * Pure-JVM GitHub Releases updater (`ARCHITECTURE.md` §11.1).
  * Strictly enforces HTTPS, manual redirect cap (≤5 hops, no downgrade), 2 MiB JSON cap,
  * download size & ZIP/APK structure verification (`PK\x03\x04` + `AndroidManifest.xml`),
+ * `SHA256SUMS.txt` SHA-256 verification (when attached to the release, `v1.0.16`),
  * caller signature/package [validator], and atomic `.tmp` rename.
  */
 class AppUpdater(
@@ -33,10 +36,25 @@ class AppUpdater(
         val APK_MAGIC = byteArrayOf(0x50, 0x4B, 0x03, 0x04)
         const val BUFFER_SIZE = 64 * 1024
         const val MAX_JSON_BYTES = 2 * 1024 * 1024
+        const val MAX_CHECKSUM_BYTES = 256 * 1024
         const val MAX_UNKNOWN_SIZE_BYTES = 512L * 1024 * 1024
 
         private const val PROGRESS_INTERVAL_MS = 100L
         private const val PROGRESS_INTERVAL_BYTES = 256L * 1024
+
+        /** Lower-case hex SHA-256 of [file]'s bytes. */
+        fun sha256HexOfFile(file: File): String {
+            val md = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { ins ->
+                val buf = ByteArray(BUFFER_SIZE)
+                while (true) {
+                    val n = ins.read(buf)
+                    if (n < 0) break
+                    if (n > 0) md.update(buf, 0, n)
+                }
+            }
+            return md.digest().joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+        }
     }
 
     fun checkLatestRelease(
@@ -80,11 +98,31 @@ class AppUpdater(
 
         val apk = ReleaseParser.pickApk(latest, allowInsecureLoopback = allowInsecureLoopback)
         val newer = SemanticVersion.isNewerVersion(baseVersion, latest.tagName)
+
+        // v1.0.16: fetch SHA256SUMS.txt (published by release.yml) so the APK's SHA-256 is verified
+        // before the signature check and the direct install.
+        var expectedSha256: String? = null
+        val checksumsAsset = ReleaseParser.pickChecksums(latest, allowInsecureLoopback = allowInsecureLoopback)
+        if (newer && apk != null && checksumsAsset != null) {
+            val sumsRaw = fetchJson(
+                url = checksumsAsset.url,
+                headers = headers + ("Accept" to "application/octet-stream"),
+                cancel = cancel,
+                timeoutMs = timeoutMs,
+                maxBytes = MAX_CHECKSUM_BYTES,
+            )
+            expectedSha256 = Sha256SumsParser.parse(sumsRaw)[apk.name.lowercase(Locale.ROOT)]
+                ?: throw UpdateException(
+                    UpdateErrorCode.VERIFY_FAILED,
+                    "SHA256SUMS.txt does not contain an entry for ${apk.name}",
+                )
+        }
         return UpdateCheckResult(
             currentVersion = baseVersion,
             latest = latest,
             apk = apk,
             updateAvailable = newer,
+            expectedSha256 = expectedSha256,
         )
     }
 
@@ -95,9 +133,13 @@ class AppUpdater(
         cancel: CancelToken? = null,
         connectTimeoutMs: Int = 20_000,
         readTimeoutMs: Int = 60_000,
+        expectedSha256: String? = null,
         validator: (File) -> Unit = {},
         onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): File {
+        if (expectedSha256 != null && !Sha256SumsParser.isValidHex64(expectedSha256)) {
+            throw UpdateException(UpdateErrorCode.VERIFY_FAILED, "Invalid expected SHA-256 digest")
+        }
         dest.parentFile?.mkdirs()
         val tmp = File(dest.path + ".tmp")
         tmp.delete()
@@ -136,6 +178,19 @@ class AppUpdater(
 
             val written = streamToFile(conn.inputStream, tmp, total, cancel, onProgress)
             verifyZipApk(tmp, written, total, expectedSize)
+            if (expectedSha256 != null) {
+                val actual = sha256HexOfFile(tmp)
+                if (!MessageDigest.isEqual(
+                        actual.toByteArray(Charsets.US_ASCII),
+                        expectedSha256.trim().lowercase(Locale.ROOT).toByteArray(Charsets.US_ASCII),
+                    )
+                ) {
+                    throw UpdateException(
+                        UpdateErrorCode.VERIFY_FAILED,
+                        "SHA-256 checksum mismatch (expected ${expectedSha256.trim().take(12)}…, got ${actual.take(12)}…)",
+                    )
+                }
+            }
             validator(tmp)
 
             dest.delete()
@@ -160,13 +215,14 @@ class AppUpdater(
         headers: Map<String, String>,
         cancel: CancelToken?,
         timeoutMs: Int,
+        maxBytes: Int = MAX_JSON_BYTES,
     ): String {
         var conn: HttpURLConnection? = null
         try {
             conn = openFollowingRedirects(url, headers, cancel, timeoutMs, timeoutMs)
             val status = conn.responseCode
             if (status !in 200..299) throw httpError(conn, status)
-            val text = readLimited(conn.inputStream, MAX_JSON_BYTES, cancel)
+            val text = readLimited(conn.inputStream, maxBytes, cancel)
             if (cancel?.isCancelled == true) throw cancelled()
             return text
         } catch (e: Exception) {

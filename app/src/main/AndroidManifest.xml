@@ -23,6 +23,28 @@
         tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Android 11+ package visibility: Agent Feedback resolves the user's email app (mailto: probe)
+         and its ACTION_SEND compose activity so image feedback opens email compose directly (v1.0.16). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="mailto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="message/rfc822" />
+        </intent>
+        <package android:name="com.google.android.gm" />
+    </queries>
+
     <application
         android:name=".MiniFileApplication"
         android:allowBackup="false"

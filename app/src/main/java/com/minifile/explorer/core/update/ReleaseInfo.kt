@@ -4,6 +4,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.net.URL
+import java.util.Locale
 
 @Serializable
 data class ReleaseAsset(
@@ -33,7 +34,35 @@ data class UpdateCheckResult(
     val latest: ReleaseJson,
     val apk: ReleaseAsset?,
     val updateAvailable: Boolean,
+    /** Lower-case hex SHA-256 of [apk] from the release's `SHA256SUMS.txt`, or `null` if not attached. */
+    val expectedSha256: String? = null,
 )
+
+/**
+ * Parses `sha256sum`-style `SHA256SUMS.txt` manifests (`<64 hex>  [*]<file>`) published by
+ * `.github/workflows/release.yml` into `lower-case basename -> lower-case hex digest`.
+ */
+object Sha256SumsParser {
+    private val HEX_64 = Regex("""^[0-9a-fA-F]{64}$""")
+    private val LINE_SPLIT = Regex("""^([0-9a-fA-F]{64})\s+\*?(.+)$""")
+
+    fun parse(rawText: String): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        for (rawLine in rawText.removePrefix("\uFEFF").lineSequence()) {
+            val trimmed = rawLine.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) continue
+            val m = LINE_SPLIT.matchEntire(trimmed) ?: continue
+            val hash = m.groupValues[1].lowercase(Locale.ROOT)
+            val filePart = m.groupValues[2].trim().replace('\\', '/').substringAfterLast('/')
+            if (filePart.isNotEmpty()) {
+                out[filePart.lowercase(Locale.ROOT)] = hash
+            }
+        }
+        return out
+    }
+
+    fun isValidHex64(s: String?): Boolean = s != null && HEX_64.matches(s.trim())
+}
 
 object ReleaseParser {
     const val DEFAULT_RELEASE_HTML_URL = "https://github.com/codescv/minifile/releases"

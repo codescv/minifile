@@ -11,6 +11,8 @@ import androidx.core.content.FileProvider
 import com.minifile.explorer.BuildConfig
 import com.minifile.explorer.core.update.AppUpdater
 import com.minifile.explorer.core.update.CancelToken
+import com.minifile.explorer.core.update.DirectInstallAction
+import com.minifile.explorer.core.update.DirectInstallCoordinator
 import com.minifile.explorer.core.update.ReleaseAsset
 import com.minifile.explorer.core.update.ReleaseJson
 import com.minifile.explorer.core.update.SemanticVersion
@@ -35,7 +37,12 @@ sealed interface UpdateUiState {
     data object Idle : UpdateUiState
     data object Checking : UpdateUiState
     data class UpToDate(val checkedAtMs: Long) : UpdateUiState
-    data class Available(val release: ReleaseJson, val asset: ReleaseAsset) : UpdateUiState
+    data class Available(
+        val release: ReleaseJson,
+        val asset: ReleaseAsset,
+        /** Expected APK SHA-256 from the release's `SHA256SUMS.txt` (`null` when not attached). */
+        val expectedSha256: String? = null,
+    ) : UpdateUiState
     data class Downloading(
         val release: ReleaseJson,
         val asset: ReleaseAsset,
@@ -93,7 +100,7 @@ class UpdateManager(
 
     private var activeCancelToken: CancelToken? = null
     private var activeJob: Job? = null
-    private var pendingInstallAfterSettings = false
+    private val directInstallCoordinator = DirectInstallCoordinator()
     private var startupCheckedThisProcess = false
 
     val updatesDir: File
@@ -149,10 +156,18 @@ class UpdateManager(
                     } else {
                         // Reuse already-verified cached APK if present
                         val cached = cachedApkFileForTag(result.latest.tagName)
-                        if (cached.isFile && runCatching { ApkValidator.validate(appContext, cached) }.isSuccess) {
+                        val expectedSha = result.expectedSha256
+                        val cachedVerified = withContext(Dispatchers.IO) {
+                            cached.isFile &&
+                                (expectedSha == null || runCatching {
+                                    AppUpdater.sha256HexOfFile(cached).equals(expectedSha, ignoreCase = true)
+                                }.getOrDefault(false)) &&
+                                runCatching { ApkValidator.validate(appContext, cached) }.isSuccess
+                        }
+                        if (cachedVerified) {
                             _state.value = UpdateUiState.Ready(result.latest, cached)
                         } else {
-                            _state.value = UpdateUiState.Available(result.latest, asset)
+                            _state.value = UpdateUiState.Available(result.latest, asset, expectedSha)
                         }
                         if (!force && settingsRepository.settings.value.updateDismissedTag != result.latest.tagName) {
                             _silentAvailablePrompt.tryEmit(result.latest)
@@ -185,6 +200,12 @@ class UpdateManager(
         settingsRepository.update { it.copy(updateDismissedTag = tagName) }
     }
 
+    /**
+     * Downloads the APK, verifies it (size + ZIP structure + `SHA256SUMS.txt` SHA-256 + package/version/
+     * signing certificate) and then immediately invokes [onReadyToInstall] so the caller launches the
+     * system installer without a second tap (`v1.0.16`). [UpdateUiState.Ready] is still published so the
+     * `Install update` button can re-trigger installation if the user dismissed the installer dialog.
+     */
     fun download(onReadyToInstall: ((File) -> Unit)? = null) {
         val current = _state.value as? UpdateUiState.Available ?: return
         activeJob?.cancel()
@@ -210,6 +231,7 @@ class UpdateManager(
                         dest = dest,
                         expectedSize = asset.size,
                         cancel = token,
+                        expectedSha256 = current.expectedSha256,
                         validator = { tmpFile ->
                             scope.launch { _state.value = UpdateUiState.Verifying(release) }
                             ApkValidator.validate(appContext, tmpFile)
@@ -232,7 +254,7 @@ class UpdateManager(
             } catch (e: UpdateException) {
                 dest.delete()
                 if (e.code == UpdateErrorCode.CANCELLED) {
-                    _state.value = UpdateUiState.Available(release, asset)
+                    _state.value = UpdateUiState.Available(release, asset, current.expectedSha256)
                 } else {
                     _state.value = UpdateUiState.Error(
                         code = e.code,
@@ -255,31 +277,58 @@ class UpdateManager(
         activeCancelToken?.cancel()
     }
 
+    /**
+     * Launches the system package installer for the verified [UpdateUiState.Ready] APK right away. If the
+     * unknown-sources permission is missing, returns [InstallLaunchResult.NeedsUnknownSourcesPermission]
+     * (the caller opens `ACTION_MANAGE_UNKNOWN_APP_SOURCES` directly) and remembers the APK so
+     * [onHostResume] installs it automatically once the user grants permission and returns.
+     */
     fun launchInstaller(context: Context): InstallLaunchResult {
         val ready = _state.value as? UpdateUiState.Ready
             ?: return InstallLaunchResult.Failed("No verified update ready to install.")
         if (!ready.apkFile.isFile) {
+            directInstallCoordinator.clearPending()
             _state.value = UpdateUiState.Idle
             return InstallLaunchResult.Failed("Cached update APK was removed; please check again.")
         }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-            !appContext.packageManager.canRequestPackageInstalls()
-        ) {
-            pendingInstallAfterSettings = true
-            val settingsIntent = Intent(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${appContext.packageName}"),
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            return InstallLaunchResult.NeedsUnknownSourcesPermission(settingsIntent)
+        return when (val action = directInstallCoordinator.onApkVerified(ready.apkFile, canRequestPackageInstalls())) {
+            is DirectInstallAction.LaunchInstaller -> startInstallerActivity(context, action.apkFile)
+            is DirectInstallAction.RequestInstallPermission ->
+                InstallLaunchResult.NeedsUnknownSourcesPermission(buildUnknownSourcesSettingsIntent())
+            DirectInstallAction.None -> InstallLaunchResult.Failed("No verified update ready to install.")
         }
+    }
 
-        pendingInstallAfterSettings = false
+    /**
+     * Called from `MainActivity.onResume`: auto-installs an APK left pending while the user granted the
+     * unknown-sources permission. Returns `null` when nothing was pending (or permission still missing).
+     */
+    fun onHostResume(context: Context): InstallLaunchResult? {
+        if (!directInstallCoordinator.pendingInstallAfterSettings) return null
+        return when (val action = directInstallCoordinator.onAppForegrounded(canRequestPackageInstalls())) {
+            is DirectInstallAction.LaunchInstaller -> startInstallerActivity(context, action.apkFile)
+            else -> null
+        }
+    }
+
+    private fun canRequestPackageInstalls(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || appContext.packageManager.canRequestPackageInstalls()
+
+    private fun buildUnknownSourcesSettingsIntent(): Intent = Intent(
+        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+        Uri.parse("package:${appContext.packageName}"),
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    private fun startInstallerActivity(context: Context, apkFile: File): InstallLaunchResult {
+        if (!apkFile.isFile) {
+            _state.value = UpdateUiState.Idle
+            return InstallLaunchResult.Failed("Cached update APK was removed; please check again.")
+        }
         return try {
             val contentUri = FileProvider.getUriForFile(
                 appContext,
                 "${appContext.packageName}.fileprovider",
-                ready.apkFile,
+                apkFile,
             )
             val installIntent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(contentUri, "application/vnd.android.package-archive")
@@ -289,17 +338,6 @@ class UpdateManager(
             InstallLaunchResult.Launched
         } catch (e: Exception) {
             InstallLaunchResult.Failed(e.message ?: "Could not launch system package installer.")
-        }
-    }
-
-    fun onHostResume(context: Context) {
-        if (pendingInstallAfterSettings) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
-                appContext.packageManager.canRequestPackageInstalls()
-            ) {
-                pendingInstallAfterSettings = false
-                launchInstaller(context)
-            }
         }
     }
 

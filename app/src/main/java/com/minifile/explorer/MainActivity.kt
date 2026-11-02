@@ -71,6 +71,7 @@ import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
 import com.minifile.explorer.data.gdrive.GDriveSignInState
+import com.minifile.explorer.data.update.InstallLaunchResult
 import com.minifile.explorer.data.update.UpdateUiState
 import com.minifile.explorer.service.FtpServerHolder
 import com.minifile.explorer.service.HttpServerHolder
@@ -157,7 +158,11 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         val container = (application as MiniFileApplication).container
-        container.updateManager.onHostResume(this)
+        // v1.0.16: auto-install the verified update APK once 'Install unknown apps' was granted.
+        val resumedInstall = container.updateManager.onHostResume(this)
+        if (resumedInstall is InstallLaunchResult.Failed) {
+            viewModel.emitSimpleMessage(resumedInstall.message)
+        }
         viewModel.refreshVolumes()
         if (viewModel.browser.value.currentDir != null) {
             viewModel.reloadCurrentDirectory(silent = true)
@@ -244,8 +249,6 @@ private fun MiniFileRoot(
     val snackbarHostState = remember { SnackbarHostState() }
     var pendingSafMount by remember { mutableStateOf<SafMountRequest?>(null) }
     var pendingGoogleAccountPick by remember { mutableStateOf<GoogleAccountPickRequest?>(null) }
-    var unknownSourcesIntent by remember { mutableStateOf<Intent?>(null) }
-
     var showActiveOpsSheet by remember { mutableStateOf(false) }
     var dismissedOpIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -591,7 +594,19 @@ private fun MiniFileRoot(
                                 viewModel = viewModel,
                                 onGrantAllFilesAccess = requestAllFilesAccess,
                                 onRequestUnknownSourcesPermission = { intent ->
-                                    unknownSourcesIntent = intent
+                                    // Open 'Install unknown apps' directly (no extra confirmation tap); the
+                                    // verified APK stays pending and installs automatically on return.
+                                    runCatching { context.startActivity(intent) }
+                                        .onSuccess {
+                                            viewModel.emitSimpleMessage(
+                                                "Allow 'Install unknown apps' for Files, then return to install the update automatically",
+                                            )
+                                        }
+                                        .onFailure { e ->
+                                            viewModel.emitSimpleMessage(
+                                                "Could not open install permission settings: ${e.message ?: e.javaClass.simpleName}",
+                                            )
+                                        }
                                 },
                             )
                         }
@@ -650,34 +665,6 @@ private fun MiniFileRoot(
             onDismiss = {
                 dismissedOpIds = dismissedOpIds + activeOps.map { it.id }
                 showActiveOpsSheet = false
-            },
-        )
-    }
-
-    if (unknownSourcesIntent != null) {
-        val targetIntent = unknownSourcesIntent!!
-        AlertDialog(
-            onDismissRequest = { unknownSourcesIntent = null },
-            title = { Text("Allow installing updates") },
-            text = {
-                Text(
-                    "To install verified MiniFile updates directly, allow 'Install unknown apps' for MiniFile in Android Settings, then return here.",
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        unknownSourcesIntent = null
-                        runCatching { context.startActivity(targetIntent) }
-                    },
-                ) {
-                    Text("Open Settings")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { unknownSourcesIntent = null }) {
-                    Text("Cancel")
-                }
             },
         )
     }

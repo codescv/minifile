@@ -32,7 +32,7 @@ Minimalist, offline-first **Android File Manager** with **Google Drive & FTP Rem
 - **Favorites & 1-Tap Copy/Move to Favorite**:
   - Bookmark local, SAF, FTP, or Google Drive folders and files directly in Browse's **Recent Favorites** section (with inline Rename, Properties, Move up/down, Remove, and full Favorites screen via `See all →`), and copy or move any selection directly to a Favorite folder in one tap via `FavoritePickerSheet`.
 - **Verified Updates via GitHub Releases**:
-  - Opt-out GitHub Releases checker (`https://github.com/codescv/minifile/releases`) enforcing HTTPS-only manual redirect validation, `SHA256SUMS.txt` verification (PC Companion), and APK package + `versionCode` + signing-certificate verification (Android).
+  - Opt-out GitHub Releases checker (`https://github.com/codescv/minifile/releases`) enforcing HTTPS-only manual redirect validation, `SHA256SUMS.txt` verification (PC Companion and Android APK, `v1.0.16`), and APK package + `versionCode` + signing-certificate verification (Android).
 
 ---
 
@@ -44,8 +44,8 @@ Grab the latest release from [**GitHub Releases**](https://github.com/codescv/mi
 
 | Asset | Description |
 |-------|-------------|
-| `minifile-v1.0.15-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
-| `minifile-companion-v1.0.15.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
+| `minifile-v1.0.16-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
+| `minifile-companion-v1.0.16.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
 | `SHA256SUMS.txt` | SHA-256 checksums for release assets |
 
 ### Install PC Companion with `uv` (Recommended)
