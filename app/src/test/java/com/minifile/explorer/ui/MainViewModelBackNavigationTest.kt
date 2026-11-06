@@ -339,4 +339,178 @@ class MainViewModelBackNavigationTest {
         restoredVm.handleBack()
         assertNull(restoredVm.browser.value.currentDir)
     }
+
+    // --- v1.0.17: main tab HorizontalPager swipe + Back interplay ---
+
+    /** Simulates a settled user swipe exactly like MiniFileRoot's settledPage collector. */
+    private fun swipeTo(vm: MainViewModel, state: MainTabPagerSyncState, page: Int): MainTabPagerSyncState {
+        val settle = MainTabPagerSync.onPageSettled(state, page, vm.activeTab.value)
+        settle.tabToSelect?.let { vm.selectTab(it) }
+        return settle.state
+    }
+
+    @Test
+    fun swipeFromBrowseSubfolderWithSearchAndSelection_backReturnsToBrowsePreservingEverything() = runBlocking {
+        val vm = createViewModel()
+        val folder = File(primaryRootFile, "Pictures/Camera").apply { mkdirs() }
+        val photo = File(folder, "IMG_0001.jpg").apply { writeText("x") }
+        File(folder, "IMG_0002.jpg").writeText("y")
+        val folderPath = VfsPath.Local(folder.absolutePath)
+        val photoPath = VfsPath.Local(photo.absolutePath)
+
+        vm.openVolume(vm.volumes.value.single())
+        vm.navigateToDirectory(folderPath)
+        vm.openSearch()
+        vm.updateSearchQuery("IMG")
+        vm.toggleSelection(photoPath)
+        assertTrue(vm.browser.value.isSelectionMode)
+
+        for (targetPage in listOf(1, 2)) {
+            var sync = MainTabPagerSync.initialState(vm.activeTab.value)
+            sync = swipeTo(vm, sync, 1)
+            if (targetPage == 2) sync = swipeTo(vm, sync, 2)
+            assertEquals(MainTabPagerSync.tabAt(targetPage), vm.activeTab.value)
+            assertEquals(targetPage, sync.syncedPage)
+            // Swiping never mutates browser state.
+            assertEquals(folderPath, vm.browser.value.currentDir)
+            assertTrue(vm.browser.value.searchActive)
+            assertEquals("IMG", vm.browser.value.searchQuery)
+            assertEquals(setOf(photoPath), vm.browser.value.selectedPaths)
+            assertTrue(vm.canHandleBack())
+
+            // Back from Transfer/Settings -> Browse, nothing else consumed.
+            vm.handleBack()
+            assertEquals(MainTab.BROWSE, vm.activeTab.value)
+            assertNull(vm.overlay.value)
+            assertEquals(folderPath, vm.browser.value.currentDir)
+            assertTrue(vm.browser.value.searchActive)
+            assertEquals(setOf(photoPath), vm.browser.value.selectedPaths)
+        }
+
+        // Then the regular Browse back chain: selection -> search -> folder -> ... -> Storage Home.
+        vm.handleBack()
+        assertFalse(vm.browser.value.isSelectionMode)
+        assertTrue(vm.browser.value.searchActive)
+        vm.handleBack()
+        assertFalse(vm.browser.value.searchActive)
+        assertEquals(folderPath, vm.browser.value.currentDir)
+        vm.handleBack()
+        assertEquals(primaryRootPath, vm.browser.value.currentDir)
+        vm.handleBack()
+        assertNull(vm.browser.value.currentDir)
+        assertFalse(vm.canHandleBack())
+    }
+
+    @Test
+    fun swipeBackToBrowse_keepsSelectionAndFolderWithoutAnyBackPress() = runBlocking {
+        val vm = createViewModel()
+        val folder = File(primaryRootFile, "Download").apply { mkdirs() }
+        val file = File(folder, "a.txt").apply { writeText("a") }
+        vm.navigateToDirectory(VfsPath.Local(folder.absolutePath))
+        vm.toggleSelection(VfsPath.Local(file.absolutePath))
+
+        var sync = MainTabPagerSync.initialState(vm.activeTab.value)
+        sync = swipeTo(vm, sync, 1)
+        assertEquals(MainTab.WIRELESS, vm.activeTab.value)
+        sync = swipeTo(vm, sync, 0)
+        assertEquals(MainTab.BROWSE, vm.activeTab.value)
+        assertEquals(0, sync.syncedPage)
+        assertEquals(VfsPath.Local(folder.absolutePath), vm.browser.value.currentDir)
+        assertEquals(setOf(VfsPath.Local(file.absolutePath)), vm.browser.value.selectedPaths)
+    }
+
+    @Test
+    fun swipeToToolsFromStorageHome_backReturnsToBrowseThenNothingLeftToHandle() = runBlocking {
+        val vm = createViewModel()
+        assertFalse(vm.canHandleBack())
+        var sync = MainTabPagerSync.initialState(vm.activeTab.value)
+        sync = swipeTo(vm, sync, 1)
+        sync = swipeTo(vm, sync, 2)
+        assertEquals(MainTab.TOOLS, vm.activeTab.value)
+        assertTrue(vm.canHandleBack())
+
+        vm.handleBack()
+        assertEquals(MainTab.BROWSE, vm.activeTab.value)
+        // The VM -> pager effect for this Back is a direct snap 2 -> 0 (WIRELESS never selected).
+        val change = MainTabPagerSync.onActiveTabChanged(sync, vm.activeTab.value, pagerCurrentPage = 2, pagerScrolling = false, pagerVisible = true)
+        assertEquals(MainTabPagerCommand.SnapTo(0), change.command)
+        assertFalse(vm.canHandleBack())
+    }
+
+    @Test
+    fun swipedTabIsPersistedInSavedStateHandleAndRestored() = runBlocking {
+        val handle = SavedStateHandle()
+        val vm = createViewModel(savedStateHandle = handle)
+        var sync = MainTabPagerSync.initialState(vm.activeTab.value)
+        sync = swipeTo(vm, sync, 1)
+        assertEquals("WIRELESS", handle.get<String>("saved_tab"))
+        sync = swipeTo(vm, sync, 2)
+        assertEquals("TOOLS", handle.get<String>("saved_tab"))
+
+        val restored = createViewModel(savedStateHandle = SavedStateHandle(mapOf("saved_tab" to "TOOLS")))
+        assertEquals(MainTab.TOOLS, restored.activeTab.value)
+        // rememberPagerState(initialPage = activeTab.ordinal) starts on the restored page.
+        assertEquals(2, MainTabPagerSync.initialState(restored.activeTab.value).syncedPage)
+
+        val garbage = createViewModel(savedStateHandle = SavedStateHandle(mapOf("saved_tab" to "NOPE")))
+        assertEquals(MainTab.BROWSE, garbage.activeTab.value)
+    }
+
+    @Test
+    fun overlayOpenedFromSwipedTab_closesBackToSameTabAndBrowserState() = runBlocking {
+        val vm = createViewModel()
+        val folder = File(primaryRootFile, "Docs").apply { mkdirs() }
+        val txt = File(folder, "notes.txt").apply { writeText("hi") }
+        val folderPath = VfsPath.Local(folder.absolutePath)
+        vm.navigateToDirectory(folderPath)
+
+        var sync = MainTabPagerSync.initialState(vm.activeTab.value)
+        sync = swipeTo(vm, sync, 1)
+        assertEquals(MainTab.WIRELESS, vm.activeTab.value)
+
+        vm.openOverlay(OverlayScreen.TextEditor(VfsPath.Local(txt.absolutePath)))
+        // Overlay shown: pager hidden; tab unchanged so no pager command.
+        val hidden = MainTabPagerSync.onActiveTabChanged(sync, vm.activeTab.value, 1, false, pagerVisible = false)
+        assertEquals(MainTabPagerCommand.None, hidden.command)
+        sync = hidden.state
+
+        vm.handleBack()
+        assertNull(vm.overlay.value)
+        assertEquals(MainTab.WIRELESS, vm.activeTab.value)
+        assertEquals(folderPath, vm.browser.value.currentDir)
+        val shown = MainTabPagerSync.onActiveTabChanged(sync, vm.activeTab.value, 1, false, pagerVisible = true)
+        assertEquals(MainTabPagerCommand.None, shown.command)
+
+        vm.handleBack()
+        assertEquals(MainTab.BROWSE, vm.activeTab.value)
+        assertEquals(folderPath, vm.browser.value.currentDir)
+    }
+
+    @Test
+    fun crossTabFavoriteBackNavigation_restoresOriginTabAndDrivesPager() = runBlocking {
+        val vm = createViewModel()
+        val favDir = File(primaryRootFile, "Shared/Inbox")
+        val fav = addFolderFavorite(vm, "Inbox", favDir)
+
+        var sync = MainTabPagerSync.initialState(vm.activeTab.value)
+        sync = swipeTo(vm, sync, 1)
+        sync = swipeTo(vm, sync, 2)
+        assertEquals(MainTab.TOOLS, vm.activeTab.value)
+
+        // Opening a favorite folder from another tab jumps to Browse (snap 2 -> 0).
+        vm.openFavoriteInBrowse(fav)
+        assertEquals(MainTab.BROWSE, vm.activeTab.value)
+        var change = MainTabPagerSync.onActiveTabChanged(sync, vm.activeTab.value, 2, false, true)
+        assertEquals(MainTabPagerCommand.SnapTo(0), change.command)
+        sync = MainTabPagerSync.onProgrammaticScrollFinished(change.state, 0)
+        assertEquals(MainTabPagerSyncState(syncedPage = 0), sync)
+
+        // Back returns to the origin tab (TOOLS) via navigateUpOrHome(): snap 0 -> 2 again.
+        vm.handleBack()
+        assertEquals(MainTab.TOOLS, vm.activeTab.value)
+        change = MainTabPagerSync.onActiveTabChanged(sync, vm.activeTab.value, 0, false, true)
+        assertEquals(MainTabPagerCommand.SnapTo(2), change.command)
+        // An intermediate settle could never select WIRELESS meanwhile.
+        assertNull(MainTabPagerSync.onPageSettled(change.state, 1, vm.activeTab.value).tabToSelect)
+    }
 }

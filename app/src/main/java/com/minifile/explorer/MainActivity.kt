@@ -19,6 +19,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +31,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
@@ -56,10 +60,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -77,6 +85,8 @@ import com.minifile.explorer.service.FtpServerHolder
 import com.minifile.explorer.service.HttpServerHolder
 import com.minifile.explorer.service.VolumeChangeReceiver
 import com.minifile.explorer.ui.MainTab
+import com.minifile.explorer.ui.MainTabPagerCommand
+import com.minifile.explorer.ui.MainTabPagerSync
 import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.OverlayScreen
 import com.minifile.explorer.ui.components.ActiveOperationsSheet
@@ -91,7 +101,12 @@ import com.minifile.explorer.ui.screens.ToolsScreen
 import com.minifile.explorer.ui.screens.WirelessScreen
 import com.minifile.explorer.ui.theme.MiniFileTheme
 import com.minifile.explorer.ui.util.UiFormatters
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 
 private data class SafMountRequest(
     val key: String,
@@ -260,6 +275,75 @@ private fun MiniFileRoot(
 
     BackHandler(enabled = canHandleBack) {
         viewModel.handleBack()
+    }
+
+    // --- Main tab pager (v1.0.17: swipe left/right between Browse / Transfer / Settings) ---
+    // Hoisted above the overlay switch so the page survives overlays and can be snapped to the
+    // right tab while hidden (e.g. Favorite back navigation that also restores an overlay).
+    val pagerState = rememberPagerState(initialPage = MainTabPagerSync.pageOf(activeTab)) {
+        MainTabPagerSync.pageCount
+    }
+    // Keeps rememberSaveable state (list scroll positions, Settings drafts) of the tab pages while
+    // an overlay replaces the pager.
+    val tabsStateHolder = rememberSaveableStateHolder()
+    var tabSyncState by remember { mutableStateOf(MainTabPagerSync.initialState(activeTab)) }
+    val latestActiveTab by rememberUpdatedState(activeTab)
+    val pagerVisible = overlay == null
+
+    // ViewModel -> pager (NavigationBar taps, Snackbar actions, open_tab intents, Back, Favorites).
+    LaunchedEffect(activeTab, pagerVisible) {
+        val change = MainTabPagerSync.onActiveTabChanged(
+            state = tabSyncState,
+            activeTab = activeTab,
+            pagerCurrentPage = pagerState.currentPage,
+            pagerScrolling = pagerState.isScrollInProgress,
+            pagerVisible = pagerVisible,
+        )
+        tabSyncState = change.state
+        driveTabPager(
+            pagerState = pagerState,
+            command = change.command,
+            isStillPending = { page -> tabSyncState.programmaticTarget == page },
+            onFinished = { page -> tabSyncState = MainTabPagerSync.onProgrammaticScrollFinished(tabSyncState, page) },
+        )
+    }
+
+    // A user drag takes over any programmatic jump still in flight.
+    LaunchedEffect(pagerState) {
+        pagerState.interactionSource.interactions.collect { interaction ->
+            if (interaction is DragInteraction.Start) {
+                tabSyncState = MainTabPagerSync.onUserDragStarted(tabSyncState)
+            }
+        }
+    }
+
+    // Pager -> ViewModel: commit a user swipe once it settles. Evaluated at every scroll end (not
+    // only when settledPage changes): a drag that interrupts a programmatic animation and lands
+    // back on the starting page leaves settledPage unchanged but must still be committed.
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.isScrollInProgress to pagerState.settledPage }
+            .filter { (scrolling, _) -> !scrolling }
+            .collect { (_, page) ->
+                val settle = MainTabPagerSync.onPageSettled(
+                    state = tabSyncState,
+                    settledPage = page,
+                    activeTab = viewModel.activeTab.value,
+                )
+                tabSyncState = settle.state
+                settle.tabToSelect?.let { viewModel.selectTab(it) }
+            }
+    }
+
+    val selectedTab by remember(pagerState) {
+        derivedStateOf {
+            MainTabPagerSync.selectedTab(
+                state = tabSyncState,
+                activeTab = latestActiveTab,
+                pagerScrolling = pagerState.isScrollInProgress,
+                pagerTargetPage = pagerState.targetPage,
+                pagerSettledPage = pagerState.settledPage,
+            )
+        }
     }
 
     DisposableEffect(context) {
@@ -479,13 +563,13 @@ private fun MiniFileRoot(
                         val hasTransferDot = ftpState.isRunning || httpState.isRunning
 
                         NavigationBarItem(
-                            selected = activeTab == MainTab.BROWSE,
+                            selected = selectedTab == MainTab.BROWSE,
                             onClick = { viewModel.selectTab(MainTab.BROWSE) },
                             icon = { Icon(Icons.Filled.Folder, contentDescription = "Browse") },
                             label = { Text("Browse") },
                         )
                         NavigationBarItem(
-                            selected = activeTab == MainTab.WIRELESS,
+                            selected = selectedTab == MainTab.WIRELESS,
                             onClick = { viewModel.selectTab(MainTab.WIRELESS) },
                             icon = {
                                 BadgedBox(
@@ -501,7 +585,7 @@ private fun MiniFileRoot(
                             label = { Text(MainTab.WIRELESS.label) },
                         )
                         NavigationBarItem(
-                            selected = activeTab == MainTab.TOOLS,
+                            selected = selectedTab == MainTab.TOOLS,
                             onClick = { viewModel.selectTab(MainTab.TOOLS) },
                             icon = {
                                 BadgedBox(
@@ -559,56 +643,63 @@ private fun MiniFileRoot(
                     )
                 }
 
-                null -> {
-                    when (activeTab) {
-                        MainTab.BROWSE -> {
-                            BrowserScreen(
-                                viewModel = viewModel,
-                                onGrantAllFilesAccess = requestAllFilesAccess,
-                                onMountVolumeSaf = { volume ->
-                                    pendingSafMount = SafMountRequest(
-                                        key = volume.id,
-                                        expectedDocIdPrefix = volume.safInitialDocId,
-                                        label = volume.name,
-                                        navigateOnMount = true,
-                                    )
-                                    runCatching {
-                                        safTreeLauncher.launch(
-                                            container.volumeProvider.buildOpenTreeIntent(volume = volume),
+                null -> tabsStateHolder.SaveableStateProvider(MAIN_TABS_STATE_KEY) {
+                    HorizontalPager(
+                        state = pagerState,
+                        modifier = Modifier.fillMaxSize(),
+                        key = { page -> MainTabPagerSync.tabAt(page).name },
+                    ) { page ->
+                        when (MainTabPagerSync.tabAt(page)) {
+                            MainTab.BROWSE -> {
+                                BrowserScreen(
+                                    viewModel = viewModel,
+                                    isActiveTab = activeTab == MainTab.BROWSE,
+                                    onGrantAllFilesAccess = requestAllFilesAccess,
+                                    onMountVolumeSaf = { volume ->
+                                        pendingSafMount = SafMountRequest(
+                                            key = volume.id,
+                                            expectedDocIdPrefix = volume.safInitialDocId,
+                                            label = volume.name,
+                                            navigateOnMount = true,
                                         )
-                                    }.onFailure { e ->
-                                        pendingSafMount = null
-                                        viewModel.emitSimpleMessage("Could not open system folder picker: ${e.message}")
-                                    }
-                                },
-                                onPickGoogleAccount = pickGoogleAccount,
-                            )
-                        }
-
-                        MainTab.WIRELESS -> {
-                            WirelessScreen(viewModel = viewModel)
-                        }
-
-                        MainTab.TOOLS -> {
-                            ToolsScreen(
-                                viewModel = viewModel,
-                                onGrantAllFilesAccess = requestAllFilesAccess,
-                                onRequestUnknownSourcesPermission = { intent ->
-                                    // Open 'Install unknown apps' directly (no extra confirmation tap); the
-                                    // verified APK stays pending and installs automatically on return.
-                                    runCatching { context.startActivity(intent) }
-                                        .onSuccess {
-                                            viewModel.emitSimpleMessage(
-                                                "Allow 'Install unknown apps' for Files, then return to install the update automatically",
+                                        runCatching {
+                                            safTreeLauncher.launch(
+                                                container.volumeProvider.buildOpenTreeIntent(volume = volume),
                                             )
+                                        }.onFailure { e ->
+                                            pendingSafMount = null
+                                            viewModel.emitSimpleMessage("Could not open system folder picker: ${e.message}")
                                         }
-                                        .onFailure { e ->
-                                            viewModel.emitSimpleMessage(
-                                                "Could not open install permission settings: ${e.message ?: e.javaClass.simpleName}",
-                                            )
-                                        }
-                                },
-                            )
+                                    },
+                                    onPickGoogleAccount = pickGoogleAccount,
+                                )
+                            }
+
+                            MainTab.WIRELESS -> {
+                                WirelessScreen(viewModel = viewModel)
+                            }
+
+                            MainTab.TOOLS -> {
+                                ToolsScreen(
+                                    viewModel = viewModel,
+                                    onGrantAllFilesAccess = requestAllFilesAccess,
+                                    onRequestUnknownSourcesPermission = { intent ->
+                                        // Open 'Install unknown apps' directly (no extra confirmation tap); the
+                                        // verified APK stays pending and installs automatically on return.
+                                        runCatching { context.startActivity(intent) }
+                                            .onSuccess {
+                                                viewModel.emitSimpleMessage(
+                                                    "Allow 'Install unknown apps' for Files, then return to install the update automatically",
+                                                )
+                                            }
+                                            .onFailure { e ->
+                                                viewModel.emitSimpleMessage(
+                                                    "Could not open install permission settings: ${e.message ?: e.javaClass.simpleName}",
+                                                )
+                                            }
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -667,6 +758,43 @@ private fun MiniFileRoot(
                 showActiveOpsSheet = false
             },
         )
+    }
+}
+
+private const val MAIN_TABS_STATE_KEY = "main_tabs_pager"
+
+/**
+ * Executes a [MainTabPagerCommand]. A scroll interrupted by a user gesture (or a higher-priority
+ * scroll) is retried once the pager is idle, unless the gesture took over ([isStillPending] false).
+ * Cancellation of the calling effect itself (newer tab change, pager leaving) is propagated.
+ */
+private suspend fun driveTabPager(
+    pagerState: PagerState,
+    command: MainTabPagerCommand,
+    isStillPending: (Int) -> Boolean,
+    onFinished: (Int) -> Unit,
+) {
+    var next = command
+    while (true) {
+        val (page, animate) = when (val c = next) {
+            MainTabPagerCommand.None -> return
+            is MainTabPagerCommand.AnimateTo -> c.page to true
+            is MainTabPagerCommand.SnapTo -> c.page to false
+        }
+        try {
+            if (animate) pagerState.animateScrollToPage(page) else pagerState.scrollToPage(page)
+            onFinished(page)
+            return
+        } catch (e: CancellationException) {
+            if (!currentCoroutineContext().isActive) throw e
+            snapshotFlow { pagerState.isScrollInProgress }.first { !it }
+            if (!isStillPending(page)) return
+            if (pagerState.currentPage == page) {
+                onFinished(page)
+                return
+            }
+            next = MainTabPagerCommand.SnapTo(page)
+        }
     }
 }
 

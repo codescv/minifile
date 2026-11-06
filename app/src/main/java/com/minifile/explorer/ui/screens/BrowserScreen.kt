@@ -119,6 +119,7 @@ fun BrowserScreen(
     onGrantAllFilesAccess: () -> Unit,
     onMountVolumeSaf: (Volume) -> Unit,
     onPickGoogleAccount: (String, String, GDriveServerBookmark?) -> Unit = { _, _, _ -> },
+    isActiveTab: Boolean = true,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -144,7 +145,12 @@ fun BrowserScreen(
     var extractTarget by remember { mutableStateOf<VfsPath?>(null) }
     var favoritePickerRequest by remember { mutableStateOf<FavoriteTransferRequest?>(null) }
 
-    BackHandler(enabled = browser.isSelectionMode || browser.searchActive || browser.currentDir != null) {
+    // Gated on isActiveTab: inside the main HorizontalPager this page can stay composed while the
+    // user swipes to Transfer/Settings; it must never hijack Back there (MiniFileRoot's BackHandler
+    // + MainViewModel.handleBack() return to Browse with the folder/search/selection preserved).
+    BackHandler(
+        enabled = isActiveTab && (browser.isSelectionMode || browser.searchActive || browser.currentDir != null),
+    ) {
         viewModel.handleBack()
     }
 
