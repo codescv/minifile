@@ -16,6 +16,11 @@ Minimalist, offline-first **Android File Manager** with **Google Drive & FTP Rem
   - Zero-dependency Python 3.10+ PC Companion (`minifile` / `minifile-companion` via `uv tool install`, or standalone `python3 -m minifile_companion`):
     - **CLI**: `scan`, `ls`, `tree`, `get`, `put`, `sync` (`--to-phone`, `--to-pc`, `--both`, `--delete`, `--dry-run`), `cat`, `edit`, `mkdir`, `rm`, `mv`, `nomedia`, `shell`, `gdrive-auth`, `update`.
     - **Desktop GUI**: Localhost-bound dual-pane Web UI (`127.0.0.1` with CSRF token & DNS-rebinding guards) + optional Tkinter launcher (`--tk`).
+- **Direct Phone-to-Phone Transfer without shared Wi-Fi (`v1.0.18`)** — Android ↔ Android and Android ↔ iPhone (Files for iOS):
+  - **Nearby Devices over Bluetooth LE + one-tap temporary hotspot (Scheme A)**: phones running Files appear in *Nearby Devices* within ~150 ms from passive BLE advertisements (Bluetooth badge, deduped against LAN peers). Tap a peer → the receiver taps **Accept** (60 s) → Files negotiates over GATT (`4D465031-…-6D696E696669`) and either uses the shared LAN, or the Android side starts a `LocalOnlyHotspot` that the sender joins via `WifiNetworkSpecifier` (one system *Connect* tap; an iPhone scans the on-screen `WIFI:` QR with its Camera). Files are then pushed over the normal HTTP peer protocol, guarded by a 128-bit one-time token (240 s TTL, single-use `announce`, hotspot-interface confinement).
+  - **Hotspot Direct (热点直连) + Scan QR to Join (扫码直连) (Scheme B)**: one tap starts a temporary hotspot + HTTP share and shows a universal `WIFI:T:WPA;S:…;P:…;;` QR, the password (copy) and `http://<hotspot-ip>:<port>/` — iPhone Camera, phones without Files (browser upload/download) and Files' own **offline pure-Kotlin QR scanner** (Camera2, QR v1–10, all ECC levels, zero Google Play Services / ML Kit) can all join. Available from *Transfer* and from *Browse ▸ Send to device…*.
+  - **Same-LAN Android ↔ iPhone discovery**: Android now advertises and browses Bonjour `_minifile._tcp` (`NsdManager`) next to the UDP `MFP1` beacons; `/api/peer/info` reports `os` and `hotspot`.
+  - Permissions are requested only when used (`NEARBY_WIFI_DEVICES` / Bluetooth `neverForLocation` on Android 12+/13+, Location on Android ≤ 12, Camera for scanning); the hotspot stops automatically 15 s after a transfer (5 min idle for Hotspot Direct) and joined phones return to their previous Wi-Fi.
 - **Remote Servers — Google Drive & FTP**:
   - Unified **Servers** card on Storage Home supporting **Google Drive** (Drive REST API v3, zero Google Play Services SDK bloat) alongside **FTP** bookmarks.
   - Browse My Drive folders, stream media/PDFs with HTTP `Range` + automatic single-reconnect recovery, upload large files via bounded 8 MiB resumable chunks, export Google Docs/Sheets/Slides/Drawings as PDFs on the fly, and perform O(1) server-side rename, move, and trash.
@@ -44,8 +49,8 @@ Grab the latest release from [**GitHub Releases**](https://github.com/codescv/mi
 
 | Asset | Description |
 |-------|-------------|
-| `minifile-v1.0.17-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
-| `minifile-companion-v1.0.17.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
+| `minifile-v1.0.18-release.apk` | Signed Android APK (`minSdk 26` / Android 8.0+, `targetSdk 35`) |
+| `minifile-companion-v1.0.18.zip` | Zero-dependency Python 3 PC Companion (`cli` + `gui`) |
 | `SHA256SUMS.txt` | SHA-256 checksums for release assets |
 
 ### Install PC Companion with `uv` (Recommended)

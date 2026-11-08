@@ -91,6 +91,8 @@ import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.OverlayScreen
 import com.minifile.explorer.ui.components.ActiveOperationsSheet
 import com.minifile.explorer.ui.components.ConflictDialog
+import com.minifile.explorer.ui.components.HotspotLinkDialog
+import com.minifile.explorer.ui.components.PeerConsentDialog
 import com.minifile.explorer.ui.screens.ArchivePreviewScreen
 import com.minifile.explorer.ui.screens.BrowserScreen
 import com.minifile.explorer.ui.screens.EditGDriveServerDialog
@@ -254,6 +256,8 @@ private fun MiniFileRoot(
     val browser by viewModel.browser.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val conflictPrompt by viewModel.conflictPrompt.collectAsState()
+    val pendingIncomingBle by viewModel.pendingIncomingBle.collectAsState()
+    val bleLinkUi by viewModel.bleLinkUi.collectAsState()
     val reauthGDriveBookmark by viewModel.reauthGDriveBookmark.collectAsState()
     val gdriveSignInState by viewModel.gdriveSignInState.collectAsState()
     val activeOps by container.operationRegistry.active.collectAsState()
@@ -704,6 +708,24 @@ private fun MiniFileRoot(
                     }
                 }
             }
+        }
+    }
+
+    // v1.0.18: incoming BLE transfer consent (60 s) + hotspot link progress / QR, visible from any tab.
+    pendingIncomingBle?.let { req ->
+        PeerConsentDialog(
+            request = req,
+            onAccept = { viewModel.respondToIncomingBle(req.requestId, accept = true) },
+            onDecline = { viewModel.respondToIncomingBle(req.requestId, accept = false) },
+        )
+    }
+    if (pendingIncomingBle == null) {
+        bleLinkUi?.let { ui ->
+            HotspotLinkDialog(
+                state = ui,
+                onCancel = { viewModel.cancelBleLink() },
+                onDismiss = { viewModel.dismissBleLinkUi() },
+            )
         }
     }
 

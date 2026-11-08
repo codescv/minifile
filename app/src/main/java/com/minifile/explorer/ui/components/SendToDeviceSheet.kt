@@ -1,5 +1,8 @@
 package com.minifile.explorer.ui.components
 
+import android.content.ActivityNotFoundException
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,9 +24,13 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.PhoneIphone
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -43,6 +50,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -60,8 +68,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.minifile.explorer.core.peer.PeerInfo
 import com.minifile.explorer.core.peer.PeerPathPolicy
+import com.minifile.explorer.core.peer.PeerSource
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.ui.MainViewModel
+import com.minifile.explorer.ui.util.NearbyPermissions
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.delay
 
@@ -78,6 +88,9 @@ fun SendToDeviceSheet(
     val isScanning by viewModel.isScanningPeers.collectAsState()
     var showAddByAddressDialog by remember { mutableStateOf(false) }
     var showScanButton by remember { mutableStateOf(false) }
+    var showHotspotSheet by remember { mutableStateOf(false) }
+    var showQrScanner by remember { mutableStateOf(false) }
+    val joinState by viewModel.joinState.collectAsState()
 
     DisposableEffect(Unit) {
         viewModel.startPeerBrowsing()
@@ -152,7 +165,7 @@ fun SendToDeviceSheet(
                         )
                     }
                     Text(
-                        text = "No devices yet — on the other phone open Transfer and start HTTP Share.",
+                        text = "No devices yet — open Files ▸ Transfer on the other phone, or use Hotspot Direct / Scan QR below.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -163,7 +176,7 @@ fun SendToDeviceSheet(
                         .fillMaxWidth()
                         .heightIn(max = 320.dp),
                 ) {
-                    items(peers, key = { "${it.id}-${it.endpoint}" }) { peer ->
+                    items(peers, key = { "${it.id}-${it.source}-${it.endpoint}" }) { peer ->
                         PeerDeviceRow(
                             peer = peer,
                             onClick = {
@@ -180,7 +193,16 @@ fun SendToDeviceSheet(
                 }
             }
 
+            NearbyAccessRow(viewModel = viewModel)
+
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+            DirectHotspotButtons(
+                onHotspotDirect = { showHotspotSheet = true },
+                onScanQr = { showQrScanner = true },
+            )
+
+            Spacer(Modifier.height(8.dp))
 
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -228,21 +250,173 @@ fun SendToDeviceSheet(
             onDismiss = { showAddByAddressDialog = false },
         )
     }
+
+    if (showHotspotSheet) {
+        HotspotDirectSheet(
+            viewModel = viewModel,
+            onDismiss = { showHotspotSheet = false },
+            onSendToPeer = { peer ->
+                showHotspotSheet = false
+                onSelectPeer(peer)
+            },
+        )
+    }
+
+    if (showQrScanner) {
+        QrScannerSheet(
+            onDismiss = { showQrScanner = false },
+            onResult = { text ->
+                showQrScanner = false
+                viewModel.joinFromQr(text)
+            },
+        )
+    }
+
+    joinState?.let { js ->
+        JoinHotspotDialog(
+            state = js,
+            onSend = { peer ->
+                viewModel.dismissJoinDialog()
+                onSelectPeer(peer)
+            },
+            onCancel = { viewModel.cancelJoin() },
+            onClose = { viewModel.dismissJoinDialog() },
+        )
+    }
+}
+
+/** "Hotspot Direct (热点直连)" + "Scan QR (扫码直连)" — Scheme B entry points (spec §3.7). */
+@Composable
+fun DirectHotspotButtons(
+    onHotspotDirect: () -> Unit,
+    onScanQr: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        OutlinedButton(
+            onClick = onHotspotDirect,
+            shape = RoundedCornerShape(14.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+            modifier = Modifier.weight(1f),
+        ) {
+            Icon(Icons.Filled.WifiTethering, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Column {
+                Text("Hotspot Direct", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                Text("热点直连", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        OutlinedButton(
+            onClick = onScanQr,
+            shape = RoundedCornerShape(14.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+            modifier = Modifier.weight(1f),
+        ) {
+            Icon(Icons.Filled.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Column {
+                Text("Scan QR", style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                Text("扫码直连", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+/**
+ * Hint + one-tap fix when Bluetooth discovery can't run (permissions, Bluetooth off, or Location off on
+ * Android ≤ 12). Hidden when everything is ready or the device has no BLE.
+ */
+@Composable
+fun NearbyAccessRow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var refreshTick by remember { mutableIntStateOf(0) }
+    val hint = remember(refreshTick) {
+        if (!NearbyPermissions.hasBleHardware(context)) null else NearbyPermissions.nearbyHint(context)
+    }
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        refreshTick++
+        viewModel.onNearbyPermissionsChanged()
+    }
+    val enableBtLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        refreshTick++
+        viewModel.onNearbyPermissionsChanged()
+    }
+    if (hint == null) return
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+    ) {
+        Icon(
+            Icons.Filled.Bluetooth,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = hint,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = {
+            when {
+                !NearbyPermissions.hasAllBlePermissions(context) ->
+                    permLauncher.launch(NearbyPermissions.allNearbyPermissions())
+                !NearbyPermissions.isBluetoothOn(context) -> try {
+                    enableBtLauncher.launch(NearbyPermissions.bluetoothEnableIntent())
+                } catch (_: Exception) {
+                    refreshTick++
+                }
+                else -> try {
+                    context.startActivity(NearbyPermissions.locationSettingsIntent())
+                } catch (_: ActivityNotFoundException) {
+                }
+            }
+        }) {
+            Text(
+                when {
+                    !NearbyPermissions.hasAllBlePermissions(context) -> "Allow"
+                    !NearbyPermissions.isBluetoothOn(context) -> "Turn on"
+                    else -> "Settings"
+                },
+            )
+        }
+    }
 }
 
 @Composable
 fun PeerDeviceRow(
     peer: PeerInfo,
+    modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
     trailingActionLabel: String? = null,
     onTrailingAction: (() -> Unit)? = null,
-    modifier: Modifier = Modifier,
 ) {
     val cleanName = remember(peer.name, peer.host) {
         PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host }
     }
-    val subtitle = remember(peer.endpoint, peer.readOnly) {
-        if (peer.readOnly) "${peer.endpoint} · Read-only" else peer.endpoint
+    val subtitle = remember(peer.displayEndpoint, peer.readOnly, peer.source, peer.platform) {
+        val base = when {
+            peer.source == PeerSource.BLE -> "Bluetooth · Direct" + when (peer.platform) {
+                "ios" -> " · iPhone"
+                "android" -> " · Android"
+                else -> ""
+            }
+            peer.source == PeerSource.QR || peer.hotspot -> "${peer.displayEndpoint} · Hotspot"
+            else -> peer.displayEndpoint
+        }
+        if (peer.readOnly) "$base · Read-only" else base
+    }
+    val leadingIcon = when {
+        peer.source == PeerSource.BLE -> Icons.Filled.Bluetooth
+        peer.platform == "ios" -> Icons.Filled.PhoneIphone
+        else -> Icons.Filled.PhoneAndroid
     }
 
     ListItem(
@@ -262,8 +436,8 @@ fun PeerDeviceRow(
                     ),
             ) {
                 Icon(
-                    imageVector = Icons.Filled.PhoneAndroid,
-                    contentDescription = null,
+                    imageVector = leadingIcon,
+                    contentDescription = if (peer.source == PeerSource.BLE) "Bluetooth" else null,
                     tint = if (peer.readOnly) {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     } else {

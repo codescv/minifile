@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import com.minifile.explorer.ui.util.NearbyPermissions
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Environment
@@ -317,6 +318,7 @@ class FtpServerService : Service() {
             val srv = HttpFileServerEngine(
                 config = baseConfig.copy(port = candidatePort),
                 fs = container.fileSystem,
+                hotspotGate = HttpServerHolder.hotspotGate,
             )
             try {
                 srv.start()
@@ -358,6 +360,8 @@ class FtpServerService : Service() {
         val initialIps = container.lanAddressResolver.currentIpv4List()
         HttpServerHolder.markStarted(srv.boundPort, initialIps)
         container.peerDiscoveryHolder.setReceiverRole(true)
+        // D1: Bonjour `_minifile._tcp` so iOS discovers this phone instantly.
+        runCatching { container.nsdAdvertiser.register(srv.boundPort) }
         refreshRunningNotification()
 
         httpEventsJob = scope.launch {
@@ -405,6 +409,15 @@ class FtpServerService : Service() {
     private fun shutdownHttp(errorMessage: String?) {
         val container = (application as? MiniFileApplication)?.container
         container?.peerDiscoveryHolder?.setReceiverRole(false)
+        if (httpEngine != null) {
+            container?.let { c -> runCatching { c.nsdAdvertiser.unregister() } }
+            // An ephemeral hotspot share is useless without HTTP: take the hotspot down with it.
+            container?.let { c ->
+                if (c.localOnlyHotspotManager.httpStartedForHotspot) {
+                    runCatching { c.localOnlyHotspotManager.stop(fromService = true) }
+                }
+            }
+        }
 
         httpEventsJob?.cancel()
         httpEventsJob = null
@@ -418,6 +431,10 @@ class FtpServerService : Service() {
     }
 
     private fun shutdownAll(errorMessage: String?, removeNotification: Boolean) {
+        // Spec §3.2: the LocalOnlyHotspot never outlives the foreground service that keeps it alive.
+        (application as? MiniFileApplication)?.container?.let { c ->
+            runCatching { c.localOnlyHotspotManager.stop(fromService = true) }
+        }
         shutdownHttp(errorMessage)
         shutdownFtp(errorMessage)
         teardownServiceResources(removeNotification)
@@ -471,10 +488,16 @@ class FtpServerService : Service() {
 
     private fun startForegroundCompat(notification: Notification) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // Spec §3.1 [v2]: SPECIAL_USE always; OR-in CONNECTED_DEVICE only when BLUETOOTH_CONNECT is granted
+            // (API 34+ throws SecurityException for CONNECTED_DEVICE without the BT runtime permission).
+            var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            if (NearbyPermissions.hasBleConnectPermission(this)) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            }
             startForeground(
                 NOTIF_ID_RUNNING,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                type,
             )
         } else {
             startForeground(NOTIF_ID_RUNNING, notification)

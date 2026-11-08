@@ -94,9 +94,16 @@ class PeerTransferEngine(
         reportProgress(processedItems = 0, processedBytes = 0L, currentItem = items.first().relPath)
 
         // 1. Begin session
-        val beginUrl = "$baseUrl/api/peer/begin?files=$fileCount&bytes=$totalBytes&device=${encodeQueryValue(cleanSender)}"
+        val beginUrl = buildString(256) {
+            append(baseUrl).append("/api/peer/begin?files=").append(fileCount)
+            append("&bytes=").append(totalBytes)
+            append("&device=").append(encodeQueryValue(cleanSender))
+            val tok = peer.linkToken?.trim().orEmpty()
+            if (tok.isNotEmpty()) append("&tok=").append(encodeQueryValue(tok))
+        }
         val beginResp = try {
-            client.postEmpty(beginUrl)
+            // D2: iOS `begin` blocks up to 60 s on its consent sheet — wait well past it.
+            client.postEmpty(beginUrl, timeoutMs = BEGIN_TIMEOUT_MS)
         } catch (e: Exception) {
             if (sink.isCancelled()) {
                 client.cancelActive()
@@ -366,6 +373,9 @@ class PeerTransferEngine(
     companion object {
         const val CHUNK_BYTES = 256 * 1024
 
+        /** `begin` read timeout (spec D2): covers the receiver's 60 s consent prompt with margin. */
+        const val BEGIN_TIMEOUT_MS = 150_000
+
         /**
          * Walks VFS [roots] into flat [PeerSendItem]s with `relPath` rooted at each top-level node's name,
          * preserving empty directories (`isDirectory = true`) and skipping symlinks.
@@ -457,6 +467,12 @@ class PeerTransferEngine(
                 403 -> {
                     if (code == "read_only" || serverErr.contains("read-only", ignoreCase = true)) {
                         "$name is read-only (Transfer ▸ Settings)"
+                    } else if (code == "declined") {
+                        "Declined by $name"
+                    } else if (code == "disabled") {
+                        "$name has peer receiving off"
+                    } else if (code == "token") {
+                        "Session expired — reconnect to $name"
                     } else {
                         "Access denied by $name${if (serverErr.isNotEmpty()) ": $serverErr" else ""}"
                     }

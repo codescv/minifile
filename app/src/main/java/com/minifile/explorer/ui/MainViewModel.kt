@@ -30,8 +30,14 @@ import com.minifile.explorer.core.ops.NomediaManager
 import com.minifile.explorer.core.ops.ProgressSink
 import com.minifile.explorer.core.ops.SearchHit
 import com.minifile.explorer.core.ops.ZipArchiver
+import com.minifile.explorer.core.peer.HostDecision
+import com.minifile.explorer.core.peer.HotspotLinkCodec
 import com.minifile.explorer.core.peer.PeerHttpClient
 import com.minifile.explorer.core.peer.PeerInfo
+import com.minifile.explorer.core.peer.PeerMerge
+import com.minifile.explorer.core.peer.PeerSource
+import com.minifile.explorer.core.qr.QrPayload
+import com.minifile.explorer.core.qr.QrPayloads
 import com.minifile.explorer.core.peer.PeerPathPolicy
 import com.minifile.explorer.core.peer.PeerSendItem
 import com.minifile.explorer.core.peer.PeerSendResult
@@ -50,6 +56,12 @@ import com.minifile.explorer.data.SettingsRepository
 import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
 import com.minifile.explorer.data.gdrive.GDriveSignInState
 import com.minifile.explorer.di.AppContainer
+import com.minifile.explorer.service.BleLinkUiState
+import com.minifile.explorer.service.HotspotException
+import com.minifile.explorer.service.HotspotPurpose
+import com.minifile.explorer.service.HotspotState
+import com.minifile.explorer.service.IncomingBleRequest
+import com.minifile.explorer.service.JoinException
 import com.minifile.explorer.service.OperationCompletionEvent
 import com.minifile.explorer.service.OperationRegistry
 import com.minifile.explorer.service.OperationRunOutcome
@@ -65,7 +77,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -241,8 +257,25 @@ class MainViewModel internal constructor(
     val gdriveSignInState: StateFlow<GDriveSignInState> = deps.gdriveSignInState
     val volumes: StateFlow<List<Volume>> = deps.volumes
     val clipboard = ClipboardHolder.state
-    val peers: StateFlow<List<PeerInfo>> = deps.peers
+    /** LAN (UDP/NSD/probe) peers merged with passive BLE peers, deduped by `id6` with LAN winning (spec §3.7). */
+    val peers: StateFlow<List<PeerInfo>> = _container?.let { c ->
+        combine(deps.peers, c.blePeerCoordinator.blePeers) { lan, ble -> PeerMerge.merge(lan, ble) }
+            .stateIn(vmScope, SharingStarted.Eagerly, deps.peers.value)
+    } ?: deps.peers
     val isScanningPeers: StateFlow<Boolean> = deps.isScanningPeers
+
+    // --- v1.0.18 Direct Hotspot / BLE / QR state ---
+    val hotspotState: StateFlow<HotspotState> =
+        _container?.localOnlyHotspotManager?.state ?: MutableStateFlow(HotspotState.Idle)
+    val pendingIncomingBle: StateFlow<IncomingBleRequest?> =
+        _container?.blePeerCoordinator?.pendingIncoming ?: MutableStateFlow(null)
+    val bleLinkUi: StateFlow<BleLinkUiState?> =
+        _container?.blePeerCoordinator?.linkUi ?: MutableStateFlow(null)
+
+    private val _joinState = MutableStateFlow<JoinUiState?>(null)
+    val joinState: StateFlow<JoinUiState?> = _joinState.asStateFlow()
+    private var joinJob: Job? = null
+    private var peerBrowseCount = 0
 
     private val _reauthGDriveBookmark = MutableStateFlow<GDriveServerBookmark?>(null)
     val reauthGDriveBookmark: StateFlow<GDriveServerBookmark?> = _reauthGDriveBookmark.asStateFlow()
@@ -599,6 +632,8 @@ class MainViewModel internal constructor(
 
     override fun onCleared() {
         deps.cancelGDriveSignIn()
+        // Spec §3.3 [v2]: never leave the user's Wi-Fi pinned to a peer hotspot.
+        _container?.let { c -> runCatching { c.wifiSpecifierConnector.release() } }
         super.onCleared()
     }
 
@@ -1538,10 +1573,217 @@ class MainViewModel internal constructor(
     // --- App-to-App Peer Discovery & Transfer ---
     fun startPeerBrowsing() {
         container.peerDiscoveryHolder.acquireBrowser()
+        container.blePeerCoordinator.acquire()
+        peerBrowseCount++
+        if (peerBrowseCount == 1) runCatching { container.nsdAdvertiser.startBrowse() }
     }
 
     fun stopPeerBrowsing() {
         container.peerDiscoveryHolder.releaseBrowser()
+        container.blePeerCoordinator.release()
+        if (peerBrowseCount > 0) peerBrowseCount--
+        if (peerBrowseCount == 0) runCatching { container.nsdAdvertiser.stopBrowse() }
+    }
+
+    /** Re-evaluate BLE radios after a runtime permission / Bluetooth state change. */
+    fun onNearbyPermissionsChanged() {
+        container.blePeerCoordinator.restartRadios()
+    }
+
+    /** The user started HTTP Share explicitly: it must not stay confined to an ephemeral hotspot. */
+    fun onUserStartedHttp() {
+        _container?.localOnlyHotspotManager?.onUserStartedHttp()
+    }
+
+    // --- Scheme B host: Hotspot Direct ---
+    fun startHotspotDirect(filesOnlyQr: Boolean = false) {
+        vmScope.launch {
+            try {
+                container.localOnlyHotspotManager.start(
+                    purpose = HotspotPurpose.DIRECT,
+                    token = if (filesOnlyQr) HotspotLinkCodec.generateToken() else null,
+                )
+            } catch (e: HotspotException) {
+                emitSimpleMessage(e.message ?: "Could not start the hotspot")
+            } catch (e: Exception) {
+                emitSimpleMessage(e.message ?: "Could not start the hotspot")
+            }
+        }
+    }
+
+    fun stopHotspotDirect() {
+        container.localOnlyHotspotManager.stop()
+    }
+
+    // --- Consent / link dialog (MainActivity level) ---
+    fun respondToIncomingBle(requestId: Long, accept: Boolean) {
+        container.blePeerCoordinator.respondToIncoming(requestId, accept)
+    }
+
+    fun cancelBleLink() {
+        container.blePeerCoordinator.cancelLink()
+    }
+
+    fun dismissBleLinkUi() {
+        container.blePeerCoordinator.dismissLinkUi()
+    }
+
+    // --- Scheme B joiner: Scan QR to Join ---
+    /** Handles any scanned / typed QR text: `WIFI:`, `minifile://hotspot|peer`, or `http(s)://host[:port]/`. */
+    fun joinFromQr(raw: String) {
+        val payload = QrPayloads.parse(raw.trim())
+        if (payload == null) {
+            _joinState.value = JoinUiState.Failed("Not a Files or Wi-Fi QR code")
+            return
+        }
+        joinJob?.cancel()
+        joinJob = vmScope.launch {
+            try {
+                val peer: PeerInfo = when (payload) {
+                    is QrPayload.Wifi -> {
+                        _joinState.value = JoinUiState.Joining(payload.ssid)
+                        val joined = container.wifiSpecifierConnector.join(
+                            ssid = payload.ssid,
+                            pass = payload.password,
+                            sec = payload.sec,
+                        )
+                        _joinState.value = JoinUiState.FindingHost(payload.ssid)
+                        findHotspotHost(joined.gateway, joined.ownIp, joined.prefixLength)
+                            ?: throw JoinException("Joined ${payload.ssid}, but no Files device answered")
+                    }
+                    is QrPayload.Hotspot -> {
+                        _joinState.value = JoinUiState.Joining(payload.ssid)
+                        val joined = container.wifiSpecifierConnector.join(
+                            ssid = payload.ssid,
+                            pass = payload.password,
+                            sec = payload.sec,
+                            expectedHostIp = payload.ip,
+                        )
+                        _joinState.value = JoinUiState.FindingHost(payload.ssid)
+                        val direct = probeRetrying(listOf(payload.ip), listOf(payload.port), attempts = 10)
+                            ?: findHotspotHost(joined.gateway, joined.ownIp, joined.prefixLength)
+                            ?: throw JoinException("Joined ${payload.ssid}, but ${payload.name ?: "the host"} did not answer")
+                        val withTok = direct.copy(linkToken = payload.tok, source = PeerSource.QR)
+                        container.peerDiscoveryHolder.engine.upsert(withTok)
+                        withTok
+                    }
+                    is QrPayload.Peer -> {
+                        _joinState.value = JoinUiState.FindingHost(payload.ip)
+                        probeRetrying(listOf(payload.ip), listOf(payload.port), attempts = 3)
+                            ?: throw JoinException("${payload.ip}:${payload.port} not reachable — join its Wi-Fi first")
+                    }
+                    is QrPayload.Http -> {
+                        _joinState.value = JoinUiState.FindingHost(payload.host)
+                        probeRetrying(listOf(payload.host), listOf(payload.port), attempts = 3)
+                            ?: throw JoinException("${payload.host}:${payload.port} is not a Files device")
+                    }
+                }
+                _joinState.value = JoinUiState.Found(peer)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val msg = (e as? PeerTransferException)?.userMessage ?: e.message ?: "Could not connect"
+                runCatching { container.wifiSpecifierConnector.release() }
+                _joinState.value = JoinUiState.Failed(msg)
+            }
+        }
+    }
+
+    /** Close the join dialog but keep the joined network for an upcoming send. */
+    fun dismissJoinDialog() {
+        _joinState.value = null
+    }
+
+    /** Abort joining and restore the previous Wi-Fi. */
+    fun cancelJoin() {
+        joinJob?.cancel()
+        joinJob = null
+        _joinState.value = null
+        _container?.let { c -> runCatching { c.wifiSpecifierConnector.release() } }
+    }
+
+    val isJoinedToPeerHotspot: Boolean
+        get() = _container?.wifiSpecifierConnector?.isJoined == true
+
+    /** Host discovery after a `WIFI:` join (spec §2.5): gateway → subnet `.1` → MFP1 beacons → `/24` sweep. */
+    private suspend fun findHotspotHost(gateway: String?, ownIp: String?, prefixLength: Int): PeerInfo? {
+        val ports = (listOf(settings.value.httpPort) + (8080..8090)).distinct()
+        val candidates = buildList {
+            gateway?.takeIf { it.isNotBlank() }?.let(::add)
+            ownIp?.let { HostDecision.parseIpv4(it) }?.let { b -> add("${b[0].toInt() and 0xFF}.${b[1].toInt() and 0xFF}.${b[2].toInt() and 0xFF}.1") }
+        }.distinct().filter { it != ownIp }
+        probeRetrying(candidates, ports, attempts = 3)?.let { return it }
+        // MFP1 beacons over the pinned network (browser role is active while the dialog is open).
+        if (ownIp != null) {
+            repeat(10) {
+                peers.value.firstOrNull { p ->
+                    !p.needsLink && HostDecision.inSubnet(p.host, ownIp, prefixLength)
+                }?.let { return it }
+                delay(500)
+            }
+            container.peerDiscoveryHolder.scanSubnet()
+            repeat(30) {
+                peers.value.firstOrNull { p ->
+                    !p.needsLink && HostDecision.inSubnet(p.host, ownIp, prefixLength)
+                }?.let { return it }
+                delay(500)
+            }
+        }
+        return null
+    }
+
+    private suspend fun probeRetrying(hosts: List<String>, ports: List<Int>, attempts: Int): PeerInfo? {
+        val engine = container.peerDiscoveryHolder.engine
+        repeat(attempts) { attempt ->
+            for (h in hosts) {
+                for (p in ports) {
+                    val res = runCatching {
+                        engine.probe(host = h, port = p, source = PeerSource.QR, timeoutMs = if (ports.size > 1) 400 else 1_500)
+                    }.getOrNull()
+                    if (res != null) return res
+                }
+            }
+            if (attempt < attempts - 1) delay(1_000)
+        }
+        return null
+    }
+
+    /** Sends over an already-routable peer, or negotiates a BLE hotspot link first (spec §3.7). */
+    private suspend fun runPeerSend(
+        peer: PeerInfo,
+        sendItems: List<PeerSendItem>,
+        client: PeerHttpClient,
+        sink: ProgressSink,
+    ): PeerSendResult {
+        val engine = PeerTransferEngine(
+            client = client,
+            senderDeviceNameProvider = { settings.value.peerDeviceName },
+        )
+        if (!peer.needsLink) {
+            val res = engine.send(peer = peer, items = sendItems, sink = sink)
+            releaseJoinedNetworkIfTarget(peer)
+            return res
+        }
+        val files = sendItems.count { !it.isDirectory }
+        val bytes = sendItems.sumOf { if (it.isDirectory) 0L else it.size.coerceAtLeast(0L) }
+        val link = container.blePeerCoordinator.negotiate(peer, files, bytes)
+        var ok = false
+        try {
+            val res = engine.send(peer = link.peer, items = sendItems, sink = sink)
+            ok = !res.cancelled && res.errors.isEmpty()
+            return res
+        } finally {
+            link.teardown(ok)
+        }
+    }
+
+    private fun releaseJoinedNetworkIfTarget(peer: PeerInfo) {
+        val connector = _container?.wifiSpecifierConnector ?: return
+        val joined = connector.joined ?: return
+        val own = joined.ownIp ?: return
+        if (HostDecision.inSubnet(peer.host, own, joined.prefixLength)) {
+            connector.releaseAfter()
+        }
     }
 
     fun scanPeersSubnet() {
@@ -1595,7 +1837,10 @@ class MainViewModel internal constructor(
             kind = OperationKind.SEND,
             title = "Sending $countLabel to $peerName",
             retryAction = { sendToPeer(appContext, peer, items) },
-            onCancel = { txClient.close() },
+            onCancel = {
+                txClient.close()
+                if (peer.needsLink) container.blePeerCoordinator.cancelLink()
+            },
         ) { _, sink ->
             txClient.use { client ->
                 try {
@@ -1607,14 +1852,7 @@ class MainViewModel internal constructor(
                     if (sendItems.isEmpty()) {
                         return@use OperationRunOutcome(message = "Nothing to send to $peerName")
                     }
-                    val res = PeerTransferEngine(
-                        client = client,
-                        senderDeviceNameProvider = { settings.value.peerDeviceName },
-                    ).send(
-                        peer = peer,
-                        items = sendItems,
-                        sink = sink,
-                    )
+                    val res = runPeerSend(peer, sendItems, client, sink)
                     formatPeerSendOutcome(peerName, res, sink.isCancelled())
                 } catch (e: PeerTransferException) {
                     if (sink.isCancelled()) {
@@ -1652,7 +1890,10 @@ class MainViewModel internal constructor(
             kind = OperationKind.SEND,
             title = "Sending $countLabel to $peerName",
             retryAction = { sendUrisToPeer(appContext, peer, uris) },
-            onCancel = { txClient.close() },
+            onCancel = {
+                txClient.close()
+                if (peer.needsLink) container.blePeerCoordinator.cancelLink()
+            },
         ) { _, sink ->
             txClient.use { client ->
                 try {
@@ -1663,14 +1904,7 @@ class MainViewModel internal constructor(
                     if (sendItems.isEmpty()) {
                         return@use OperationRunOutcome(message = "Nothing to send to $peerName")
                     }
-                    val res = PeerTransferEngine(
-                        client = client,
-                        senderDeviceNameProvider = { settings.value.peerDeviceName },
-                    ).send(
-                        peer = peer,
-                        items = sendItems,
-                        sink = sink,
-                    )
+                    val res = runPeerSend(peer, sendItems, client, sink)
                     formatPeerSendOutcome(peerName, res, sink.isCancelled())
                 } catch (e: PeerTransferException) {
                     if (sink.isCancelled()) {
@@ -1826,4 +2060,12 @@ class MainViewModel internal constructor(
             ),
         )
     }
+}
+
+/** Scheme B "Scan QR to Join" progress (spec §3.7 `JoinHotspotDialog`). */
+sealed interface JoinUiState {
+    data class Joining(val ssid: String) : JoinUiState
+    data class FindingHost(val label: String) : JoinUiState
+    data class Found(val peer: PeerInfo) : JoinUiState
+    data class Failed(val message: String) : JoinUiState
 }

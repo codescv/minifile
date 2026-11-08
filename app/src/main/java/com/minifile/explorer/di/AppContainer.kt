@@ -30,9 +30,13 @@ import com.minifile.explorer.data.SharedPrefsKeyValueStore
 import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
 import com.minifile.explorer.data.gdrive.GDriveSignInController
 import com.minifile.explorer.data.update.UpdateManager
+import com.minifile.explorer.service.BlePeerCoordinator
+import com.minifile.explorer.service.LocalOnlyHotspotManager
+import com.minifile.explorer.service.NsdAdvertiser
 import com.minifile.explorer.service.OperationRegistry
 import com.minifile.explorer.service.PeerDiscoveryHolder
 import com.minifile.explorer.service.PeerReceiveBridge
+import com.minifile.explorer.service.WifiSpecifierConnector
 
 class AppContainer(context: Context) {
     val appContext: Context = context.applicationContext
@@ -124,4 +128,36 @@ class AppContainer(context: Context) {
         operationRegistry = operationRegistry,
         fs = fileSystem,
     )
+
+    // v1.0.18 Direct Hotspot + BLE + QR (spec §3).
+    val nsdAdvertiser by lazy {
+        NsdAdvertiser(
+            context = appContext,
+            settingsRepository = settingsRepository,
+            peerDiscoveryHolder = peerDiscoveryHolder,
+        )
+    }
+    val localOnlyHotspotManager by lazy {
+        LocalOnlyHotspotManager(
+            context = appContext,
+            lanAddressResolver = lanAddressResolver,
+            peerDiscoveryHolder = peerDiscoveryHolder,
+        )
+    }
+    val wifiSpecifierConnector by lazy {
+        WifiSpecifierConnector(
+            context = appContext,
+            peerDiscoveryHolder = peerDiscoveryHolder,
+        )
+    }
+    val blePeerCoordinator by lazy {
+        BlePeerCoordinator(
+            context = appContext,
+            settingsRepository = settingsRepository,
+            lanAddressResolver = lanAddressResolver,
+            peerDiscoveryHolder = peerDiscoveryHolder,
+            hotspotManager = localOnlyHotspotManager,
+            connector = wifiSpecifierConnector,
+        )
+    }
 }

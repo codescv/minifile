@@ -41,7 +41,8 @@ class PreContinueIOException(
  *
  * Features:
  * - LAN-only target validation via [FtpServerEngine.isAllowedClientAddress]
- * - Unbound [Socket] passed to [socketBinder] before `connect()` (MUST-1 / MUST-2)
+ * - Unbound [Socket] + target [InetAddress] passed to [socketBinder] before `connect()` (MUST-1 / MUST-2);
+ *   the target lets Android pick hotspot-local vs Wi-Fi `Network` binding (spec §3.4)
  * - Keep-alive connection pooling for sequential file transfers
  * - `tcpNoDelay = true`, configurable `connectTimeoutMs` and `soTimeoutMs` (default 30 s)
  * - Mandatory `Expect: 100-continue` support on [postStream] so `403`/`409`/`410`/`411`/`507`
@@ -52,7 +53,7 @@ class PreContinueIOException(
 class PeerHttpClient(
     private val connectTimeoutMs: Int = DEFAULT_CONNECT_TIMEOUT_MS,
     private val soTimeoutMs: Int = DEFAULT_SO_TIMEOUT_MS,
-    private val socketBinder: (Socket) -> Unit = {},
+    private val socketBinder: (Socket, InetAddress) -> Unit = { _, _ -> },
 ) : Closeable {
 
     private class PooledConn(
@@ -401,7 +402,7 @@ class PeerHttpClient(
         val sock = Socket()
         try {
             // MUST-1 / MUST-2: invoke socketBinder on unbound Socket() before connect()
-            socketBinder(sock)
+            socketBinder(sock, addr)
             sock.tcpNoDelay = true
             sock.soTimeout = soTimeoutMs
             sock.connect(InetSocketAddress(addr, port), connectTimeoutMs)

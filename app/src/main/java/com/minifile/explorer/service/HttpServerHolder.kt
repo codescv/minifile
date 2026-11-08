@@ -1,8 +1,13 @@
 package com.minifile.explorer.service
 
+import com.minifile.explorer.core.http.HotspotSessionGate
 import com.minifile.explorer.core.http.HttpEvent
 import com.minifile.explorer.core.http.HttpTransferDirection
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.text.SimpleDateFormat
@@ -39,6 +44,21 @@ object HttpServerHolder {
     private val sessionPeerNames = LinkedHashMap<String, String>()
     private val _state = MutableStateFlow(HttpServerState())
     val state: StateFlow<HttpServerState> = _state.asStateFlow()
+
+    /**
+     * Process-wide hotspot/BLE token + interface gate shared by every [com.minifile.explorer.core.http.HttpFileServerEngine]
+     * instance (the engine is recreated on each start; the gate survives restarts).
+     */
+    val hotspotGate = HotspotSessionGate()
+
+    private val _peerEvents = MutableSharedFlow<HttpEvent>(
+        replay = 0,
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+
+    /** `PeerAnnounce` / `PeerSessionStart` / `PeerSessionEnd` stream for hotspot orchestration (LOHS auto-stop, auto-push). */
+    val peerEvents: SharedFlow<HttpEvent> = _peerEvents.asSharedFlow()
 
     fun markStarting() = synchronized(lock) {
         _state.value = _state.value.copy(isStarting = true, lastError = null)
@@ -99,6 +119,9 @@ object HttpServerHolder {
     }
 
     fun onEvent(event: HttpEvent) = synchronized(lock) {
+        if (event is HttpEvent.PeerAnnounce || event is HttpEvent.PeerSessionStart || event is HttpEvent.PeerSessionEnd) {
+            _peerEvents.tryEmit(event)
+        }
         when (event) {
             is HttpEvent.Request -> {
                 val isPeerApi = event.target.startsWith("/api/peer/")
@@ -167,6 +190,10 @@ object HttpServerHolder {
                 } else {
                     appendLogLocked(event.clientIp, summary)
                 }
+            }
+
+            is HttpEvent.PeerAnnounce -> {
+                appendLogLocked(event.clientIp, "Hotspot peer joined: ${event.name} (${event.os ?: "?"}, port ${event.port})")
             }
 
             is HttpEvent.Error -> {

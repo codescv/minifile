@@ -55,7 +55,7 @@ class PeerDiscoveryEngine(
     private val targetDiscoveryPort: Int = discoveryPort,
     private val extraBroadcastTargets: List<InetSocketAddress> = emptyList(),
     private val datagramSocketBinder: (DatagramSocket) -> Unit = {},
-    private val socketBinder: (Socket) -> Unit = {},
+    private val socketBinder: (Socket, InetAddress) -> Unit = { _, _ -> },
     private val onPortFallback: ((boundPort: Int) -> Unit)? = null,
     private val clock: Clock = Clock.SYSTEM,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -154,6 +154,14 @@ class PeerDiscoveryEngine(
             if (receiverActive) {
                 triggerImmediateBeaconLocked()
             }
+        }
+    }
+
+    /** Inserts / refreshes a peer learned out-of-band (QR scan with a link token, hotspot `announce`). */
+    fun upsert(peer: PeerInfo) {
+        synchronized(stateLock) {
+            upsertPeerLocked(peer.copy(lastSeenMs = clock.nowMs()))
+            publishPeersLocked()
         }
     }
 
@@ -267,6 +275,8 @@ class PeerDiscoveryEngine(
         val ver = PeerPathPolicy.sanitizeDisplayName(obj.str("ver").orEmpty(), MAX_VER_CHARS)
             .ifEmpty { DEFAULT_APP_VERSION }
         val readOnly = obj.bool("readOnly", false)
+        val platform = obj.str("os")?.trim()?.lowercase()?.takeIf { it == "android" || it == "ios" }
+        val hotspot = obj.bool("hotspot", false)
 
         val info = PeerInfo(
             id = id,
@@ -278,6 +288,8 @@ class PeerDiscoveryEngine(
             source = source,
             lastSeenMs = clock.nowMs(),
             proto = proto,
+            platform = platform,
+            hotspot = hotspot,
         )
         synchronized(stateLock) {
             upsertPeerLocked(info)
@@ -376,9 +388,10 @@ class PeerDiscoveryEngine(
     private fun isTcpPortOpen(ip: String, port: Int, timeoutMs: Int): Boolean {
         val sock = Socket()
         return try {
-            socketBinder(sock)
+            val addr = InetAddress.getByName(ip)
+            socketBinder(sock, addr)
             sock.tcpNoDelay = true
-            sock.connect(InetSocketAddress(ip, port), timeoutMs)
+            sock.connect(InetSocketAddress(addr, port), timeoutMs)
             true
         } catch (_: Throwable) {
             false
@@ -530,7 +543,7 @@ class PeerDiscoveryEngine(
                     if (now - lastReprobeMs >= REPROBE_INTERVAL_MS) {
                         lastReprobeMs = now
                         for (p in peerMap.values) {
-                            if ((p.source == PeerSource.MANUAL || p.source == PeerSource.PROBE) &&
+                            if ((p.source == PeerSource.MANUAL || p.source == PeerSource.PROBE || p.source == PeerSource.QR) &&
                                 now - p.lastSeenMs >= REPROBE_INTERVAL_MS
                             ) {
                                 toReprobe.add(p)
@@ -697,12 +710,17 @@ class PeerDiscoveryEngine(
             }
         }
         val mergedSource = when {
+            incoming.source == PeerSource.QR -> PeerSource.QR
+            existing?.source == PeerSource.QR -> PeerSource.QR
             incoming.source == PeerSource.MANUAL -> PeerSource.MANUAL
             existing?.source == PeerSource.MANUAL -> PeerSource.MANUAL
             incoming.source == PeerSource.PROBE -> PeerSource.PROBE
             else -> incoming.source
         }
-        peerMap[incoming.id] = incoming.copy(source = mergedSource)
+        // Beacons carry no `os`/`hotspot`; keep what a previous `/api/peer/info` probe learned.
+        val platform = incoming.platform ?: existing?.platform
+        val linkToken = incoming.linkToken ?: existing?.linkToken
+        peerMap[incoming.id] = incoming.copy(source = mergedSource, platform = platform, linkToken = linkToken)
     }
 
     private fun pruneExpiredLocked(nowMs: Long): Boolean {
@@ -712,7 +730,8 @@ class PeerDiscoveryEngine(
             val peer = it.next().value
             val ttl = when (peer.source) {
                 PeerSource.BEACON -> BEACON_TTL_MS
-                PeerSource.PROBE, PeerSource.MANUAL -> PROBE_MANUAL_TTL_MS
+                PeerSource.PROBE, PeerSource.MANUAL, PeerSource.QR, PeerSource.ANNOUNCE -> PROBE_MANUAL_TTL_MS
+                PeerSource.BLE -> BEACON_TTL_MS
             }
             if (nowMs - peer.lastSeenMs > ttl) {
                 it.remove()

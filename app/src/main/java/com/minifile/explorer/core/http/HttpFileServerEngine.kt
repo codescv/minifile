@@ -62,6 +62,8 @@ data class HttpConfig(
     val appVersion: String = "1.0.6",
     val peerInboxDir: String = "Received",
     val freeSpaceReserveBytes: Long = DEFAULT_FREE_SPACE_RESERVE_BYTES,
+    /** `/api/peer/info` `"os"` (spec §2.4). */
+    val platform: String = "android",
 ) {
     companion object {
         const val DEFAULT_FREE_SPACE_RESERVE_BYTES = 64L * 1024L * 1024L
@@ -121,10 +123,24 @@ sealed interface HttpEvent {
         val error: String? = null,
     ) : HttpEvent
 
+    /** `POST /api/peer/announce` accepted (spec §2.4); [clientIp] is the request source IP. */
+    data class PeerAnnounce(
+        val clientIp: String,
+        val port: Int,
+        val id: String,
+        val name: String,
+        val os: String?,
+    ) : HttpEvent
+
     data class Error(val message: String) : HttpEvent
 }
 
-private class HttpStatusException(val status: Int, val reason: String, message: String) : IOException(message)
+private class HttpStatusException(
+    val status: Int,
+    val reason: String,
+    message: String,
+    val code: String? = null,
+) : IOException(message)
 
 /**
  * Pure-Kotlin HTTP/1.1 wireless file share server (`zero android.* imports`).
@@ -138,6 +154,7 @@ private class HttpStatusException(val status: Int, val reason: String, message: 
 class HttpFileServerEngine(
     val config: HttpConfig,
     private val fs: FileSystem,
+    val hotspotGate: HotspotSessionGate = HotspotSessionGate(),
 ) {
     private val pathResolver = FtpPathResolver(config.root, fs)
     private val sortComparator = SortSpec().comparator()
@@ -169,6 +186,7 @@ class HttpFileServerEngine(
         val expectedBytes: Long,
         val startedAtMs: Long,
         @Volatile var lastActiveMs: Long = startedAtMs,
+        val tokenGated: Boolean = false,
     ) {
         var completedFiles: Int = 0
         var completedBytes: Long = 0L
@@ -577,6 +595,11 @@ class HttpFileServerEngine(
             validateUriRoutePath(rawUriPath)
             val query = parseQueryString(rawQuery)
 
+            // Spec §2.4 [v2]: an HTTP share auto-started for a hotspot session is confined to the hotspot interface.
+            if (hotspotGate.shouldRejectForConfinement(socket.localAddress)) {
+                throw HttpStatusException(403, "Forbidden", "Hotspot share is only reachable on the hotspot network", code = "iface")
+            }
+
             return when {
                 (rawUriPath == "/" || rawUriPath == "/browse") && (method == "GET" || method == "HEAD") -> {
                     handleBrowse(clientIp, rawTarget, query, output, headOnly, requestWantsClose)
@@ -618,6 +641,10 @@ class HttpFileServerEngine(
                     handlePeerEnd(clientIp, rawTarget, query, headers, input, output, requestWantsClose)
                 }
 
+                rawUriPath == "/api/peer/announce" && method == "POST" -> {
+                    handlePeerAnnounce(socket, clientIp, rawTarget, query, headers, input, output, requestWantsClose)
+                }
+
                 rawUriPath == "/favicon.ico" && (method == "GET" || method == "HEAD") -> {
                     writeSimpleResponse(
                         out = output,
@@ -653,7 +680,7 @@ class HttpFileServerEngine(
         } catch (e: HttpStatusException) {
             drainSmallUnreadIfNoExpectContinue(socket, headers, input)
             _events.tryEmit(HttpEvent.Request(clientIp, method, rawTarget, e.status))
-            writeJsonError(output, e.status, e.reason, e.message ?: e.reason, headOnly, close = true)
+            writeJsonError(output, e.status, e.reason, e.message ?: e.reason, headOnly, close = true, code = e.code)
             return false
         } catch (e: Exception) {
             _events.tryEmit(HttpEvent.Error("${method} ${rawTarget}: ${e.message ?: "internal error"}"))
@@ -1238,6 +1265,8 @@ class HttpFileServerEngine(
                 "ver" to JsonValue.Str(cleanVer),
                 "readOnly" to JsonValue.Bool(config.readOnly),
                 "port" to JsonValue.Num(effectivePort),
+                "os" to JsonValue.Str(config.platform),
+                "hotspot" to JsonValue.Bool(hotspotGate.isHosting),
             ),
         ).toByteArray(Charsets.UTF_8)
 
@@ -1273,6 +1302,12 @@ class HttpFileServerEngine(
         val now = System.currentTimeMillis()
         sweepExpiredPeerSessions(now)
 
+        // Spec §2.4 token gate: while a BLE / Files-QR hotspot session is armed, `tok` must match (constant-time).
+        val gate = hotspotGate.checkBeginToken(query["tok"]?.trim())
+        if (gate == HotspotSessionGate.BeginGate.REJECTED) {
+            throw HttpStatusException(403, "Forbidden", "Session token required", code = "token")
+        }
+
         val expectedFiles = query["files"]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
         val expectedBytes = query["bytes"]?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
         val senderDevice = PeerPathPolicy.sanitizeDisplayName(query["device"].orEmpty(), 64)
@@ -1287,6 +1322,7 @@ class HttpFileServerEngine(
             expectedFiles = expectedFiles,
             expectedBytes = expectedBytes,
             startedAtMs = now,
+            tokenGated = gate == HotspotSessionGate.BeginGate.MATCHED,
         )
 
         synchronized(peerSessionLock) {
@@ -1314,6 +1350,63 @@ class HttpFileServerEngine(
             ),
         ).toByteArray(Charsets.UTF_8)
 
+        val closeAfter = closeConnection || bodyInfo.requiresClose
+        writeSimpleResponse(
+            out = output,
+            status = 200,
+            reason = "OK",
+            contentType = "application/json; charset=utf-8",
+            body = respBytes,
+            headOnly = false,
+            closeConnection = closeAfter,
+        )
+        return !closeAfter
+    }
+
+    /**
+     * `POST /api/peer/announce?tok=<32hex>&port=<n>&id=<id>&name=<n>&os=<os>` (spec §2.3 step 5, §2.4).
+     * Never open: unarmed ⇒ `403 {"code":"token"}`. While hosting, must arrive on the hotspot interface
+     * (checked BEFORE consuming the single-use token so a spoof on `wlan0` cannot burn it).
+     */
+    private fun handlePeerAnnounce(
+        socket: Socket,
+        clientIp: String,
+        rawTarget: String,
+        query: Map<String, String>,
+        headers: Map<String, String>,
+        input: InputStream,
+        output: OutputStream,
+        closeConnection: Boolean,
+    ): Boolean {
+        val bodyInfo = prepareRequestBody(headers, input, sendContinueIfNeeded = false)
+        drainSmallBodyIfBounded(bodyInfo)
+
+        if (!hotspotGate.isAnnounceArmed) {
+            throw HttpStatusException(403, "Forbidden", "No hotspot session is waiting for an announce", code = "token")
+        }
+        if (hotspotGate.isHosting && !hotspotGate.isOnHotspotInterface(socket.localAddress)) {
+            throw HttpStatusException(403, "Forbidden", "Announce must arrive on the hotspot network", code = "token")
+        }
+        val port = query["port"]?.trim()?.toIntOrNull()
+        if (port == null || port !in 1..65535) {
+            throw HttpStatusException(400, "Bad Request", "Missing or invalid 'port' parameter")
+        }
+        if (!hotspotGate.consumeAnnounceToken(query["tok"]?.trim())) {
+            throw HttpStatusException(403, "Forbidden", "Invalid or expired session token", code = "token")
+        }
+        val id = query["id"]?.trim()?.take(128).orEmpty().ifEmpty { "$clientIp:$port" }
+        val name = PeerPathPolicy.sanitizeDisplayName(query["name"].orEmpty(), 64).ifEmpty { clientIp }
+        val os = query["os"]?.trim()?.lowercase(Locale.ROOT)?.takeIf { it == "android" || it == "ios" }
+
+        _events.tryEmit(HttpEvent.Request(clientIp, "POST", rawTarget, 200))
+        _events.tryEmit(HttpEvent.PeerAnnounce(clientIp = clientIp, port = port, id = id, name = name, os = os))
+
+        val respBytes = MiniJson.stringify(
+            MiniJson.obj(
+                "ok" to JsonValue.Bool(true),
+                "ip" to JsonValue.Str(clientIp),
+            ),
+        ).toByteArray(Charsets.UTF_8)
         val closeAfter = closeConnection || bodyInfo.requiresClose
         writeSimpleResponse(
             out = output,
@@ -1773,6 +1866,11 @@ class HttpFileServerEngine(
             }
         }
 
+        if (endedSession?.tokenGated == true) {
+            // Spec §2.4: the session token is cleared on `end` so LAN transfers are never left 403-locked.
+            hotspotGate.clearSessionToken()
+        }
+
         if (endedSession != null) {
             val now = System.currentTimeMillis()
             _events.tryEmit(
@@ -2168,6 +2266,7 @@ class HttpFileServerEngine(
             "/api/peer/send",
             "/api/peer/mkdir",
             "/api/peer/end",
+            "/api/peer/announce",
         )
 
         internal fun buildTempPartName(leafName: String, session8: String): String {
@@ -2456,13 +2555,14 @@ class HttpFileServerEngine(
             message: String,
             headOnly: Boolean,
             close: Boolean,
+            code: String? = null,
         ) {
-            val payload = MiniJson.stringify(
-                MiniJson.obj(
-                    "ok" to JsonValue.Bool(false),
-                    "error" to JsonValue.Str(message),
-                ),
-            ).toByteArray(Charsets.UTF_8)
+            val fields = mutableListOf<Pair<String, JsonValue>>(
+                "ok" to JsonValue.Bool(false),
+                "error" to JsonValue.Str(message),
+            )
+            if (code != null) fields.add("code" to JsonValue.Str(code))
+            val payload = MiniJson.stringify(MiniJson.obj(*fields.toTypedArray())).toByteArray(Charsets.UTF_8)
             writeSimpleResponse(
                 out = out,
                 status = status,

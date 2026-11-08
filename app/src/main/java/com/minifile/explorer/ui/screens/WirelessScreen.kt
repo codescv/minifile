@@ -86,7 +86,13 @@ import com.minifile.explorer.service.FtpServerService
 import com.minifile.explorer.service.HttpServerHolder
 import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.components.AddPeerByAddressDialog
+import com.minifile.explorer.ui.components.DirectHotspotButtons
+import com.minifile.explorer.ui.components.HotspotDirectSheet
+import com.minifile.explorer.ui.components.JoinHotspotDialog
+import com.minifile.explorer.ui.components.NearbyAccessRow
 import com.minifile.explorer.ui.components.PeerDeviceRow
+import com.minifile.explorer.ui.components.QrScannerSheet
+import com.minifile.explorer.service.HotspotState
 import com.minifile.explorer.ui.util.QrCodeGenerator
 import kotlin.math.floor
 import kotlinx.coroutines.delay
@@ -121,6 +127,10 @@ fun WirelessScreen(
     var showAddPeerDialog by remember { mutableStateOf(false) }
     var pendingSendPeer by remember { mutableStateOf<PeerInfo?>(null) }
     var showScanButton by remember { mutableStateOf(false) }
+    var showHotspotSheet by remember { mutableStateOf(false) }
+    var showQrScanner by remember { mutableStateOf(false) }
+    val joinState by viewModel.joinState.collectAsState()
+    val hotspotState by viewModel.hotspotState.collectAsState()
 
     DisposableEffect(Unit) {
         viewModel.startPeerBrowsing()
@@ -168,6 +178,7 @@ fun WirelessScreen(
     }
 
     fun startHttpServer() {
+        viewModel.onUserStartedHttp()
         launchWithNotificationCheck { FtpServerService.startHttp(context) }
     }
 
@@ -476,6 +487,10 @@ fun WirelessScreen(
                             }
                         }
 
+                        NearbyAccessRow(
+                            viewModel = viewModel,
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        )
                         HorizontalDivider()
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -513,6 +528,47 @@ fun WirelessScreen(
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            // 2b. Direct Hotspot (Scheme B): no shared Wi-Fi needed
+            item(key = "direct-hotspot-card") {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    TransferSectionTitle("Direct Hotspot")
+                    if (hotspotState is HotspotState.Active) {
+                        Text(
+                            text = "Hotspot on",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(bottom = 6.dp),
+                        )
+                    }
+                }
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                    ) {
+                        Text(
+                            text = "Two phones without shared Wi-Fi: one hosts a temporary hotspot, the other scans its QR code.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        DirectHotspotButtons(
+                            onHotspotDirect = { showHotspotSheet = true },
+                            onScanQr = { showQrScanner = true },
+                        )
                     }
                 }
             }
@@ -849,6 +905,41 @@ fun WirelessScreen(
             viewModel = viewModel,
             onAdded = { showAddPeerDialog = false },
             onDismiss = { showAddPeerDialog = false },
+        )
+    }
+
+    if (showHotspotSheet) {
+        HotspotDirectSheet(
+            viewModel = viewModel,
+            onDismiss = { showHotspotSheet = false },
+            onSendToPeer = { peer ->
+                pendingSendPeer = peer
+                documentPickerLauncher.launch(arrayOf("*/*"))
+            },
+        )
+    }
+
+    if (showQrScanner) {
+        QrScannerSheet(
+            onDismiss = { showQrScanner = false },
+            onResult = { text ->
+                showQrScanner = false
+                viewModel.joinFromQr(text)
+            },
+        )
+    }
+
+    joinState?.let { js ->
+        JoinHotspotDialog(
+            state = js,
+            onSend = { peer ->
+                viewModel.dismissJoinDialog()
+                pendingSendPeer = peer
+                documentPickerLauncher.launch(arrayOf("*/*"))
+            },
+            onCancel = { viewModel.cancelJoin() },
+            onClose = { viewModel.dismissJoinDialog() },
+            sendLabel = "Send files…",
         )
     }
 }

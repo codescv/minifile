@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import com.minifile.explorer.BuildConfig
+import com.minifile.explorer.core.peer.HostDecision
 import com.minifile.explorer.core.peer.PeerDiscoveryEngine
 import com.minifile.explorer.core.peer.PeerInfo
 import com.minifile.explorer.data.LanAddressResolver
@@ -19,7 +20,17 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.net.DatagramSocket
+import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Socket
+
+/** The LocalOnlyHotspot this device hosts (spec §3.4): interface, gateway IPv4 and real prefix length. */
+data class LocalHotspotBinding(
+    val interfaceName: String,
+    val ip: Inet4Address,
+    val prefixLength: Int,
+)
 
 /**
  * Android lifecycle & network-binding wrapper around pure-JVM [PeerDiscoveryEngine].
@@ -33,6 +44,10 @@ import java.net.Socket
  * - Recreates the discovery UDP socket via [PeerDiscoveryEngine.rebindSocket] whenever the tracked
  *   Wi-Fi [Network] changes (`onAvailable` / `onLost`, `#80` note 1).
  * - Holds [WifiManager.MulticastLock] only while receiver or browser role is active (`SHOULD-1`).
+ * - Spec §3.4 (v1.0.18): [pinnedNetwork] (set while joined to a peer hotspot via `WifiNetworkSpecifier`) wins for
+ *   both TCP and UDP; while this device hosts a LocalOnlyHotspot ([localHotspot]) sockets to targets inside the
+ *   hotspot subnet are bound to the hotspot IP **without** `Network.bindSocket` (fixes the STA+AP `wlan0`
+ *   fwmark black-hole) and the UDP discovery socket skips the Wi-Fi bind so beacons reach `ap0` too.
  */
 class PeerDiscoveryHolder(
     context: Context,
@@ -47,6 +62,16 @@ class PeerDiscoveryHolder(
 
     @Volatile
     private var activeWifiNetwork: Network? = null
+
+    /** Specifier network this device joined as a hotspot client (never `bindProcessToNetwork`). */
+    @Volatile
+    var pinnedNetwork: Network? = null
+        private set
+
+    /** LocalOnlyHotspot this device currently hosts. */
+    @Volatile
+    var localHotspot: LocalHotspotBinding? = null
+        private set
 
     private var networkCallbackRegistered = false
     private var multicastLock: WifiManager.MulticastLock? = null
@@ -123,12 +148,43 @@ class PeerDiscoveryHolder(
         }
     }
 
+    fun setPinnedNetwork(network: Network?) {
+        if (pinnedNetwork == network) return
+        pinnedNetwork = network
+        engine.rebindSocket()
+    }
+
+    fun setLocalHotspot(binding: LocalHotspotBinding?) {
+        if (localHotspot == binding) return
+        localHotspot = binding
+        engine.rebindSocket()
+    }
+
     fun bindDatagramSocket(socket: DatagramSocket) {
+        pinnedNetwork?.let { net ->
+            runCatching { net.bindSocket(socket) }
+            return
+        }
+        // Hosting LOHS: keep the UDP socket unbound so MFP1 beacons/queries also reach the `ap0` broadcast.
+        if (localHotspot != null) return
         val net = activeWifiNetwork ?: return
         runCatching { net.bindSocket(socket) }
     }
 
-    fun bindTcpSocket(socket: Socket) {
+    fun bindTcpSocket(socket: Socket, target: InetAddress) {
+        pinnedNetwork?.let { net ->
+            runCatching { net.bindSocket(socket) }
+            return
+        }
+        val hs = localHotspot
+        if (hs != null && target is Inet4Address &&
+            HostDecision.inSubnet(target.address, hs.ip.address, hs.prefixLength)
+        ) {
+            // Follow the `local_network` policy route to the soft-AP interface instead of the `wlan0` table.
+            runCatching { socket.bind(InetSocketAddress(hs.ip, 0)) }
+            return
+        }
+        if (target.isLoopbackAddress) return
         val net = activeWifiNetwork ?: return
         runCatching { net.bindSocket(socket) }
     }
@@ -172,10 +228,16 @@ class PeerDiscoveryHolder(
         engine.launchScanSubnet(extraPorts = listOf(configuredHttpPort))
     }
 
-    suspend fun probeAddress(rawAddress: String): PeerInfo {
+    suspend fun probeAddress(
+        rawAddress: String,
+        source: com.minifile.explorer.core.peer.PeerSource = com.minifile.explorer.core.peer.PeerSource.MANUAL,
+        timeoutMs: Int = 3_000,
+    ): PeerInfo {
         return engine.probeAddress(
             rawAddress = rawAddress,
             defaultPort = PeerDiscoveryEngine.DEFAULT_HTTP_PORT,
+            source = source,
+            timeoutMs = timeoutMs,
         )
     }
 

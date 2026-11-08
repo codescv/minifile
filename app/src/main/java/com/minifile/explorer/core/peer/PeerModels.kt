@@ -8,6 +8,15 @@ enum class PeerSource {
     BEACON,
     PROBE,
     MANUAL,
+
+    /** Discovered passively over Bluetooth LE (no IP until a hotspot / LAN link is negotiated). */
+    BLE,
+
+    /** Learned by scanning a QR code (`WIFI:` / `minifile://` / `http://`). */
+    QR,
+
+    /** Announced itself via `POST /api/peer/announce` while this device hosts a hotspot. */
+    ANNOUNCE,
 }
 
 enum class PeerConflictPolicy(val wireValue: String) {
@@ -35,7 +44,27 @@ data class PeerInfo(
     val source: PeerSource,
     val lastSeenMs: Long,
     val proto: Int = 1,
+    /** `"android"` / `"ios"` when known (from `/api/peer/info` `os`, BLE adv, or announce). */
+    val platform: String? = null,
+    /** One-shot `tok` forwarded to `/api/peer/begin` for hotspot (BLE / Files-QR) sessions. */
+    val linkToken: String? = null,
+    /** `true` when the remote host currently serves a LocalOnlyHotspot (`/api/peer/info` `hotspot`). */
+    val hotspot: Boolean = false,
+    /** BLE flags byte (`HotspotLinkCodec.FLAG_*`) for [PeerSource.BLE] peers. */
+    val bleFlags: Int = 0,
 ) {
+    /** `true` when this peer has no routable IP yet (pure BLE row). */
+    val needsLink: Boolean
+        get() = host.isBlank() || port <= 0
+
+    /** Human-readable address for list rows (never `":0"`). */
+    val displayEndpoint: String
+        get() = if (needsLink) {
+            if (source == PeerSource.BLE) "Bluetooth" else "Nearby"
+        } else {
+            endpoint
+        }
+
     val endpoint: String
         get() {
             val hostPart = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
