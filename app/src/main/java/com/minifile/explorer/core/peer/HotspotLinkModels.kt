@@ -217,8 +217,8 @@ internal fun JsonValue.Obj.strList(key: String): List<String> =
 object PeerMerge {
     fun merge(lan: List<PeerInfo>, ble: List<PeerInfo>): List<PeerInfo> {
         if (ble.isEmpty()) return lan
-        val lanId6 = lan.map { HotspotLinkCodec.id6Of(it.id) }.toHashSet()
-        val extra = ble.filter { HotspotLinkCodec.id6Of(it.id) !in lanId6 }
+        val lanId6 = lan.map { HotspotLinkCodec.id6Of(it.id).lowercase() }.toHashSet()
+        val extra = ble.filter { HotspotLinkCodec.id6Of(it.id).lowercase() !in lanId6 }
         return if (extra.isEmpty()) lan else lan + extra
     }
 }

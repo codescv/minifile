@@ -37,7 +37,14 @@ fun JoinHotspotDialog(
 ) {
     val busy = state is JoinUiState.Joining || state is JoinUiState.FindingHost
     AlertDialog(
-        onDismissRequest = { if (!busy) onClose() },
+        onDismissRequest = {
+            when (state) {
+                // Spec §3.3 [v2]: Back on Found must disconnect rather than stranding Wi-Fi on the hotspot.
+                is JoinUiState.Found -> onCancel()
+                is JoinUiState.Failed -> onClose()
+                is JoinUiState.Joining, is JoinUiState.FindingHost -> Unit
+            }
+        },
         properties = DialogProperties(dismissOnBackPress = !busy, dismissOnClickOutside = false),
         icon = { Icon(Icons.Filled.QrCodeScanner, contentDescription = null) },
         title = { Text("Scan QR to Join") },

@@ -124,7 +124,12 @@ fun SendToDeviceSheet(
         }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = {
+            if (joinState != null) viewModel.cancelJoin()
+            onDismiss()
+        },
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()

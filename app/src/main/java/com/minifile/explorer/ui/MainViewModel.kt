@@ -58,6 +58,7 @@ import com.minifile.explorer.data.gdrive.GDriveSignInState
 import com.minifile.explorer.di.AppContainer
 import com.minifile.explorer.service.BleLinkUiState
 import com.minifile.explorer.service.HotspotException
+import com.minifile.explorer.service.HotspotJoinController
 import com.minifile.explorer.service.HotspotPurpose
 import com.minifile.explorer.service.HotspotState
 import com.minifile.explorer.service.IncomingBleRequest
@@ -67,6 +68,9 @@ import com.minifile.explorer.service.OperationRegistry
 import com.minifile.explorer.service.OperationRunOutcome
 import com.minifile.explorer.ui.util.UiFormatters
 import java.io.FileNotFoundException
+import java.net.InetAddress
+import java.net.Socket
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -160,6 +164,13 @@ internal class MainViewModelDependencies(
     val cancelGDriveSignIn: () -> Unit = {},
     val resetGDriveSignIn: () -> Unit = {},
     val findSafGrantRoot: (String) -> VfsPath.Saf? = { null },
+    val hotspotJoinController: HotspotJoinController = HotspotJoinController.NOOP,
+    val peerSocketBinder: (Socket, InetAddress) -> Unit = { _, _ -> },
+    val probePeer: suspend (host: String, port: Int, source: PeerSource, timeoutMs: Int) -> PeerInfo? =
+        { _, _, _, _ -> null },
+    val upsertPeer: (PeerInfo) -> Unit = {},
+    val scanPeersSubnetAction: () -> Unit = {},
+    val cancelBleLinkAction: () -> Unit = {},
     val primaryStoragePathProvider: () -> String = {
         Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
     },
@@ -189,6 +200,14 @@ internal class MainViewModelDependencies(
                 findSafGrantRoot = { treeUri ->
                     container.persistedTreeStore.findGrantByTreeUri(treeUri)?.toVfsPath()
                 },
+                hotspotJoinController = container.wifiSpecifierConnector,
+                peerSocketBinder = container.peerDiscoveryHolder::bindTcpSocket,
+                probePeer = { host, port, source, timeoutMs ->
+                    container.peerDiscoveryHolder.engine.probe(host = host, port = port, source = source, timeoutMs = timeoutMs)
+                },
+                upsertPeer = { container.peerDiscoveryHolder.engine.upsert(it) },
+                scanPeersSubnetAction = { container.peerDiscoveryHolder.scanSubnet() },
+                cancelBleLinkAction = { container.blePeerCoordinator.cancelLink() },
             )
     }
 }
@@ -632,8 +651,10 @@ class MainViewModel internal constructor(
 
     override fun onCleared() {
         deps.cancelGDriveSignIn()
+        joinJob?.cancel()
+        joinJob = null
         // Spec §3.3 [v2]: never leave the user's Wi-Fi pinned to a peer hotspot.
-        _container?.let { c -> runCatching { c.wifiSpecifierConnector.release() } }
+        runCatching { deps.hotspotJoinController.release() }
         super.onCleared()
     }
 
@@ -1631,18 +1652,25 @@ class MainViewModel internal constructor(
     // --- Scheme B joiner: Scan QR to Join ---
     /** Handles any scanned / typed QR text: `WIFI:`, `minifile://hotspot|peer`, or `http(s)://host[:port]/`. */
     fun joinFromQr(raw: String) {
+        // Always cancel/release any prior join before starting or failing a new QR action (Spec §3.3 [v2]).
+        joinJob?.cancel()
+        joinJob = null
+        runCatching { deps.hotspotJoinController.release() }
+
         val payload = QrPayloads.parse(raw.trim())
         if (payload == null) {
             _joinState.value = JoinUiState.Failed("Not a Files or Wi-Fi QR code")
             return
         }
-        joinJob?.cancel()
         joinJob = vmScope.launch {
+            var joinedHere = false
+            var completed = false
             try {
                 val peer: PeerInfo = when (payload) {
                     is QrPayload.Wifi -> {
                         _joinState.value = JoinUiState.Joining(payload.ssid)
-                        val joined = container.wifiSpecifierConnector.join(
+                        joinedHere = true
+                        val joined = deps.hotspotJoinController.join(
                             ssid = payload.ssid,
                             pass = payload.password,
                             sec = payload.sec,
@@ -1653,7 +1681,8 @@ class MainViewModel internal constructor(
                     }
                     is QrPayload.Hotspot -> {
                         _joinState.value = JoinUiState.Joining(payload.ssid)
-                        val joined = container.wifiSpecifierConnector.join(
+                        joinedHere = true
+                        val joined = deps.hotspotJoinController.join(
                             ssid = payload.ssid,
                             pass = payload.password,
                             sec = payload.sec,
@@ -1664,7 +1693,7 @@ class MainViewModel internal constructor(
                             ?: findHotspotHost(joined.gateway, joined.ownIp, joined.prefixLength)
                             ?: throw JoinException("Joined ${payload.ssid}, but ${payload.name ?: "the host"} did not answer")
                         val withTok = direct.copy(linkToken = payload.tok, source = PeerSource.QR)
-                        container.peerDiscoveryHolder.engine.upsert(withTok)
+                        deps.upsertPeer(withTok)
                         withTok
                     }
                     is QrPayload.Peer -> {
@@ -1679,12 +1708,16 @@ class MainViewModel internal constructor(
                     }
                 }
                 _joinState.value = JoinUiState.Found(peer)
-            } catch (e: kotlinx.coroutines.CancellationException) {
+                completed = true
+            } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 val msg = (e as? PeerTransferException)?.userMessage ?: e.message ?: "Could not connect"
-                runCatching { container.wifiSpecifierConnector.release() }
                 _joinState.value = JoinUiState.Failed(msg)
+            } finally {
+                if (joinedHere && !completed) {
+                    runCatching { deps.hotspotJoinController.release() }
+                }
             }
         }
     }
@@ -1699,11 +1732,16 @@ class MainViewModel internal constructor(
         joinJob?.cancel()
         joinJob = null
         _joinState.value = null
-        _container?.let { c -> runCatching { c.wifiSpecifierConnector.release() } }
+        runCatching { deps.hotspotJoinController.release() }
     }
 
     val isJoinedToPeerHotspot: Boolean
-        get() = _container?.wifiSpecifierConnector?.isJoined == true
+        get() = deps.hotspotJoinController.isJoined
+
+    /** Releases the joined hotspot when a pending UI flow (e.g. cancelled document picker) aborts before sending. */
+    fun releaseJoinedHotspotForPeer(peer: PeerInfo, immediate: Boolean = true) {
+        releaseJoinedNetworkIfTarget(peer, immediate = immediate)
+    }
 
     /** Host discovery after a `WIFI:` join (spec §2.5): gateway → subnet `.1` → MFP1 beacons → `/24` sweep. */
     private suspend fun findHotspotHost(gateway: String?, ownIp: String?, prefixLength: Int): PeerInfo? {
@@ -1714,17 +1752,18 @@ class MainViewModel internal constructor(
         }.distinct().filter { it != ownIp }
         probeRetrying(candidates, ports, attempts = 3)?.let { return it }
         // MFP1 beacons over the pinned network (browser role is active while the dialog is open).
-        if (ownIp != null) {
+        val anchor = ownIp?.takeIf { it.isNotBlank() } ?: gateway?.takeIf { it.isNotBlank() }
+        if (anchor != null) {
             repeat(10) {
                 peers.value.firstOrNull { p ->
-                    !p.needsLink && HostDecision.inSubnet(p.host, ownIp, prefixLength)
+                    !p.needsLink && HostDecision.inSubnet(p.host, anchor, prefixLength)
                 }?.let { return it }
                 delay(500)
             }
-            container.peerDiscoveryHolder.scanSubnet()
+            deps.scanPeersSubnetAction()
             repeat(30) {
                 peers.value.firstOrNull { p ->
-                    !p.needsLink && HostDecision.inSubnet(p.host, ownIp, prefixLength)
+                    !p.needsLink && HostDecision.inSubnet(p.host, anchor, prefixLength)
                 }?.let { return it }
                 delay(500)
             }
@@ -1733,12 +1772,11 @@ class MainViewModel internal constructor(
     }
 
     private suspend fun probeRetrying(hosts: List<String>, ports: List<Int>, attempts: Int): PeerInfo? {
-        val engine = container.peerDiscoveryHolder.engine
         repeat(attempts) { attempt ->
             for (h in hosts) {
                 for (p in ports) {
                     val res = runCatching {
-                        engine.probe(host = h, port = p, source = PeerSource.QR, timeoutMs = if (ports.size > 1) 400 else 1_500)
+                        deps.probePeer(h, p, PeerSource.QR, if (ports.size > 1) 400 else 1_500)
                     }.getOrNull()
                     if (res != null) return res
                 }
@@ -1760,9 +1798,14 @@ class MainViewModel internal constructor(
             senderDeviceNameProvider = { settings.value.peerDeviceName },
         )
         if (!peer.needsLink) {
-            val res = engine.send(peer = peer, items = sendItems, sink = sink)
-            releaseJoinedNetworkIfTarget(peer)
-            return res
+            var ok = false
+            try {
+                val res = engine.send(peer = peer, items = sendItems, sink = sink)
+                ok = !res.cancelled && !sink.isCancelled() && res.errors.isEmpty()
+                return res
+            } finally {
+                releaseJoinedNetworkIfTarget(peer, immediate = !ok)
+            }
         }
         val files = sendItems.count { !it.isDirectory }
         val bytes = sendItems.sumOf { if (it.isDirectory) 0L else it.size.coerceAtLeast(0L) }
@@ -1770,24 +1813,30 @@ class MainViewModel internal constructor(
         var ok = false
         try {
             val res = engine.send(peer = link.peer, items = sendItems, sink = sink)
-            ok = !res.cancelled && res.errors.isEmpty()
+            ok = !res.cancelled && !sink.isCancelled() && res.errors.isEmpty()
             return res
         } finally {
             link.teardown(ok)
         }
     }
 
-    private fun releaseJoinedNetworkIfTarget(peer: PeerInfo) {
-        val connector = _container?.wifiSpecifierConnector ?: return
+    private fun releaseJoinedNetworkIfTarget(peer: PeerInfo, immediate: Boolean) {
+        val connector = deps.hotspotJoinController
         val joined = connector.joined ?: return
-        val own = joined.ownIp ?: return
-        if (HostDecision.inSubnet(peer.host, own, joined.prefixLength)) {
-            connector.releaseAfter()
+        val anchor = joined.ownIp?.takeIf { it.isNotBlank() } ?: joined.gateway?.takeIf { it.isNotBlank() }
+        val matches = when {
+            anchor == null -> true // DHCP lagged past LINK_WAIT_MS while isJoined: never leak
+            peer.needsLink -> false
+            peer.source == PeerSource.QR -> true
+            else -> HostDecision.inSubnet(peer.host, anchor, joined.prefixLength)
+        }
+        if (matches) {
+            if (immediate) connector.release() else connector.releaseAfter()
         }
     }
 
     fun scanPeersSubnet() {
-        container.peerDiscoveryHolder.scanSubnet()
+        deps.scanPeersSubnetAction()
     }
 
     fun addPeerByAddress(
@@ -1819,10 +1868,14 @@ class MainViewModel internal constructor(
         peer: PeerInfo,
         items: List<VfsPath>,
     ) {
-        if (items.isEmpty()) return
-        val appContext = context.applicationContext
+        if (items.isEmpty()) {
+            releaseJoinedNetworkIfTarget(peer, immediate = true)
+            return
+        }
+        val appContext = context.applicationContext ?: context
         val peerName = PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host }
         if (peer.readOnly) {
+            releaseJoinedNetworkIfTarget(peer, immediate = true)
             emitSimpleMessage("$peerName is read-only (Transfer ▸ Settings)")
             return
         }
@@ -1830,39 +1883,54 @@ class MainViewModel internal constructor(
         emitSimpleMessage("Sending to $peerName…")
 
         val countLabel = if (items.size == 1) items.first().displayName else "${items.size} items"
-        val txClient = PeerHttpClient(socketBinder = container.peerDiscoveryHolder::bindTcpSocket)
+        val txClient = PeerHttpClient(socketBinder = deps.peerSocketBinder)
 
-        container.operationRegistry.enqueue(
+        deps.operationRegistry.enqueue(
             context = appContext,
             kind = OperationKind.SEND,
             title = "Sending $countLabel to $peerName",
             retryAction = { sendToPeer(appContext, peer, items) },
             onCancel = {
                 txClient.close()
-                if (peer.needsLink) container.blePeerCoordinator.cancelLink()
+                if (peer.needsLink) {
+                    deps.cancelBleLinkAction()
+                } else {
+                    releaseJoinedNetworkIfTarget(peer, immediate = true)
+                }
             },
         ) { _, sink ->
-            txClient.use { client ->
-                try {
-                    val sendItems = PeerTransferEngine.collectSendItems(
-                        fs = container.fileSystem,
-                        roots = items,
-                        includeHidden = settings.value.showHidden,
-                    )
-                    if (sendItems.isEmpty()) {
-                        return@use OperationRunOutcome(message = "Nothing to send to $peerName")
-                    }
-                    val res = runPeerSend(peer, sendItems, client, sink)
-                    formatPeerSendOutcome(peerName, res, sink.isCancelled())
-                } catch (e: PeerTransferException) {
-                    if (sink.isCancelled()) {
-                        OperationRunOutcome(message = "Sending to $peerName cancelled")
-                    } else {
-                        OperationRunOutcome(
-                            message = e.userMessage,
-                            errorSummary = e.userMessage,
+            var enteredRunPeerSend = false
+            try {
+                txClient.use { client ->
+                    try {
+                        val sendItems = PeerTransferEngine.collectSendItems(
+                            fs = deps.fileSystem,
+                            roots = items,
+                            includeHidden = settings.value.showHidden,
                         )
+                        if (sink.isCancelled()) {
+                            return@use OperationRunOutcome(message = "Sending to $peerName cancelled")
+                        }
+                        if (sendItems.isEmpty()) {
+                            return@use OperationRunOutcome(message = "Nothing to send to $peerName")
+                        }
+                        enteredRunPeerSend = true
+                        val res = runPeerSend(peer, sendItems, client, sink)
+                        formatPeerSendOutcome(peerName, res, sink.isCancelled())
+                    } catch (e: PeerTransferException) {
+                        if (sink.isCancelled()) {
+                            OperationRunOutcome(message = "Sending to $peerName cancelled")
+                        } else {
+                            OperationRunOutcome(
+                                message = e.userMessage,
+                                errorSummary = e.userMessage,
+                            )
+                        }
                     }
+                }
+            } finally {
+                if (!enteredRunPeerSend) {
+                    releaseJoinedNetworkIfTarget(peer, immediate = true)
                 }
             }
         }
@@ -1873,48 +1941,64 @@ class MainViewModel internal constructor(
         peer: PeerInfo,
         uris: List<Uri>,
     ) {
-        if (uris.isEmpty()) return
-        val appContext = context.applicationContext
+        if (uris.isEmpty()) {
+            releaseJoinedNetworkIfTarget(peer, immediate = true)
+            return
+        }
+        val appContext = context.applicationContext ?: context
         val peerName = PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host }
         if (peer.readOnly) {
+            releaseJoinedNetworkIfTarget(peer, immediate = true)
             emitSimpleMessage("$peerName is read-only (Transfer ▸ Settings)")
             return
         }
         emitSimpleMessage("Sending to $peerName…")
 
         val countLabel = if (uris.size == 1) "1 file" else "${uris.size} files"
-        val txClient = PeerHttpClient(socketBinder = container.peerDiscoveryHolder::bindTcpSocket)
+        val txClient = PeerHttpClient(socketBinder = deps.peerSocketBinder)
 
-        container.operationRegistry.enqueue(
+        deps.operationRegistry.enqueue(
             context = appContext,
             kind = OperationKind.SEND,
             title = "Sending $countLabel to $peerName",
             retryAction = { sendUrisToPeer(appContext, peer, uris) },
             onCancel = {
                 txClient.close()
-                if (peer.needsLink) container.blePeerCoordinator.cancelLink()
+                if (peer.needsLink) {
+                    deps.cancelBleLinkAction()
+                } else {
+                    releaseJoinedNetworkIfTarget(peer, immediate = true)
+                }
             },
         ) { _, sink ->
-            txClient.use { client ->
-                try {
-                    val sendItems = resolveUriSendItems(appContext, uris, sink)
-                    if (sink.isCancelled()) {
-                        return@use OperationRunOutcome(message = "Sending to $peerName cancelled")
+            var enteredRunPeerSend = false
+            try {
+                txClient.use { client ->
+                    try {
+                        val sendItems = resolveUriSendItems(appContext, uris, sink)
+                        if (sink.isCancelled()) {
+                            return@use OperationRunOutcome(message = "Sending to $peerName cancelled")
+                        }
+                        if (sendItems.isEmpty()) {
+                            return@use OperationRunOutcome(message = "Nothing to send to $peerName")
+                        }
+                        enteredRunPeerSend = true
+                        val res = runPeerSend(peer, sendItems, client, sink)
+                        formatPeerSendOutcome(peerName, res, sink.isCancelled())
+                    } catch (e: PeerTransferException) {
+                        if (sink.isCancelled()) {
+                            OperationRunOutcome(message = "Sending to $peerName cancelled")
+                        } else {
+                            OperationRunOutcome(
+                                message = e.userMessage,
+                                errorSummary = e.userMessage,
+                            )
+                        }
                     }
-                    if (sendItems.isEmpty()) {
-                        return@use OperationRunOutcome(message = "Nothing to send to $peerName")
-                    }
-                    val res = runPeerSend(peer, sendItems, client, sink)
-                    formatPeerSendOutcome(peerName, res, sink.isCancelled())
-                } catch (e: PeerTransferException) {
-                    if (sink.isCancelled()) {
-                        OperationRunOutcome(message = "Sending to $peerName cancelled")
-                    } else {
-                        OperationRunOutcome(
-                            message = e.userMessage,
-                            errorSummary = e.userMessage,
-                        )
-                    }
+                }
+            } finally {
+                if (!enteredRunPeerSend) {
+                    releaseJoinedNetworkIfTarget(peer, immediate = true)
                 }
             }
         }

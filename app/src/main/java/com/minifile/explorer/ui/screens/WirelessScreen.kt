@@ -151,8 +151,12 @@ fun WirelessScreen(
     ) { uris ->
         val targetPeer = pendingSendPeer
         pendingSendPeer = null
-        if (targetPeer != null && uris.isNotEmpty()) {
-            viewModel.sendUrisToPeer(context, targetPeer, uris)
+        if (targetPeer != null) {
+            if (uris.isNotEmpty()) {
+                viewModel.sendUrisToPeer(context, targetPeer, uris)
+            } else {
+                viewModel.releaseJoinedHotspotForPeer(targetPeer, immediate = true)
+            }
         }
     }
 

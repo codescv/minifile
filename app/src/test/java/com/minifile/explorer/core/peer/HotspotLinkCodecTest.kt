@@ -176,9 +176,10 @@ class HotspotLinkCodecTest {
         assertEquals("ab12cd", HotspotLinkCodec.id6Of("ab12cd34-5678"))
         assertEquals("ab0000", HotspotLinkCodec.id6Of("ab"))
         assertTrue(HotspotLinkCodec.matchesId6("ab12cd34-5678", "ab12cd"))
+        assertTrue(HotspotLinkCodec.matchesId6("AB12CD34-5678", "ab12cd"))
         assertFalse(HotspotLinkCodec.matchesId6("ab12ce34", "ab12cd"))
 
-        val lan = PeerInfo("ab12cd34-5678", "Pixel", "192.168.1.5", 8080, "1.0.18", false, PeerSource.BEACON, 0L)
+        val lan = PeerInfo("AB12CD34-5678", "Pixel", "192.168.1.5", 8080, "1.0.18", false, PeerSource.BEACON, 0L)
         val bleDup = PeerInfo("ab12cd", "Pixel", "", 0, "", false, PeerSource.BLE, 0L)
         val bleOther = PeerInfo("ff00ee", "iPhone", "", 0, "", false, PeerSource.BLE, 0L, platform = "ios")
         val merged = PeerMerge.merge(listOf(lan), listOf(bleDup, bleOther))

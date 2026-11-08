@@ -130,7 +130,7 @@ object HotspotLinkCodec {
 
     /** `true` when [lanPeerId] belongs to the BLE peer [id6] (LAN transport wins in the merged list). */
     fun matchesId6(lanPeerId: String, id6: String): Boolean =
-        id6.length == ID6_LEN && id6Of(lanPeerId) == id6
+        id6.length == ID6_LEN && id6Of(lanPeerId).equals(id6, ignoreCase = true)
 
     // ---------------------------------------------------------------------------------------------
     // Framing (spec §2.2)
