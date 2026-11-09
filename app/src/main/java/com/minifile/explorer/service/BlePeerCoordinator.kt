@@ -974,6 +974,9 @@ class BlePeerCoordinator(
         }
         incomingSession = null
         refreshAdvertisedFlags()
+        // The session kept the GATT server alive past MainActivity.onStop(): release it now that it's over.
+        val (presence, scan) = refs()
+        if (!presence && !scan) closeGattServer()
         delay(if (ok) 1_500 else 3_000)
         if (_linkUi.value?.finished == true && _linkUi.value?.role == BleLinkRole.RECEIVER) _linkUi.value = null
     }

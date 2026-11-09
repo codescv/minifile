@@ -741,8 +741,10 @@ private fun MiniFileRoot(
     pendingIncomingBle?.let { req ->
         PeerConsentDialog(
             request = req,
-            onAccept = {
-                if (!NearbyPermissions.hasHotspotPermissions(context) && acceptAfterHotspotPermission == null) {
+            onAccept = accept@{
+                if (!NearbyPermissions.hasHotspotPermissions(context)) {
+                    // A permission prompt is already up: ignore repeated taps until the user answers it.
+                    if (acceptAfterHotspotPermission != null) return@accept
                     acceptAfterHotspotPermission = req.requestId
                     val launched = runCatching {
                         hotspotPermissionLauncher.launch(NearbyPermissions.hotspotPermissions())
