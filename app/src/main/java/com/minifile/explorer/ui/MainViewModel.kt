@@ -56,6 +56,7 @@ import com.minifile.explorer.data.SettingsRepository
 import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
 import com.minifile.explorer.data.gdrive.GDriveSignInState
 import com.minifile.explorer.di.AppContainer
+import com.minifile.explorer.service.BleAvailability
 import com.minifile.explorer.service.BleLinkUiState
 import com.minifile.explorer.service.HotspotException
 import com.minifile.explorer.service.HotspotJoinController
@@ -290,6 +291,10 @@ class MainViewModel internal constructor(
         _container?.blePeerCoordinator?.pendingIncoming ?: MutableStateFlow(null)
     val bleLinkUi: StateFlow<BleLinkUiState?> =
         _container?.blePeerCoordinator?.linkUi ?: MutableStateFlow(null)
+
+    /** Bluetooth QR-free discovery readiness (UNSUPPORTED in headless unit tests without an AppContainer). */
+    val bleAvailability: StateFlow<BleAvailability> =
+        _container?.blePeerCoordinator?.availability ?: MutableStateFlow(BleAvailability.UNSUPPORTED)
 
     private val _joinState = MutableStateFlow<JoinUiState?>(null)
     val joinState: StateFlow<JoinUiState?> = _joinState.asStateFlow()
@@ -1608,7 +1613,7 @@ class MainViewModel internal constructor(
 
     /** Re-evaluate BLE radios after a runtime permission / Bluetooth state change. */
     fun onNearbyPermissionsChanged() {
-        container.blePeerCoordinator.restartRadios()
+        _container?.blePeerCoordinator?.restartRadios()
     }
 
     /** The user started HTTP Share explicitly: it must not stay confined to an ephemeral hotspot. */

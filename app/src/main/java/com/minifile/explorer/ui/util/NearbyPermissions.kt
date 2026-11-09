@@ -122,11 +122,21 @@ object NearbyPermissions {
 
     fun bluetoothEnableIntent(): Intent = Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)
 
+    /**
+     * BLE + hotspot runtime permissions. QR-free nearby transfer needs both: Bluetooth to discover / negotiate and
+     * `NEARBY_WIFI_DEVICES` (Location on Android ≤ 12) for `startLocalOnlyHotspot()` on the receiving phone.
+     */
+    fun hasAllNearbyPermissions(context: Context): Boolean =
+        hasAllBlePermissions(context) && hasHotspotPermissions(context)
+
+    /** First thing blocking Bluetooth QR-free transfer, or `null` when ready / no BLE hardware. */
+    fun nearbyIssue(context: Context): NearbyAccessIssue? = NearbyStatusCopy.issue(
+        hasBleHardware = hasBleHardware(context),
+        hasAllNearbyPermissions = hasAllNearbyPermissions(context),
+        bluetoothOn = isBluetoothOn(context),
+        needsLocationServices = needsLocationServices(context),
+    )
+
     /** Short human hint for what is missing (or `null` when everything is ready). */
-    fun nearbyHint(context: Context): String? = when {
-        !hasAllBlePermissions(context) -> "Allow Nearby devices to find phones without shared Wi-Fi"
-        hasBleHardware(context) && !isBluetoothOn(context) -> "Turn on Bluetooth to find nearby phones"
-        needsLocationServices(context) -> "Location must be on for Android ≤12 to start a hotspot / scan Bluetooth"
-        else -> null
-    }
+    fun nearbyHint(context: Context): String? = nearbyIssue(context)?.let(NearbyStatusCopy::hint)
 }

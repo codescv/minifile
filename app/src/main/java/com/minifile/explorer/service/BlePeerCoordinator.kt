@@ -20,10 +20,15 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.location.LocationManager
 import android.os.Build
 import android.os.ParcelUuid
 import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
 import com.minifile.explorer.BuildConfig
 import com.minifile.explorer.core.http.HttpEvent
 import com.minifile.explorer.core.peer.BleAdvertisement
@@ -32,6 +37,7 @@ import com.minifile.explorer.core.peer.HostDecision
 import com.minifile.explorer.core.peer.HotspotLinkCodec
 import com.minifile.explorer.core.peer.HotspotLinkMessage
 import com.minifile.explorer.core.peer.HotspotLinkUuids
+import com.minifile.explorer.core.peer.LinkBlocker
 import com.minifile.explorer.core.peer.LinkMode
 import com.minifile.explorer.core.peer.PeerInfo
 import com.minifile.explorer.core.peer.PeerPathPolicy
@@ -56,7 +62,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
@@ -90,6 +99,11 @@ data class BleLinkUiState(
     val hotspot: HotspotInfo? = null,
     /** `true` when the peer is an iPhone that must scan the `WIFI:` QR with its Camera. */
     val showQr: Boolean = false,
+    /**
+     * `true` while an Android peer is auto-joining this phone's hotspot (no QR needed): the dialog may offer a
+     * "Show QR code instead" fallback for ROMs that reject `WifiNetworkSpecifier`.
+     */
+    val qrFallback: Boolean = false,
     val error: String? = null,
     val finished: Boolean = false,
 )
@@ -144,12 +158,31 @@ class BlePeerCoordinator(
     private val _availability = MutableStateFlow(BleAvailability.UNSUPPORTED)
     val availability: StateFlow<BleAvailability> = _availability.asStateFlow()
 
-    private var refCount = 0
+    /** Receiver presence (GATT server + advertise): held while MainActivity is started. */
+    private var presenceCount = 0
+
+    /** Active scanning (presence + filtered scan): Transfer tab / Send sheet / Hotspot sheet visible. */
+    private var scanRefCount = 0
     private var scanning = false
     private var advertising = false
-    private var advertisedFlags = -1
+
+    /** Exact `0xFFFF` scan-response payload in effect (id + name + flags) so any change re-advertises. */
+    private var advertisedPayload: ByteArray? = null
+
+    @Volatile
     private var gattServer: BluetoothGattServer? = null
     private var pruneJob: Job? = null
+
+    /** Serializes radio start/stop across main-thread (lifecycle, broadcasts) and IO (settings, sessions) callers. */
+    private val radioLock = Any()
+    private var stateReceiverRegistered = false
+
+    private val radioStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            // Bluetooth toggled in Quick Settings / Location toggled (Android ≤ 12): start or stop radios now.
+            restartRadios()
+        }
+    }
 
     private class Seen(
         val adv: BleAdvertisement,
@@ -199,7 +232,22 @@ class BlePeerCoordinator(
         scope.launch {
             HttpServerHolder.peerEvents.collect { ev -> onHttpPeerEvent(ev) }
         }
+        scope.launch {
+            // Live Settings: device name / id / read-only changes re-advertise immediately.
+            settingsRepository.settings
+                .map { AdvertisedSettings(it.peerDeviceName, it.peerDeviceId, it.httpReadOnly, it.ftpReadOnly) }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { refreshAdvertisedFlags() }
+        }
     }
+
+    private data class AdvertisedSettings(
+        val name: String,
+        val id: String,
+        val httpReadOnly: Boolean,
+        val ftpReadOnly: Boolean,
+    )
 
     // =============================================================================================
     // Lifecycle
@@ -218,60 +266,118 @@ class BlePeerCoordinator(
         return a
     }
 
-    /** Refcounted: Transfer tab / Send sheet / Hotspot sheet visible ⇒ scan + advertise + GATT server. */
+    /**
+     * Receiver presence, held while MainActivity is started (any tab): keeps the GATT server + advertisement up so
+     * this phone is discoverable and the consent dialog can pop up from Browse / Settings too. Never prompts for
+     * permissions — it only activates when BLE permissions are already granted and Bluetooth is on.
+     */
+    fun acquirePresence() {
+        synchronized(lock) { presenceCount++ }
+        restartRadios()
+    }
+
+    fun releasePresence() {
+        synchronized(lock) { if (presenceCount > 0) presenceCount-- }
+        applyRefs()
+    }
+
+    /** Refcounted active scanning: Transfer tab / Send sheet / Hotspot sheet visible ⇒ presence + filtered scan. */
     fun acquire() {
-        synchronized(lock) {
-            refCount++
-        }
+        synchronized(lock) { scanRefCount++ }
         restartRadios()
     }
 
     fun release() {
-        val stop: Boolean
-        synchronized(lock) {
-            if (refCount > 0) refCount--
-            stop = refCount == 0
-        }
-        if (stop) stopRadios(keepServerForSession = incomingSession != null)
+        synchronized(lock) { if (scanRefCount > 0) scanRefCount-- }
+        applyRefs()
     }
 
-    /** Call after permissions were granted or Bluetooth was turned on. */
+    private fun refs(): Pair<Boolean, Boolean> = synchronized(lock) { (presenceCount > 0) to (scanRefCount > 0) }
+
+    /** Call after permissions were granted, Bluetooth / Location toggled, settings changed, or on resume. */
     fun restartRadios() {
-        val active = synchronized(lock) { refCount > 0 }
-        if (!active) return
-        if (refreshAvailability() != BleAvailability.READY) {
-            stopRadios(keepServerForSession = false)
-            return
-        }
-        ensureGattServer()
-        startAdvertising()
-        startScan()
-        if (pruneJob?.isActive != true) {
-            pruneJob = scope.launch {
-                while (isActive) {
-                    delay(2_000)
-                    pruneSeen()
+        synchronized(radioLock) {
+            val (presence, scan) = refs()
+            refreshAvailability()
+            if (!presence && !scan) return
+            registerStateReceiver()
+            if (_availability.value != BleAvailability.READY) {
+                stopScanning()
+                stopAdvertising()
+                if (incomingSession == null) closeGattServer()
+                return
+            }
+            ensureGattServer()
+            startAdvertising()
+            if (scan) {
+                startScan()
+                if (pruneJob?.isActive != true) {
+                    pruneJob = scope.launch {
+                        while (isActive) {
+                            delay(2_000)
+                            pruneSeen()
+                        }
+                    }
                 }
+            } else {
+                stopScanning()
             }
         }
     }
 
-    private fun stopRadios(keepServerForSession: Boolean) {
+    /** Drops whatever the remaining refcounts no longer need. */
+    private fun applyRefs() {
+        synchronized(radioLock) {
+            val (presence, scan) = refs()
+            if (!scan) stopScanning()
+            if (!presence && !scan) {
+                stopAdvertising()
+                // An accepted / pending incoming session keeps its GATT server until it ends.
+                if (incomingSession == null) closeGattServer()
+                unregisterStateReceiver()
+            }
+        }
+    }
+
+    /** Stops the scan + pruning and forgets seen peers; presence (advertise + GATT server) is untouched. */
+    private fun stopScanning() {
         stopScan()
-        stopAdvertising()
         pruneJob?.cancel()
         pruneJob = null
-        seen.clear()
-        publishPeers()
-        if (!keepServerForSession) closeGattServer()
+        if (seen.isNotEmpty()) {
+            seen.clear()
+            publishPeers()
+        }
     }
+
+    private fun registerStateReceiver() {
+        if (stateReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            addAction(LocationManager.MODE_CHANGED_ACTION)
+        }
+        stateReceiverRegistered = runCatching {
+            ContextCompat.registerReceiver(appContext, radioStateReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        }.isSuccess
+    }
+
+    private fun unregisterStateReceiver() {
+        if (!stateReceiverRegistered) return
+        stateReceiverRegistered = false
+        runCatching { appContext.unregisterReceiver(radioStateReceiver) }
+    }
+
+    /** Hosting a LocalOnlyHotspot can succeed right now (permission granted and, on Android ≤ 12, Location on). */
+    private fun canHostHotspot(): Boolean =
+        NearbyPermissions.hasHotspotPermissions(appContext) && !NearbyPermissions.needsLocationServices(appContext)
 
     // =============================================================================================
     // Advertising (spec §2.1)
     // =============================================================================================
 
     private fun currentFlags(): Int {
-        var f = HotspotLinkCodec.FLAG_ANDROID or HotspotLinkCodec.FLAG_CAN_HOST
+        var f = HotspotLinkCodec.FLAG_ANDROID
+        if (canHostHotspot()) f = f or HotspotLinkCodec.FLAG_CAN_HOST
         val s = settingsRepository.settings.value
         // b2 "receiving": this phone can accept (Files auto-starts the share after Accept) unless read-only.
         if (!(s.httpReadOnly || s.ftpReadOnly)) f = f or HotspotLinkCodec.FLAG_RECEIVING
@@ -282,20 +388,25 @@ class BlePeerCoordinator(
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) = Unit
         override fun onStartFailure(errorCode: Int) {
-            synchronized(lock) { advertising = false }
+            synchronized(lock) {
+                advertising = false
+                advertisedPayload = null
+            }
         }
     }
 
     private fun startAdvertising() {
         if (!NearbyPermissions.hasBleAdvertisePermission(appContext)) return
         val adv = adapter?.bluetoothLeAdvertiser ?: return
-        val flags = currentFlags()
+        val s = settingsRepository.settings.value
+        val payload = HotspotLinkCodec.encodeAndroidManufacturerData(s.peerDeviceId, s.peerDeviceName, currentFlags())
         synchronized(lock) {
-            if (advertising && advertisedFlags == flags) return
+            // Re-advertise when id / name / flags changed, not only flags.
+            if (advertising && advertisedPayload?.contentEquals(payload) == true) return
             if (advertising) runCatching { adv.stopAdvertising(advertiseCallback) }
             advertising = false
+            advertisedPayload = null
         }
-        val s = settingsRepository.settings.value
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
@@ -308,17 +419,14 @@ class BlePeerCoordinator(
             .setIncludeTxPowerLevel(false)
             .build()
         val scanResponse = AdvertiseData.Builder()
-            .addManufacturerData(
-                HotspotLinkCodec.MANUFACTURER_ID,
-                HotspotLinkCodec.encodeAndroidManufacturerData(s.peerDeviceId, s.peerDeviceName, flags),
-            )
+            .addManufacturerData(HotspotLinkCodec.MANUFACTURER_ID, payload)
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
             .build()
         val ok = runCatching { adv.startAdvertising(settings, data, scanResponse, advertiseCallback) }.isSuccess
         synchronized(lock) {
             advertising = ok
-            advertisedFlags = if (ok) flags else -1
+            advertisedPayload = if (ok) payload else null
         }
     }
 
@@ -327,14 +435,18 @@ class BlePeerCoordinator(
         synchronized(lock) {
             if (!advertising) return
             advertising = false
-            advertisedFlags = -1
+            advertisedPayload = null
         }
         runCatching { adv?.stopAdvertising(advertiseCallback) }
     }
 
+    /** Refreshes the advertisement (busy / receiving / can-host flags, name, id) while presence is active. */
     private fun refreshAdvertisedFlags() {
-        val active = synchronized(lock) { refCount > 0 && advertising }
-        if (active) startAdvertising()
+        synchronized(radioLock) {
+            val (presence, scan) = refs()
+            val active = (presence || scan) && synchronized(lock) { advertising }
+            if (active) startAdvertising()
+        }
     }
 
     // =============================================================================================
@@ -458,7 +570,9 @@ class BlePeerCoordinator(
     // GATT server (peripheral = receiver)
     // =============================================================================================
 
-    private fun ensureGattServer() {
+    private fun ensureGattServer() = synchronized(radioLock) { ensureGattServerLocked() }
+
+    private fun ensureGattServerLocked() {
         if (gattServer != null) return
         if (!NearbyPermissions.hasBleConnectPermission(appContext)) return
         val mgr = btManager ?: return
@@ -493,8 +607,11 @@ class BlePeerCoordinator(
     }
 
     private fun closeGattServer() {
-        val s = gattServer ?: return
-        gattServer = null
+        val s = synchronized(radioLock) {
+            val cur = gattServer ?: return
+            gattServer = null
+            cur
+        }
         runCatching { s.clearServices() }
         runCatching { s.close() }
         serverMtu.clear()
@@ -509,7 +626,7 @@ class BlePeerCoordinator(
             name = PeerPathPolicy.sanitizeDisplayName(s.peerDeviceName, 64).ifEmpty { "Files" },
             os = HotspotLinkCodec.OS_ANDROID,
             ver = BuildConfig.VERSION_NAME,
-            caps = listOf("lohs", "join"),
+            caps = HostDecision.capsFor(canHostHotspot()),
             port = if (http.isRunning) http.boundPort else s.httpPort,
             lan = lanIpv4s().take(4),
         )
@@ -675,7 +792,12 @@ class BlePeerCoordinator(
             is HotspotLinkMessage.Error -> {
                 val sess = incomingSession ?: return
                 if (sess.device.address != device.address) return
-                endIncomingSession(error = "${sess.hello.name}: ${msg.code}")
+                val error = if (msg.code == HotspotLinkMessage.ERR_PERM && !canHostHotspot()) {
+                    receiverHotspotBlockerMessage()
+                } else {
+                    "${sess.hello.name}: ${msg.code}"
+                }
+                endIncomingSession(error = error)
             }
             else -> Unit
         }
@@ -734,7 +856,7 @@ class BlePeerCoordinator(
                     id = s.peerDeviceId,
                     name = PeerPathPolicy.sanitizeDisplayName(s.peerDeviceName, 64).ifEmpty { "Files" },
                     os = HotspotLinkCodec.OS_ANDROID,
-                    caps = listOf("lohs", "join"),
+                    caps = HostDecision.capsFor(canHostHotspot()),
                     port = port,
                     lan = lanIpv4s().take(4),
                 )
@@ -771,6 +893,12 @@ class BlePeerCoordinator(
         when (mode) {
             LinkMode.LAN -> updateReceiverUi(sess, "Waiting for files over Wi-Fi…")
             LinkMode.LOHS_R -> {
+                if (!canHostHotspot()) {
+                    // Tell the sender precisely why instead of a generic "could not start a hotspot".
+                    notifyMessage(device, HotspotLinkMessage.Error(HotspotLinkMessage.ERR_PERM))
+                    endIncomingSession(error = receiverHotspotBlockerMessage())
+                    return
+                }
                 updateReceiverUi(sess, "Starting hotspot…")
                 val info = try {
                     if (sess.httpStartedHere) hotspotManager.adoptEphemeralHttp()
@@ -799,7 +927,9 @@ class BlePeerCoordinator(
                         "Waiting for ${sess.hello.name} to join…"
                     },
                     hotspot = info,
-                    showQr = true,
+                    // Android senders auto-join over BLE + WifiNetworkSpecifier: no QR. Only iPhones scan it.
+                    showQr = isIos,
+                    qrFallback = !isIos,
                 )
                 // BLE may already be gone (iOS backgrounded): the HTTP path still completes the flow.
                 notifyMessage(device, msg)
@@ -811,6 +941,13 @@ class BlePeerCoordinator(
             }
         }
     }
+
+    private fun receiverHotspotBlockerMessage(): String =
+        if (NearbyPermissions.hasHotspotPermissions(appContext) && NearbyPermissions.needsLocationServices(appContext)) {
+            "Turn on Location to receive without QR or shared Wi-Fi"
+        } else {
+            "Allow Nearby Wi-Fi permission (Files ▸ Transfer ▸ Allow) to receive without QR or shared Wi-Fi"
+        }
 
     private fun onHttpPeerEvent(ev: HttpEvent) {
         val sess = incomingSession ?: return
@@ -826,7 +963,7 @@ class BlePeerCoordinator(
 
     private suspend fun finishIncoming(sess: IncomingSession, ok: Boolean, message: String) {
         if (incomingSession !== sess) return
-        _linkUi.value = _linkUi.value?.copy(phase = message, finished = true, showQr = false)
+        _linkUi.value = _linkUi.value?.copy(phase = message, finished = true, showQr = false, qrFallback = false)
             ?: BleLinkUiState(BleLinkRole.RECEIVER, sess.hello.name, message, finished = true)
         if (sess.hostedHotspot) hotspotManager.scheduleStop(LocalOnlyHotspotManager.SESSION_GRACE_MS)
         if (sess.httpStartedHere && !sess.hostedHotspot) {
@@ -855,14 +992,15 @@ class BlePeerCoordinator(
         } else {
             null
         }
-        if (!synchronized(lock) { refCount > 0 }) closeGattServer()
+        val (presence, scan) = refs()
+        if (!presence && !scan) closeGattServer()
     }
 
     private fun updateReceiverUi(sess: IncomingSession, phase: String) {
         val cur = _linkUi.value
         val hideQr = phase.startsWith("Receiving") || phase.startsWith("Connected")
         _linkUi.value = if (cur != null && cur.role == BleLinkRole.RECEIVER) {
-            cur.copy(phase = phase, showQr = cur.showQr && !hideQr)
+            cur.copy(phase = phase, showQr = cur.showQr && !hideQr, qrFallback = cur.qrFallback && !hideQr)
         } else {
             BleLinkUiState(BleLinkRole.RECEIVER, sess.hello.name, phase)
         }
@@ -980,7 +1118,18 @@ class BlePeerCoordinator(
                 }
             }
 
-            when (HostDecision.decide(HotspotLinkCodec.OS_ANDROID, receiverOs, lanOverlap = false)) {
+            val plan = HostDecision.plan(
+                senderOs = HotspotLinkCodec.OS_ANDROID,
+                receiverOs = receiverOs,
+                lanOverlap = false,
+                receiverCaps = ack.caps,
+                senderCanHost = canHostHotspot(),
+            )
+            plan.blocker?.let { blocker ->
+                if (blocker != LinkBlocker.IOS_PAIR) c.writeMessage(HotspotLinkMessage.Error(HotspotLinkMessage.ERR_PERM))
+                throw PeerTransferException(null, HostDecision.blockerMessage(blocker, ackName))
+            }
+            when (plan.mode) {
                 LinkMode.LOHS_R -> {
                     c.writeMessage(HotspotLinkMessage.Link(LinkMode.LOHS_R))
                     phase("$ackName is starting a hotspot…")
@@ -991,7 +1140,11 @@ class BlePeerCoordinator(
                         is HotspotLinkMessage.Hotspot -> hs
                         is HotspotLinkMessage.Error -> throw PeerTransferException(
                             null,
-                            if (hs.code == HotspotLinkMessage.ERR_LOHS_FAILED) "$ackName could not start a hotspot" else "$ackName: ${hs.code}",
+                            when (hs.code) {
+                                HotspotLinkMessage.ERR_LOHS_FAILED -> "$ackName could not start a hotspot"
+                                HotspotLinkMessage.ERR_PERM -> HostDecision.blockerMessage(LinkBlocker.RECEIVER_CANNOT_HOST, ackName)
+                                else -> "$ackName: ${hs.code}"
+                            },
                         )
                         else -> throw PeerTransferException(null, "$ackName did not start a hotspot in time")
                     }

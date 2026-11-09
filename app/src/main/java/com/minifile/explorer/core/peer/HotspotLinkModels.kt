@@ -144,6 +144,21 @@ sealed class HotspotLinkMessage {
     }
 }
 
+/** Why a decided [LinkMode] cannot proceed (see [HostDecision.plan]). */
+enum class LinkBlocker {
+    /** Android receiver lacks `lohs` (e.g. `NEARBY_WIFI_DEVICES` denied) so `lohs-r` would fail. */
+    RECEIVER_CANNOT_HOST,
+
+    /** This (Android) sender cannot host for an iPhone receiver (`lohs-s`). */
+    SENDER_CANNOT_HOST,
+
+    /** iOS ↔ iOS never links over BLE. */
+    IOS_PAIR,
+}
+
+/** Result of [HostDecision.plan]: proceed with [mode] only when [blocker] is `null`. */
+data class LinkPlan(val mode: LinkMode?, val blocker: LinkBlocker?)
+
 /** Spec §2.3 step 3 decision table. */
 object HostDecision {
     /**
@@ -159,6 +174,55 @@ object HostDecision {
             r == HotspotLinkCodec.OS_IOS && s == HotspotLinkCodec.OS_ANDROID -> LinkMode.LOHS_S
             else -> null
         }
+    }
+
+    /** `caps` token: this phone can host a LocalOnlyHotspot right now (permission + Location prerequisites met). */
+    const val CAP_LOHS = "lohs"
+
+    /** `caps` token: this phone can join a peer's hotspot. */
+    const val CAP_JOIN = "join"
+
+    /** `caps` advertised in GATT `INFO` / `ack`: `lohs` only when hosting a hotspot can actually succeed. */
+    fun capsFor(canHostHotspot: Boolean): List<String> =
+        if (canHostHotspot) listOf(CAP_LOHS, CAP_JOIN) else listOf(CAP_JOIN)
+
+    /**
+     * Whether the receiver can host for `lohs-r`. Only Android receivers are asked to host; an empty `caps` list
+     * (unknown / older build) is treated leniently as capable so wire compatibility with v1.0.18 is preserved.
+     */
+    fun receiverCanHost(receiverOs: String, receiverCaps: List<String>): Boolean {
+        if (receiverOs.lowercase() != HotspotLinkCodec.OS_ANDROID) return true
+        if (receiverCaps.isEmpty()) return true
+        return receiverCaps.any { it.trim().equals(CAP_LOHS, ignoreCase = true) }
+    }
+
+    /**
+     * [decide] plus capability checks performed by an Android sender before it writes `link`. The wire-level
+     * decision table is unchanged ([mode] is always what [decide] returns); [blocker] is non-null when that mode
+     * cannot succeed and the user must fix a permission instead of watching a doomed hotspot attempt.
+     */
+    fun plan(
+        senderOs: String,
+        receiverOs: String,
+        lanOverlap: Boolean,
+        receiverCaps: List<String>,
+        senderCanHost: Boolean,
+    ): LinkPlan {
+        val mode = decide(senderOs, receiverOs, lanOverlap) ?: return LinkPlan(null, LinkBlocker.IOS_PAIR)
+        val blocker = when (mode) {
+            LinkMode.LAN -> null
+            LinkMode.LOHS_R -> if (receiverCanHost(receiverOs, receiverCaps)) null else LinkBlocker.RECEIVER_CANNOT_HOST
+            LinkMode.LOHS_S -> if (senderCanHost) null else LinkBlocker.SENDER_CANNOT_HOST
+        }
+        return LinkPlan(mode, blocker)
+    }
+
+    /** User-facing, actionable explanation for [blocker]. */
+    fun blockerMessage(blocker: LinkBlocker, peerName: String): String = when (blocker) {
+        LinkBlocker.RECEIVER_CANNOT_HOST -> "Allow Nearby Wi-Fi permission on $peerName (Files ▸ Transfer)"
+        LinkBlocker.SENDER_CANNOT_HOST ->
+            "Allow Nearby Wi-Fi permission on this phone (Files ▸ Transfer) to send to $peerName without shared Wi-Fi"
+        LinkBlocker.IOS_PAIR -> "Use Nearby (AWDL) between two iPhones"
     }
 
     /** `true` when any IPv4 of [a] shares a /24 with any IPv4 of [b]. */

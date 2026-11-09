@@ -64,12 +64,13 @@ import com.minifile.explorer.service.HotspotInfo
 import com.minifile.explorer.service.HotspotState
 import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.util.NearbyPermissions
+import com.minifile.explorer.ui.util.NearbyStatusCopy
 import com.minifile.explorer.ui.util.QrCodeGenerator
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlin.math.floor
 
 /**
- * Scheme B host: "Hotspot Direct (热点直连)" — starts a LocalOnlyHotspot + HTTP share and shows the universal
+ * Scheme B host: "Hotspot Direct" — starts a LocalOnlyHotspot + HTTP share and shows the universal
  * `WIFI:` QR (iPhone Camera / Android camera / Files scanner), SSID, password (copy), `http://<ip>:<port>/`,
  * devices that joined, and Stop (spec §2.5, §3.7).
  */
@@ -129,7 +130,7 @@ fun HotspotDirectSheet(
                 Column {
                     Text("Hotspot Direct", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "热点直连 · no router or mobile data needed",
+                        NearbyStatusCopy.HOTSPOT_DIRECT_SUBTITLE,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

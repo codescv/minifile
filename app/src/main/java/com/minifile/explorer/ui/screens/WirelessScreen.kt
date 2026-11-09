@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -93,6 +94,8 @@ import com.minifile.explorer.ui.components.NearbyAccessRow
 import com.minifile.explorer.ui.components.PeerDeviceRow
 import com.minifile.explorer.ui.components.QrScannerSheet
 import com.minifile.explorer.service.HotspotState
+import com.minifile.explorer.ui.util.NearbyHeaderStatus
+import com.minifile.explorer.ui.util.NearbyStatusCopy
 import com.minifile.explorer.ui.util.QrCodeGenerator
 import kotlin.math.floor
 import kotlinx.coroutines.delay
@@ -120,6 +123,7 @@ fun WirelessScreen(
     val ftpState by FtpServerHolder.state.collectAsState()
     val peers by viewModel.peers.collectAsState()
     val isScanningPeers by viewModel.isScanningPeers.collectAsState()
+    val bleAvailability by viewModel.bleAvailability.collectAsState()
 
     var showRootDialog by remember { mutableStateOf(false) }
     var showFtpAuthDialog by remember { mutableStateOf(false) }
@@ -437,13 +441,13 @@ fun WirelessScreen(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     TransferSectionTitle("Nearby Devices")
-                    if (!httpState.isRunning && !httpState.isStarting) {
-                        Text(
-                            text = "Start HTTP Share to be discoverable.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 6.dp),
-                        )
+                    val headerStatus = NearbyStatusCopy.header(
+                        ble = bleAvailability,
+                        httpRunning = httpState.isRunning || httpState.isStarting,
+                        readOnly = sharedReadOnly,
+                    )
+                    if (headerStatus != null) {
+                        NearbyHeaderPill(status = headerStatus, modifier = Modifier.padding(bottom = 6.dp))
                     }
                 }
 
@@ -461,7 +465,7 @@ fun WirelessScreen(
                                     .padding(horizontal = 16.dp, vertical = 14.dp),
                             ) {
                                 Text(
-                                    text = "No devices yet — on the other phone open Transfer and start HTTP Share.",
+                                    text = NearbyStatusCopy.emptyState(bleAvailability, forSendSheet = false),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -1026,4 +1030,36 @@ private fun SettingRow(
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick),
     )
+}
+
+/** Compact status caption beside "Nearby Devices" (e.g. Bluetooth glyph + "Bluetooth ready · No QR"). */
+@Composable
+private fun NearbyHeaderPill(status: NearbyHeaderStatus, modifier: Modifier = Modifier) {
+    val accent = status.bluetooth
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = if (accent) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+        modifier = modifier,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = if (accent) 8.dp else 0.dp, vertical = 2.dp),
+        ) {
+            if (accent) {
+                Icon(
+                    Icons.Filled.Bluetooth,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+            }
+            Text(
+                text = status.text,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (accent) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+    }
 }

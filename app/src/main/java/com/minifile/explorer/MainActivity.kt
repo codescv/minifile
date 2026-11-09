@@ -102,6 +102,7 @@ import com.minifile.explorer.ui.screens.TextEditorScreen
 import com.minifile.explorer.ui.screens.ToolsScreen
 import com.minifile.explorer.ui.screens.WirelessScreen
 import com.minifile.explorer.ui.theme.MiniFileTheme
+import com.minifile.explorer.ui.util.NearbyPermissions
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -172,9 +173,23 @@ class MainActivity : ComponentActivity() {
         handleLaunchIntent(intent)
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Foreground-wide Bluetooth presence: discoverable (and consent dialog reachable) from any tab.
+        // Only activates when BLE permissions are already granted and Bluetooth is on; never prompts.
+        (application as MiniFileApplication).container.blePeerCoordinator.acquirePresence()
+    }
+
+    override fun onStop() {
+        (application as MiniFileApplication).container.blePeerCoordinator.releasePresence()
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         val container = (application as MiniFileApplication).container
+        // Returning from App info / Bluetooth settings: pick up newly granted permissions immediately.
+        container.blePeerCoordinator.restartRadios()
         // v1.0.16: auto-install the verified update APK once 'Install unknown apps' was granted.
         val resumedInstall = container.updateManager.onHostResume(this)
         if (resumedInstall is InstallLaunchResult.Failed) {
@@ -712,10 +727,34 @@ private fun MiniFileRoot(
     }
 
     // v1.0.18: incoming BLE transfer consent (60 s) + hotspot link progress / QR, visible from any tab.
+    // Accepting without NEARBY_WIFI_DEVICES (Location on ≤ 12) would make the QR-free hotspot fail: ask at the
+    // moment the user taps Accept (never at app start), then accept regardless of the answer — LAN may still work.
+    var acceptAfterHotspotPermission by remember { mutableStateOf<Long?>(null) }
+    val hotspotPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        val id = acceptAfterHotspotPermission
+        acceptAfterHotspotPermission = null
+        viewModel.onNearbyPermissionsChanged()
+        if (id != null) viewModel.respondToIncomingBle(id, accept = true)
+    }
     pendingIncomingBle?.let { req ->
         PeerConsentDialog(
             request = req,
-            onAccept = { viewModel.respondToIncomingBle(req.requestId, accept = true) },
+            onAccept = {
+                if (!NearbyPermissions.hasHotspotPermissions(context) && acceptAfterHotspotPermission == null) {
+                    acceptAfterHotspotPermission = req.requestId
+                    val launched = runCatching {
+                        hotspotPermissionLauncher.launch(NearbyPermissions.hotspotPermissions())
+                    }.isSuccess
+                    if (!launched) {
+                        acceptAfterHotspotPermission = null
+                        viewModel.respondToIncomingBle(req.requestId, accept = true)
+                    }
+                } else {
+                    viewModel.respondToIncomingBle(req.requestId, accept = true)
+                }
+            },
             onDecline = { viewModel.respondToIncomingBle(req.requestId, accept = false) },
         )
     }

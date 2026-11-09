@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -34,6 +35,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.minifile.explorer.service.BleLinkRole
 import com.minifile.explorer.service.BleLinkUiState
 import com.minifile.explorer.service.IncomingBleRequest
+import com.minifile.explorer.ui.util.NearbyStatusCopy
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.delay
 
@@ -136,8 +138,15 @@ fun HotspotLinkDialog(
                     )
                 }
                 val hs = state.hotspot
-                if (state.showQr && hs != null) {
+                // Android ↔ Android joins automatically (BLE + WifiNetworkSpecifier): QR-free by default, with a
+                // one-tap escape hatch for OEM ROMs that reject the specifier request.
+                var qrRequested by remember(hs?.ssid) { mutableStateOf(false) }
+                if (hs != null && (state.showQr || (qrRequested && state.qrFallback && !done))) {
                     HotspotCredentialsPanel(info = hs)
+                } else if (hs != null && state.qrFallback && !done) {
+                    TextButton(onClick = { qrRequested = true }) {
+                        Text(NearbyStatusCopy.SHOW_QR_INSTEAD)
+                    }
                 }
             }
         },

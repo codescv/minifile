@@ -66,12 +66,17 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.minifile.explorer.core.peer.PeerInfo
 import com.minifile.explorer.core.peer.PeerPathPolicy
 import com.minifile.explorer.core.peer.PeerSource
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.ui.MainViewModel
+import com.minifile.explorer.ui.util.NearbyAccessIssue
 import com.minifile.explorer.ui.util.NearbyPermissions
+import com.minifile.explorer.ui.util.NearbyStatusCopy
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.delay
 
@@ -86,6 +91,7 @@ fun SendToDeviceSheet(
     val context = LocalContext.current
     val peers by viewModel.peers.collectAsState()
     val isScanning by viewModel.isScanningPeers.collectAsState()
+    val bleAvailability by viewModel.bleAvailability.collectAsState()
     var showAddByAddressDialog by remember { mutableStateOf(false) }
     var showScanButton by remember { mutableStateOf(false) }
     var showHotspotSheet by remember { mutableStateOf(false) }
@@ -164,13 +170,13 @@ fun SendToDeviceSheet(
                         )
                         Spacer(Modifier.width(10.dp))
                         Text(
-                            text = if (isScanning) "Scanning local network…" else "Looking for nearby devices…",
+                            text = NearbyStatusCopy.searching(bleAvailability, isScanning),
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                         )
                     }
                     Text(
-                        text = "No devices yet — open Files ▸ Transfer on the other phone, or use Hotspot Direct / Scan QR below.",
+                        text = NearbyStatusCopy.emptyState(bleAvailability, forSendSheet = true),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -290,7 +296,10 @@ fun SendToDeviceSheet(
     }
 }
 
-/** "Hotspot Direct (热点直连)" + "Scan QR (扫码直连)" — Scheme B entry points (spec §3.7). */
+/**
+ * "Hotspot Direct" + "Scan QR" — Scheme B entry points (spec §3.7). Labels are single-line English only
+ * (user feedback on v1.0.18: no secondary-language captions on these two buttons).
+ */
 @Composable
 fun DirectHotspotButtons(
     onHotspotDirect: () -> Unit,
@@ -309,10 +318,12 @@ fun DirectHotspotButtons(
         ) {
             Icon(Icons.Filled.WifiTethering, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
-            Column {
-                Text("Hotspot Direct", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                Text("热点直连", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            Text(
+                text = NearbyStatusCopy.HOTSPOT_DIRECT_LABEL,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
         OutlinedButton(
             onClick = onScanQr,
@@ -322,25 +333,39 @@ fun DirectHotspotButtons(
         ) {
             Icon(Icons.Filled.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
-            Column {
-                Text("Scan QR", style = MaterialTheme.typography.labelLarge, maxLines = 1)
-                Text("扫码直连", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            Text(
+                text = NearbyStatusCopy.SCAN_QR_LABEL,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
 
 /**
- * Hint + one-tap fix when Bluetooth discovery can't run (permissions, Bluetooth off, or Location off on
- * Android ≤ 12). Hidden when everything is ready or the device has no BLE.
+ * Hint + one-tap fix when Bluetooth QR-free transfer can't run: missing Bluetooth / Nearby Wi-Fi permissions,
+ * Bluetooth off, or Location off on Android ≤ 12. Hidden when everything is ready or the device has no BLE.
+ * Re-evaluates on every ON_RESUME and whenever the coordinator's availability changes, so toggling Bluetooth in
+ * Quick Settings or granting permissions in System Settings updates the row without leaving the tab.
  */
 @Composable
 fun NearbyAccessRow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val bleAvailability by viewModel.bleAvailability.collectAsState()
     var refreshTick by remember { mutableIntStateOf(0) }
-    val hint = remember(refreshTick) {
-        if (!NearbyPermissions.hasBleHardware(context)) null else NearbyPermissions.nearbyHint(context)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshTick++
+                viewModel.onNearbyPermissionsChanged()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+    val issue = remember(refreshTick, bleAvailability) { NearbyPermissions.nearbyIssue(context) }
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         refreshTick++
         viewModel.onNearbyPermissionsChanged()
@@ -349,7 +374,7 @@ fun NearbyAccessRow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         refreshTick++
         viewModel.onNearbyPermissionsChanged()
     }
-    if (hint == null) return
+    if (issue == null) return
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
@@ -364,33 +389,27 @@ fun NearbyAccessRow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = hint,
+            text = NearbyStatusCopy.hint(issue),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
         )
         TextButton(onClick = {
-            when {
-                !NearbyPermissions.hasAllBlePermissions(context) ->
+            when (issue) {
+                NearbyAccessIssue.PERMISSIONS ->
                     permLauncher.launch(NearbyPermissions.allNearbyPermissions())
-                !NearbyPermissions.isBluetoothOn(context) -> try {
+                NearbyAccessIssue.BLUETOOTH_OFF -> try {
                     enableBtLauncher.launch(NearbyPermissions.bluetoothEnableIntent())
                 } catch (_: Exception) {
                     refreshTick++
                 }
-                else -> try {
+                NearbyAccessIssue.LOCATION_OFF -> try {
                     context.startActivity(NearbyPermissions.locationSettingsIntent())
                 } catch (_: ActivityNotFoundException) {
                 }
             }
         }) {
-            Text(
-                when {
-                    !NearbyPermissions.hasAllBlePermissions(context) -> "Allow"
-                    !NearbyPermissions.isBluetoothOn(context) -> "Turn on"
-                    else -> "Settings"
-                },
-            )
+            Text(NearbyStatusCopy.actionLabel(issue))
         }
     }
 }
