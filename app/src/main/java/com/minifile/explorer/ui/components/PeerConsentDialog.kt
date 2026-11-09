@@ -137,6 +137,10 @@ fun HotspotLinkDialog(
                         color = if (state.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                     )
                 }
+                val progress = state.progress
+                if (progress != null && !done) {
+                    LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                }
                 val hs = state.hotspot
                 // Android ↔ Android joins automatically (BLE + WifiNetworkSpecifier): QR-free by default, with a
                 // one-tap escape hatch for OEM ROMs that reject the specifier request.

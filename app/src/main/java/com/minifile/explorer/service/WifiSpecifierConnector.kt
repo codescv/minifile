@@ -167,13 +167,49 @@ class WifiSpecifierConnector internal constructor(
         if (legacyId >= 0) ops.releaseLegacy(legacyId)
     }
 
+    /** Unregisters a failed attempt's callback if it is still the active registration (no-op otherwise). */
+    private fun discardRegistration(reg: Any?) {
+        if (reg == null) return
+        val mine = synchronized(lock) {
+            if (activeRegistration === reg) {
+                activeRegistration = null
+                true
+            } else {
+                false
+            }
+        }
+        if (mine) runCatching { ops.unregisterSpecifier(reg) }
+    }
+
     private fun releaseIfCurrentRegistration(expected: Any?) {
         if (expected == null) return
         val shouldRelease = synchronized(lock) { activeRegistration === expected }
         if (shouldRelease) release()
     }
 
+    /**
+     * Tries each security mode from [securityAttemptOrder] once (spec §3.3): a WPA2 specifier never matches an
+     * SAE-only AP and some OEM LOHS report `wpa3` for a transition AP, so a failed / timed-out first attempt is
+     * retried once with the other passphrase type before giving up.
+     */
     private suspend fun joinWithSpecifier(ssid: String, pass: String, sec: String): JoinedNetwork {
+        val attempts = securityAttemptOrder(sec, pass)
+        var lastError: Throwable? = null
+        for ((index, mode) in attempts.withIndex()) {
+            val isLast = index == attempts.lastIndex
+            val timeoutMs = if (isLast) JOIN_TIMEOUT_MS else FIRST_ATTEMPT_TIMEOUT_MS
+            try {
+                return joinWithSpecifierOnce(ssid, pass, mode, timeoutMs)
+            } catch (e: JoinException) {
+                lastError = e
+                if (isLast) throw e
+            }
+        }
+        throw lastError ?: JoinException("Connection declined or timed out")
+    }
+
+    private suspend fun joinWithSpecifierOnce(ssid: String, pass: String, mode: String, timeoutMs: Long): JoinedNetwork {
+        var attemptReg: Any? = null
         val result = withContext(mainDispatcher) {
             suspendCancellableCoroutine<Result<Network?>> { cont ->
                 var regToken: Any? = null
@@ -183,8 +219,9 @@ class WifiSpecifierConnector internal constructor(
                     }
 
                     override fun onUnavailable() {
-                        if (cont.isActive) cont.resume(Result.failure(JoinException("Connection declined or timed out")))
+                        // Release BEFORE resuming: an undispatched continuation may start the next attempt at once.
                         releaseIfCurrentRegistration(regToken)
+                        if (cont.isActive) cont.resume(Result.failure(JoinException("Connection declined or timed out")))
                     }
 
                     override fun onLost(network: Network?) {
@@ -192,8 +229,9 @@ class WifiSpecifierConnector internal constructor(
                     }
                 }
                 try {
-                    val reg = ops.requestSpecifier(ssid, pass, sec, JOIN_TIMEOUT_MS.toInt(), listener)
+                    val reg = ops.requestSpecifier(ssid, pass, mode, timeoutMs.toInt(), listener)
                     regToken = reg
+                    attemptReg = reg
                     synchronized(lock) { activeRegistration = reg }
                 } catch (e: Exception) {
                     synchronized(lock) { activeRegistration = null }
@@ -202,6 +240,7 @@ class WifiSpecifierConnector internal constructor(
                 cont.invokeOnCancellation { releaseIfCurrentRegistration(regToken) }
             }
         }
+        if (result.isFailure) discardRegistration(attemptReg)
         val network = result.getOrElse { throw it }
         ops.pinNetwork(network)
 
@@ -269,9 +308,9 @@ class WifiSpecifierConnector internal constructor(
             listener: SpecifierListener,
         ): Any {
             val builder = WifiNetworkSpecifier.Builder().setSsid(ssid)
-            when {
-                pass.isEmpty() || sec == "open" || sec == "nopass" -> Unit
-                sec == "wpa3" -> builder.setWpa3Passphrase(pass)
+            when (sec) {
+                SEC_OPEN -> Unit
+                SEC_WPA3 -> builder.setWpa3Passphrase(pass)
                 else -> builder.setWpa2Passphrase(pass) // wpa2 + wpa3t (transition mode accepts WPA2-PSK)
             }
             val request = NetworkRequest.Builder()
@@ -373,6 +412,29 @@ class WifiSpecifierConnector internal constructor(
         const val JOIN_TIMEOUT_MS = 60_000L
         const val JOIN_GRACE_MS = 10_000L
         internal const val LINK_WAIT_MS = 5_000L
+
+        /** First of two specifier attempts (a second, other-security attempt follows on failure). */
+        const val FIRST_ATTEMPT_TIMEOUT_MS = 30_000L
+
+        const val SEC_WPA2 = "wpa2"
+        const val SEC_WPA3 = "wpa3"
+        const val SEC_OPEN = "open"
+
+        /**
+         * Concrete `WifiNetworkSpecifier` security modes to try, in order, for an advertised [sec]
+         * (`wpa2` | `wpa3t` | `wpa3` | `sae` | `open` | `nopass` …):
+         * - open / nopass / empty [pass] → `[open]`
+         * - `wpa3` / `sae` (SAE-only) → `[wpa3, wpa2]`
+         * - anything else (`wpa2`, `wpa3t` transition, `wpa`, unknown) → `[wpa2, wpa3]`
+         */
+        fun securityAttemptOrder(sec: String, pass: String): List<String> {
+            val s = sec.trim().lowercase()
+            if (pass.isEmpty() || s == "open" || s == "nopass" || s == "none") return listOf(SEC_OPEN)
+            return when (s) {
+                "wpa3", "sae", "wpa3-sae", "wpa3_sae" -> listOf(SEC_WPA3, SEC_WPA2)
+                else -> listOf(SEC_WPA2, SEC_WPA3)
+            }
+        }
 
         /** `WifiManager` little-endian int → dotted IPv4. */
         fun intToIp(v: Int): String =

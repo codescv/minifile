@@ -172,6 +172,10 @@ internal class MainViewModelDependencies(
     val upsertPeer: (PeerInfo) -> Unit = {},
     val scanPeersSubnetAction: () -> Unit = {},
     val cancelBleLinkAction: () -> Unit = {},
+    /** Shows the BLE sender dialog at t = 0 ("Preparing files…") before files are enumerated. */
+    val beginBleSendAction: (peerName: String) -> Unit = {},
+    /** Ends the "Preparing files…" dialog when sending stopped before negotiation (error ⇒ visible + Close). */
+    val endBleSendPreparingAction: (peerName: String, error: String?) -> Unit = { _, _ -> },
     val primaryStoragePathProvider: () -> String = {
         Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
     },
@@ -209,6 +213,8 @@ internal class MainViewModelDependencies(
                 upsertPeer = { container.peerDiscoveryHolder.engine.upsert(it) },
                 scanPeersSubnetAction = { container.peerDiscoveryHolder.scanSubnet() },
                 cancelBleLinkAction = { container.blePeerCoordinator.cancelLink() },
+                beginBleSendAction = { container.blePeerCoordinator.beginSenderPreparing(it) },
+                endBleSendPreparingAction = { name, error -> container.blePeerCoordinator.endSenderPreparing(name, error) },
             )
     }
 }
@@ -1817,7 +1823,9 @@ class MainViewModel internal constructor(
         val link = container.blePeerCoordinator.negotiate(peer, files, bytes)
         var ok = false
         try {
-            val res = engine.send(peer = link.peer, items = sendItems, sink = sink)
+            // L2CAP links stream over the open Bluetooth channel; hotspot / LAN links use HTTP.
+            val res = link.directSend?.invoke(sendItems, sink)
+                ?: engine.send(peer = link.peer, items = sendItems, sink = sink)
             ok = !res.cancelled && !sink.isCancelled() && res.errors.isEmpty()
             return res
         } finally {
@@ -1886,6 +1894,8 @@ class MainViewModel internal constructor(
         }
         clearSelection()
         emitSimpleMessage("Sending to $peerName…")
+        // Bluetooth peers: the link dialog appears at t = 0 ms, before files are enumerated or Bluetooth connects.
+        if (peer.needsLink) deps.beginBleSendAction(peerName)
 
         val countLabel = if (items.size == 1) items.first().displayName else "${items.size} items"
         val txClient = PeerHttpClient(socketBinder = deps.peerSocketBinder)
@@ -1905,6 +1915,7 @@ class MainViewModel internal constructor(
             },
         ) { _, sink ->
             var enteredRunPeerSend = false
+            var preparingError: String? = null
             try {
                 txClient.use { client ->
                     try {
@@ -1917,6 +1928,7 @@ class MainViewModel internal constructor(
                             return@use OperationRunOutcome(message = "Sending to $peerName cancelled")
                         }
                         if (sendItems.isEmpty()) {
+                            preparingError = "Nothing to send to $peerName"
                             return@use OperationRunOutcome(message = "Nothing to send to $peerName")
                         }
                         enteredRunPeerSend = true
@@ -1926,6 +1938,7 @@ class MainViewModel internal constructor(
                         if (sink.isCancelled()) {
                             OperationRunOutcome(message = "Sending to $peerName cancelled")
                         } else {
+                            if (!enteredRunPeerSend) preparingError = e.userMessage
                             OperationRunOutcome(
                                 message = e.userMessage,
                                 errorSummary = e.userMessage,
@@ -1933,8 +1946,14 @@ class MainViewModel internal constructor(
                         }
                     }
                 }
+            } catch (e: Exception) {
+                if (!enteredRunPeerSend && e !is kotlinx.coroutines.CancellationException) {
+                    preparingError = e.message ?: "Could not read the selected files"
+                }
+                throw e
             } finally {
                 if (!enteredRunPeerSend) {
+                    if (peer.needsLink) deps.endBleSendPreparingAction(peerName, preparingError)
                     releaseJoinedNetworkIfTarget(peer, immediate = true)
                 }
             }
@@ -1958,6 +1977,8 @@ class MainViewModel internal constructor(
             return
         }
         emitSimpleMessage("Sending to $peerName…")
+        // Bluetooth peers: the link dialog appears at t = 0 ms, before files are enumerated or Bluetooth connects.
+        if (peer.needsLink) deps.beginBleSendAction(peerName)
 
         val countLabel = if (uris.size == 1) "1 file" else "${uris.size} files"
         val txClient = PeerHttpClient(socketBinder = deps.peerSocketBinder)
@@ -1977,6 +1998,7 @@ class MainViewModel internal constructor(
             },
         ) { _, sink ->
             var enteredRunPeerSend = false
+            var preparingError: String? = null
             try {
                 txClient.use { client ->
                     try {
@@ -1985,6 +2007,7 @@ class MainViewModel internal constructor(
                             return@use OperationRunOutcome(message = "Sending to $peerName cancelled")
                         }
                         if (sendItems.isEmpty()) {
+                            preparingError = "Nothing to send to $peerName"
                             return@use OperationRunOutcome(message = "Nothing to send to $peerName")
                         }
                         enteredRunPeerSend = true
@@ -1994,6 +2017,7 @@ class MainViewModel internal constructor(
                         if (sink.isCancelled()) {
                             OperationRunOutcome(message = "Sending to $peerName cancelled")
                         } else {
+                            if (!enteredRunPeerSend) preparingError = e.userMessage
                             OperationRunOutcome(
                                 message = e.userMessage,
                                 errorSummary = e.userMessage,
@@ -2001,8 +2025,14 @@ class MainViewModel internal constructor(
                         }
                     }
                 }
+            } catch (e: Exception) {
+                if (!enteredRunPeerSend && e !is kotlinx.coroutines.CancellationException) {
+                    preparingError = e.message ?: "Could not read the selected files"
+                }
+                throw e
             } finally {
                 if (!enteredRunPeerSend) {
+                    if (peer.needsLink) deps.endBleSendPreparingAction(peerName, preparingError)
                     releaseJoinedNetworkIfTarget(peer, immediate = true)
                 }
             }

@@ -130,6 +130,8 @@ sealed interface HttpEvent {
         val id: String,
         val name: String,
         val os: String?,
+        /** `true` when admitted via Hotspot Direct open announce (no token); `false` for the BLE `lohs-s` token. */
+        val open: Boolean = false,
     ) : HttpEvent
 
     data class Error(val message: String) : HttpEvent
@@ -1365,8 +1367,11 @@ class HttpFileServerEngine(
 
     /**
      * `POST /api/peer/announce?tok=<32hex>&port=<n>&id=<id>&name=<n>&os=<os>` (spec §2.3 step 5, §2.4).
-     * Never open: unarmed ⇒ `403 {"code":"token"}`. While hosting, must arrive on the hotspot interface
-     * (checked BEFORE consuming the single-use token so a spoof on `wlan0` cannot burn it).
+     * - Announce token armed (BLE `lohs-s`): `tok` must match; single-use. While hosting, must arrive on the
+     *   hotspot interface (checked BEFORE consuming the token so a spoof on `wlan0` cannot burn it).
+     * - No token armed, Hotspot Direct [HotspotSessionGate.isOpenAnnounce]: `tok` may be absent; admitted only on the
+     *   hotspot interface from inside the hotspot subnet, rate-limited (`429` when over budget).
+     * - Otherwise `403 {"code":"token"}`.
      */
     private fun handlePeerAnnounce(
         socket: Socket,
@@ -1381,25 +1386,45 @@ class HttpFileServerEngine(
         val bodyInfo = prepareRequestBody(headers, input, sendContinueIfNeeded = false)
         drainSmallBodyIfBounded(bodyInfo)
 
-        if (!hotspotGate.isAnnounceArmed) {
+        val mode = hotspotGate.announceMode
+        if (mode == HotspotSessionGate.AnnounceMode.CLOSED) {
             throw HttpStatusException(403, "Forbidden", "No hotspot session is waiting for an announce", code = "token")
         }
-        if (hotspotGate.isHosting && !hotspotGate.isOnHotspotInterface(socket.localAddress)) {
+        if ((hotspotGate.isHosting || mode == HotspotSessionGate.AnnounceMode.OPEN) &&
+            !hotspotGate.isOnHotspotInterface(socket.localAddress)
+        ) {
             throw HttpStatusException(403, "Forbidden", "Announce must arrive on the hotspot network", code = "token")
         }
         val port = query["port"]?.trim()?.toIntOrNull()
         if (port == null || port !in 1..65535) {
             throw HttpStatusException(400, "Bad Request", "Missing or invalid 'port' parameter")
         }
-        if (!hotspotGate.consumeAnnounceToken(query["tok"]?.trim())) {
-            throw HttpStatusException(403, "Forbidden", "Invalid or expired session token", code = "token")
-        }
         val id = query["id"]?.trim()?.take(128).orEmpty().ifEmpty { "$clientIp:$port" }
+        val open = when (mode) {
+            HotspotSessionGate.AnnounceMode.TOKEN -> {
+                if (!hotspotGate.consumeAnnounceToken(query["tok"]?.trim())) {
+                    throw HttpStatusException(403, "Forbidden", "Invalid or expired session token", code = "token")
+                }
+                false
+            }
+            else -> {
+                when (hotspotGate.admitOpenAnnounce(socket.localAddress, socket.inetAddress, id)) {
+                    HotspotSessionGate.OpenAnnounce.ACCEPTED -> Unit
+                    HotspotSessionGate.OpenAnnounce.RATE_LIMITED ->
+                        throw HttpStatusException(429, "Too Many Requests", "Too many announces — retry later", code = "rate")
+                    HotspotSessionGate.OpenAnnounce.WRONG_NETWORK ->
+                        throw HttpStatusException(403, "Forbidden", "Announce must come from the hotspot network", code = "token")
+                    HotspotSessionGate.OpenAnnounce.CLOSED ->
+                        throw HttpStatusException(403, "Forbidden", "No hotspot session is waiting for an announce", code = "token")
+                }
+                true
+            }
+        }
         val name = PeerPathPolicy.sanitizeDisplayName(query["name"].orEmpty(), 64).ifEmpty { clientIp }
         val os = query["os"]?.trim()?.lowercase(Locale.ROOT)?.takeIf { it == "android" || it == "ios" }
 
         _events.tryEmit(HttpEvent.Request(clientIp, "POST", rawTarget, 200))
-        _events.tryEmit(HttpEvent.PeerAnnounce(clientIp = clientIp, port = port, id = id, name = name, os = os))
+        _events.tryEmit(HttpEvent.PeerAnnounce(clientIp = clientIp, port = port, id = id, name = name, os = os, open = open))
 
         val respBytes = MiniJson.stringify(
             MiniJson.obj(

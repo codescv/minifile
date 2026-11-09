@@ -475,8 +475,13 @@ fun WirelessScreen(
                                 if (index > 0) {
                                     HorizontalDivider()
                                 }
+                                val launchSendPicker: () -> Unit = {
+                                    pendingSendPeer = peer
+                                    documentPickerLauncher.launch(arrayOf("*/*"))
+                                }
                                 PeerDeviceRow(
                                     peer = peer,
+                                    // Tapping the whole row (not only the small "Send…" button) opens the picker.
                                     onClick = if (peer.readOnly) {
                                         {
                                             val name = PeerPathPolicy.sanitizeDisplayName(peer.name, 64)
@@ -484,13 +489,10 @@ fun WirelessScreen(
                                             viewModel.emitSimpleMessage("$name is read-only (Transfer ▸ Settings)")
                                         }
                                     } else {
-                                        null
+                                        launchSendPicker
                                     },
                                     trailingActionLabel = "Send…",
-                                    onTrailingAction = {
-                                        pendingSendPeer = peer
-                                        documentPickerLauncher.launch(arrayOf("*/*"))
-                                    },
+                                    onTrailingAction = launchSendPicker,
                                 )
                             }
                         }

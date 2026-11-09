@@ -31,6 +31,12 @@ enum class LinkMode(val wire: String) {
 
     /** Sender (central, Android) hosts; iOS receiver joins and `announce`s. */
     LOHS_S("lohs-s"),
+
+    /**
+     * Zero-QR, zero-password BLE L2CAP Connection-Oriented Channel (`MFL2` v1, see [L2capPeerTransferEngine]): the
+     * central opens an insecure L2CAP channel to the receiver's `ack.psm` and streams files over it directly.
+     */
+    L2CAP("l2cap"),
     ;
 
     companion object {
@@ -87,8 +93,13 @@ sealed class HotspotLinkMessage {
         val caps: List<String>,
         val port: Int,
         val lan: List<String>,
+        /** Receiver's listening L2CAP PSM (`1..65535`), or `0` when L2CAP is unavailable / older builds. */
+        val psm: Int = 0,
     ) : HotspotLinkMessage() {
         override val type: String get() = "ack"
+
+        /** `true` when [psm] is a usable L2CAP PSM. */
+        val hasL2cap: Boolean get() = psm in 1..65535
     }
 
     /** `reason` ∈ `user|busy|timeout|perm`. */
@@ -182,9 +193,21 @@ object HostDecision {
     /** `caps` token: this phone can join a peer's hotspot. */
     const val CAP_JOIN = "join"
 
-    /** `caps` advertised in GATT `INFO` / `ack`: `lohs` only when hosting a hotspot can actually succeed. */
-    fun capsFor(canHostHotspot: Boolean): List<String> =
-        if (canHostHotspot) listOf(CAP_LOHS, CAP_JOIN) else listOf(CAP_JOIN)
+    /** `caps` token: this phone accepts `MFL2` transfers over a BLE L2CAP channel (`ack.psm`). */
+    const val CAP_L2CAP = "l2cap"
+
+    /** Transfers up to this size prefer `l2cap` between Android and iOS (no hotspot, no QR, no password). */
+    const val L2CAP_AUTO_MAX_BYTES = 50L * 1024 * 1024
+
+    /**
+     * `caps` advertised in GATT `INFO` / `ack`: `lohs` only when hosting a hotspot can actually succeed, `l2cap`
+     * only when an L2CAP server socket is listening.
+     */
+    fun capsFor(canHostHotspot: Boolean, l2cap: Boolean = false): List<String> = buildList {
+        if (canHostHotspot) add(CAP_LOHS)
+        add(CAP_JOIN)
+        if (l2cap) add(CAP_L2CAP)
+    }
 
     /**
      * Whether the receiver can host for `lohs-r`. Only Android receivers are asked to host; an empty `caps` list
@@ -197,9 +220,16 @@ object HostDecision {
     }
 
     /**
-     * [decide] plus capability checks performed by an Android sender before it writes `link`. The wire-level
-     * decision table is unchanged ([mode] is always what [decide] returns); [blocker] is non-null when that mode
+     * [decide] plus capability checks performed by an Android sender before it writes `link`. With `ackPsm == 0`
+     * (older receivers / no L2CAP) [LinkPlan.mode] always equals [decide]; [blocker] is non-null when that mode
      * cannot succeed and the user must fix a permission instead of watching a doomed hotspot attempt.
+     *
+     * When the receiver offers an L2CAP PSM ([ackPsm] in `1..65535`) and Wi-Fi is not shared:
+     * - Android ↔ iOS (either direction): `l2cap` for transfers `≤` [L2CAP_AUTO_MAX_BYTES] (zero QR, zero
+     *   hotspot, zero password); larger transfers keep the faster hotspot path, falling back to `l2cap` only when
+     *   the hotspot mode is blocked.
+     * - Android ↔ Android: `lohs-r` stays first (fast, QR-free via `WifiNetworkSpecifier`); `l2cap` replaces the
+     *   `RECEIVER_CANNOT_HOST` blocker.
      */
     fun plan(
         senderOs: String,
@@ -207,15 +237,40 @@ object HostDecision {
         lanOverlap: Boolean,
         receiverCaps: List<String>,
         senderCanHost: Boolean,
+        ackPsm: Int = 0,
+        bytes: Long = 0L,
     ): LinkPlan {
         val mode = decide(senderOs, receiverOs, lanOverlap) ?: return LinkPlan(null, LinkBlocker.IOS_PAIR)
-        val blocker = when (mode) {
-            LinkMode.LAN -> null
-            LinkMode.LOHS_R -> if (receiverCanHost(receiverOs, receiverCaps)) null else LinkBlocker.RECEIVER_CANNOT_HOST
-            LinkMode.LOHS_S -> if (senderCanHost) null else LinkBlocker.SENDER_CANNOT_HOST
+        val l2cap = ackPsm in 1..65535
+        val small = bytes in 0..L2CAP_AUTO_MAX_BYTES
+        val crossOs = senderOs.lowercase() != receiverOs.lowercase()
+        return when (mode) {
+            LinkMode.LAN, LinkMode.L2CAP -> LinkPlan(mode, null)
+            LinkMode.LOHS_R -> when {
+                l2cap && crossOs && small -> LinkPlan(LinkMode.L2CAP, null)
+                receiverCanHost(receiverOs, receiverCaps) -> LinkPlan(LinkMode.LOHS_R, null)
+                l2cap -> LinkPlan(LinkMode.L2CAP, null)
+                else -> LinkPlan(LinkMode.LOHS_R, LinkBlocker.RECEIVER_CANNOT_HOST)
+            }
+            LinkMode.LOHS_S -> when {
+                l2cap && small -> LinkPlan(LinkMode.L2CAP, null)
+                senderCanHost -> LinkPlan(LinkMode.LOHS_S, null)
+                l2cap -> LinkPlan(LinkMode.L2CAP, null)
+                else -> LinkPlan(LinkMode.LOHS_S, LinkBlocker.SENDER_CANNOT_HOST)
+            }
         }
-        return LinkPlan(mode, blocker)
     }
+
+    /**
+     * Hotspot mode to try when the `l2cap` channel could not be opened (e.g. iOS refused the PSM): `lohs-s` for an
+     * iPhone receiver when this phone can host, `lohs-r` for an Android receiver that can host, else `null`.
+     */
+    fun l2capFallback(receiverOs: String, receiverCaps: List<String>, senderCanHost: Boolean): LinkMode? =
+        when (receiverOs.lowercase()) {
+            HotspotLinkCodec.OS_IOS -> if (senderCanHost) LinkMode.LOHS_S else null
+            HotspotLinkCodec.OS_ANDROID -> if (receiverCanHost(receiverOs, receiverCaps)) LinkMode.LOHS_R else null
+            else -> null
+        }
 
     /** User-facing, actionable explanation for [blocker]. */
     fun blockerMessage(blocker: LinkBlocker, peerName: String): String = when (blocker) {

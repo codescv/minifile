@@ -32,6 +32,33 @@ class QrPayloadsTest {
     }
 
     @Test
+    fun cameraWifi_alwaysWpaForWpa2AndWpa3_soIosCameraJoins() {
+        for (sec in listOf("wpa2", "wpa3", "wpa3t", "sae", "SAE", "WPA3", "wpa", "unknown")) {
+            assertEquals(
+                "sec=$sec",
+                "WIFI:T:WPA;S:AndroidShare_1;P:pw123456;;",
+                QrPayloads.buildCameraWifi("AndroidShare_1", "pw123456", sec),
+            )
+        }
+        assertEquals("WIFI:T:WEP;S:Old;P:12345;;", QrPayloads.buildCameraWifi("Old", "12345", "wep"))
+        assertEquals("WIFI:T:nopass;S:Open;;", QrPayloads.buildCameraWifi("Open", "", "wpa3"))
+        assertEquals("WIFI:T:nopass;S:Open;;", QrPayloads.buildCameraWifi("Open", "x", "open"))
+        // Still parses back as a WPA network with the same credentials.
+        assertEquals(
+            QrPayload.Wifi("热点;1", "p:w", "wpa2"),
+            QrPayloads.parse(QrPayloads.buildCameraWifi("热点;1", "p:w", "wpa3")),
+        )
+    }
+
+    @Test
+    fun hotspotUri_keepsExactSec() {
+        for (sec in listOf("wpa2", "wpa3t", "wpa3")) {
+            val h = QrPayload.Hotspot("S", "pw123456", sec, "192.168.43.1", 8080, null, null, "0123456789abcdef0123456789abcdef")
+            assertEquals(sec, (QrPayloads.parse(QrPayloads.buildHotspotUri(h)) as QrPayload.Hotspot).sec)
+        }
+    }
+
+    @Test
     fun wifiBuildParseRoundTrip() {
         val ssids = listOf("Plain", "我的热点", "semi;colon,comma:colon\"quote\\back", " spaced ")
         for (s in ssids) {

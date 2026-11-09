@@ -300,13 +300,12 @@ private fun CredentialRow(label: String, value: String, onCopy: () -> Unit) {
     }
 }
 
-/** Universal `WIFI:` QR (default) or the Files-only `minifile://hotspot` URI (spec §2.5). */
+/**
+ * Universal `WIFI:` QR (default) or the Files-only `minifile://hotspot` URI (spec §2.5). The Camera QR always uses
+ * `T:WPA` for WPA2/WPA3 hotspots ([QrPayloads.buildCameraWifi]) — iOS Camera rejects `T:SAE`; the Files-only URI keeps
+ * the exact `sec`.
+ */
 fun hotspotQrText(info: HotspotInfo, filesOnly: Boolean): String {
-    val qrSec = when (info.sec) {
-        "wpa3" -> "wpa3"
-        "open" -> "nopass"
-        else -> "wpa2"
-    }
     if (filesOnly && info.token != null && info.hostIp.isNotEmpty()) {
         return QrPayloads.buildHotspotUri(
             QrPayload.Hotspot(
@@ -321,7 +320,7 @@ fun hotspotQrText(info: HotspotInfo, filesOnly: Boolean): String {
             ),
         )
     }
-    return QrPayloads.buildWifi(info.ssid, info.pass, if (info.pass.isEmpty()) "nopass" else qrSec)
+    return QrPayloads.buildCameraWifi(info.ssid, info.pass, info.sec)
 }
 
 /** Renders [text] as a black-on-white QR code with a 4-module quiet zone. */

@@ -95,7 +95,12 @@ class LocalOnlyHotspotManager(
         private set
 
     private var autoStopJob: Job? = null
+    private var endpointRefineJob: Job? = null
     private var stopping = false
+
+    /** LAN IPv4s seen just before the current reservation started (spec §3.4 new-address detection). */
+    @Volatile
+    private var preLohsIps: Set<String>? = null
 
     val activeInfo: HotspotInfo?
         get() = (state.value as? HotspotState.Active)?.info
@@ -130,6 +135,10 @@ class LocalOnlyHotspotManager(
             existing
         } else {
             _state.value = HotspotState.Starting
+            // Spec §3.4: IPv4s present before LOHS so a newly appeared wireless address (OnePlus `wlan1`/`wlan2`,
+            // or `wlan0` when STA is off) is recognised as the hotspot gateway.
+            val before = withContext(Dispatchers.IO) { runCatching { lanAddressResolver.snapshotLocalIpv4s() }.getOrNull() }
+            preLohsIps = before
             val res = try {
                 startReservation(wm)
             } catch (e: HotspotException) {
@@ -139,7 +148,7 @@ class LocalOnlyHotspotManager(
             }
             reservation = res
             val cfg = extractConfig(res)
-            val endpoint = awaitHotspotEndpoint()
+            val endpoint = awaitHotspotEndpoint(before)
             HotspotInfo(
                 ssid = cfg.ssid,
                 pass = cfg.pass,
@@ -164,6 +173,7 @@ class LocalOnlyHotspotManager(
         applyGate(info)
         _state.value = HotspotState.Active(info)
         scheduleIdleStopIfDirect(info)
+        if (info.hostIp.isEmpty()) refineEndpointInBackground()
         info
     }
 
@@ -192,6 +202,9 @@ class LocalOnlyHotspotManager(
         try {
             autoStopJob?.cancel()
             autoStopJob = null
+            endpointRefineJob?.cancel()
+            endpointRefineJob = null
+            preLohsIps = null
             runCatching { reservation?.close() }
             reservation = null
             gate.reset()
@@ -225,7 +238,10 @@ class LocalOnlyHotspotManager(
         val bindIp: Inet4Address? = info.hostIp.takeIf { it.isNotEmpty() }
             ?.let { runCatching { InetAddress.getByName(it) as? Inet4Address }.getOrNull() }
         gate.hotspotBindIp = bindIp
+        gate.hotspotPrefixLength = info.prefixLength
         gate.confineToHotspot = httpStartedForHotspot && bindIp != null
+        // Hotspot Direct: an iPhone that joined via the Camera `WIFI:` QR announces without a token (spec §2.4).
+        gate.setOpenAnnounce(info.purpose == HotspotPurpose.DIRECT && bindIp != null)
         gate.clearSessionToken()
         gate.clearAnnounceToken()
         val tok = info.token
@@ -252,13 +268,65 @@ class LocalOnlyHotspotManager(
     private fun onPeerEvent(ev: HttpEvent) {
         val info = activeInfo ?: return
         when (ev) {
-            is HttpEvent.PeerSessionStart, is HttpEvent.PeerAnnounce -> {
+            is HttpEvent.PeerAnnounce -> {
+                if (info.purpose == HotspotPurpose.DIRECT) {
+                    touch()
+                    if (ev.open) onOpenAnnounce(ev)
+                } else {
+                    autoStopJob?.cancel()
+                }
+            }
+            is HttpEvent.PeerSessionStart -> {
                 if (info.purpose == HotspotPurpose.DIRECT) touch() else autoStopJob?.cancel()
             }
             is HttpEvent.PeerSessionEnd -> {
                 if (info.purpose == HotspotPurpose.BLE_RECEIVER) scheduleStop(SESSION_GRACE_MS) else touch()
             }
             else -> Unit
+        }
+    }
+
+    /** Probe + upsert the device that announced itself on the Hotspot Direct network ("Joined devices"). */
+    private fun onOpenAnnounce(ev: HttpEvent.PeerAnnounce) {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                peerDiscoveryHolder.probeAnnouncedPeer(
+                    clientIp = ev.clientIp,
+                    port = ev.port,
+                    id = ev.id,
+                    name = ev.name,
+                    os = ev.os,
+                )
+            }
+        }
+    }
+
+    /**
+     * The hotspot address was not found within [ENDPOINT_POLL_MS] (slow DHCP server start on some OEMs): keep
+     * looking for up to [ENDPOINT_REFINE_MS] and publish it as soon as it appears so `hostIp` / the joined-device
+     * filter / interface confinement start working.
+     */
+    private fun refineEndpointInBackground() {
+        endpointRefineJob?.cancel()
+        endpointRefineJob = scope.launch {
+            var waited = 0L
+            while (waited < ENDPOINT_REFINE_MS) {
+                delay(500)
+                waited += 500
+                val cur = activeInfo ?: return@launch
+                if (cur.hostIp.isNotEmpty()) return@launch
+                val ep = withContext(Dispatchers.IO) {
+                    runCatching { lanAddressResolver.hotspotEndpoints(preLohsIps).firstOrNull() }.getOrNull()
+                } ?: continue
+                mutex.withLock {
+                    val latest = activeInfo ?: return@launch
+                    if (latest.hostIp.isNotEmpty()) return@launch
+                    val updated = latest.copy(hostIp = ep.ipv4, prefixLength = ep.prefixLength, ifaceName = ep.interfaceName)
+                    applyGate(updated)
+                    _state.value = HotspotState.Active(updated)
+                }
+                return@launch
+            }
         }
     }
 
@@ -332,13 +400,13 @@ class LocalOnlyHotspotManager(
         }
     }
 
-    private suspend fun awaitHotspotEndpoint() = withContext(Dispatchers.IO) {
-        var found = lanAddressResolver.hotspotEndpoints().firstOrNull()
+    private suspend fun awaitHotspotEndpoint(before: Set<String>?) = withContext(Dispatchers.IO) {
+        var found = lanAddressResolver.hotspotEndpoints(before).firstOrNull()
         var waited = 0L
         while (found == null && waited < ENDPOINT_POLL_MS) {
             delay(250)
             waited += 250
-            found = lanAddressResolver.hotspotEndpoints().firstOrNull()
+            found = lanAddressResolver.hotspotEndpoints(before).firstOrNull()
         }
         found
     }
@@ -388,6 +456,7 @@ class LocalOnlyHotspotManager(
         private const val LOHS_START_TIMEOUT_MS = 15_000L
         private const val HTTP_START_TIMEOUT_MS = 6_000L
         private const val ENDPOINT_POLL_MS = 5_000L
+        private const val ENDPOINT_REFINE_MS = 25_000L
 
         fun mapFailure(reason: Int): String = when (reason) {
             WifiManager.LocalOnlyHotspotCallback.ERROR_INCOMPATIBLE_MODE ->

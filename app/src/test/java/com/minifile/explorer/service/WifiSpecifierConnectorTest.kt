@@ -217,4 +217,99 @@ class WifiSpecifierConnectorTest {
         connector.release()
         assertFalse(connector.isJoined)
     }
+
+    @Test
+    fun securityAttemptOrder_fallsBackToTheOtherPassphraseType() {
+        assertEquals(listOf("wpa2", "wpa3"), WifiSpecifierConnector.securityAttemptOrder("wpa2", "pw123456"))
+        assertEquals(listOf("wpa2", "wpa3"), WifiSpecifierConnector.securityAttemptOrder("wpa3t", "pw123456"))
+        assertEquals(listOf("wpa3", "wpa2"), WifiSpecifierConnector.securityAttemptOrder("wpa3", "pw123456"))
+        assertEquals(listOf("wpa3", "wpa2"), WifiSpecifierConnector.securityAttemptOrder("SAE", "pw123456"))
+        assertEquals(listOf("wpa2", "wpa3"), WifiSpecifierConnector.securityAttemptOrder("", "pw123456"))
+        assertEquals(listOf("open"), WifiSpecifierConnector.securityAttemptOrder("open", "pw"))
+        assertEquals(listOf("open"), WifiSpecifierConnector.securityAttemptOrder("nopass", ""))
+        assertEquals(listOf("open"), WifiSpecifierConnector.securityAttemptOrder("wpa2", ""))
+    }
+
+    /** Fails (onUnavailable) every specifier whose security is in [failing]; records every request. */
+    private class RetryOps(private val failing: Set<String>) : WifiSpecifierConnector.PlatformOps {
+        override val sdkInt: Int = 34
+        val requests = CopyOnWriteArrayList<Pair<String, Int>>()
+        val unregistered = CopyOnWriteArrayList<Any>()
+
+        override fun pinNetwork(network: Network?) = Unit
+
+        override fun requestSpecifier(
+            ssid: String,
+            pass: String,
+            sec: String,
+            timeoutMs: Int,
+            listener: WifiSpecifierConnector.SpecifierListener,
+        ): Any {
+            requests.add(sec to timeoutMs)
+            val token = "reg-${requests.size}"
+            if (sec in failing) listener.onUnavailable() else listener.onAvailable(null)
+            return token
+        }
+
+        override fun unregisterSpecifier(registration: Any) {
+            unregistered.add(registration)
+        }
+
+        override fun readLinkSnapshot(network: Network?) =
+            WifiSpecifierConnector.LinkSnapshot(ownIp = "192.168.43.20", gateway = "192.168.43.1", prefixLength = 24)
+
+        override fun addAndEnableLegacy(ssid: String, pass: String): Int = -1
+        override fun pollLegacyConnected(netId: Int): WifiSpecifierConnector.LinkSnapshot? = null
+        override fun releaseLegacy(netId: Int) = Unit
+    }
+
+    private fun connectorFor(ops: WifiSpecifierConnector.PlatformOps) = WifiSpecifierConnector(
+        ops = ops,
+        scope = scope,
+        mainDispatcher = Dispatchers.Unconfined,
+        ioDispatcher = Dispatchers.Unconfined,
+    )
+
+    @Test
+    fun wpa2JoinFails_retriesOnceWithWpa3_andSucceeds() = runBlocking {
+        val ops = RetryOps(failing = setOf("wpa2"))
+        val connector = connectorFor(ops)
+        val joined = connector.join("AndroidShare_9", "pw123456", "wpa3t")
+        assertEquals("192.168.43.1", joined.gateway)
+        assertEquals(listOf("wpa2", "wpa3"), ops.requests.map { it.first })
+        assertEquals(WifiSpecifierConnector.FIRST_ATTEMPT_TIMEOUT_MS.toInt(), ops.requests[0].second)
+        assertEquals(WifiSpecifierConnector.JOIN_TIMEOUT_MS.toInt(), ops.requests[1].second)
+        assertEquals("failed first registration must be unregistered", listOf<Any>("reg-1"), ops.unregistered.toList())
+        assertTrue(connector.isJoined)
+        connector.release()
+        assertFalse(connector.isJoined)
+    }
+
+    @Test
+    fun wpa3JoinFails_retriesWithWpa2() = runBlocking {
+        val ops = RetryOps(failing = setOf("wpa3"))
+        val connector = connectorFor(ops)
+        connector.join("AndroidShare_9", "pw123456", "wpa3")
+        assertEquals(listOf("wpa3", "wpa2"), ops.requests.map { it.first })
+        assertTrue(connector.isJoined)
+    }
+
+    @Test
+    fun bothAttemptsFail_throwsJoinException_andLeavesNothingRegistered() = runBlocking {
+        val ops = RetryOps(failing = setOf("wpa2", "wpa3"))
+        val connector = connectorFor(ops)
+        val err = runCatching { connector.join("AndroidShare_9", "pw123456", "wpa2") }.exceptionOrNull()
+        assertTrue(err is JoinException)
+        assertEquals(listOf("wpa2", "wpa3"), ops.requests.map { it.first })
+        assertEquals(setOf<Any>("reg-1", "reg-2"), ops.unregistered.toSet())
+        assertFalse(connector.isJoined)
+    }
+
+    @Test
+    fun openNetwork_singleAttempt() = runBlocking {
+        val ops = RetryOps(failing = setOf("open"))
+        val connector = connectorFor(ops)
+        assertTrue(runCatching { connector.join("Open", "", "open") }.exceptionOrNull() is JoinException)
+        assertEquals(listOf("open"), ops.requests.map { it.first })
+    }
 }

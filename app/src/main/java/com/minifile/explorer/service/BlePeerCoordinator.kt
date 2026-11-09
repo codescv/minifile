@@ -12,6 +12,8 @@ import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothServerSocket
+import android.bluetooth.BluetoothSocket
 import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
@@ -26,11 +28,27 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.location.LocationManager
 import android.os.Build
+import android.os.Environment
 import android.os.ParcelUuid
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import com.minifile.explorer.BuildConfig
 import com.minifile.explorer.core.http.HttpEvent
+import com.minifile.explorer.core.http.HttpTransferDirection
+import com.minifile.explorer.core.model.MediaScanNotifier
+import com.minifile.explorer.core.ops.ProgressSink
+import com.minifile.explorer.core.peer.GattDiscoveryPolicy
+import com.minifile.explorer.core.peer.GattEvent
+import com.minifile.explorer.core.peer.GattOpCorrelator
+import com.minifile.explorer.core.peer.L2capPeerTransferEngine
+import com.minifile.explorer.core.peer.L2capReceiveListener
+import com.minifile.explorer.core.peer.PeerSendItem
+import com.minifile.explorer.core.peer.PeerSendResult
+import com.minifile.explorer.core.peer.PendingGattOp
+import com.minifile.explorer.core.peer.SingleUseToken
+import com.minifile.explorer.core.vfs.FileSystem
+import com.minifile.explorer.core.vfs.PathUtils
+import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.peer.BleAdvertisement
 import com.minifile.explorer.core.peer.BlePeerCard
 import com.minifile.explorer.core.peer.HostDecision
@@ -52,6 +70,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -106,15 +125,21 @@ data class BleLinkUiState(
     val qrFallback: Boolean = false,
     val error: String? = null,
     val finished: Boolean = false,
+    /** `0f..1f` byte progress for direct Bluetooth (L2CAP) transfers, `null` when not applicable. */
+    val progress: Float? = null,
 )
 
 enum class BleAvailability { READY, UNSUPPORTED, BLUETOOTH_OFF, NO_PERMISSION, LOCATION_OFF }
 
-/** Negotiated link: send to [peer] (with `linkToken`), then always call [teardown]. */
+/**
+ * Negotiated link: send to [peer] (with `linkToken`) — or, for [LinkMode.L2CAP], through [directSend] over the open
+ * Bluetooth channel — then always call [teardown].
+ */
 class LinkResult(
     val peer: PeerInfo,
     val mode: LinkMode,
     val teardown: suspend (ok: Boolean) -> Unit,
+    val directSend: (suspend (items: List<PeerSendItem>, sink: ProgressSink) -> PeerSendResult)? = null,
 )
 
 /**
@@ -132,6 +157,8 @@ class BlePeerCoordinator(
     private val peerDiscoveryHolder: PeerDiscoveryHolder,
     private val hotspotManager: LocalOnlyHotspotManager,
     private val connector: WifiSpecifierConnector,
+    private val fileSystem: FileSystem? = null,
+    private val mediaScanNotifier: MediaScanNotifier = MediaScanNotifier.NOOP,
 ) {
     private val appContext = context.applicationContext
     private val btManager = appContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
@@ -192,6 +219,12 @@ class BlePeerCoordinator(
     )
 
     private val seen = ConcurrentHashMap<String, Seen>()
+
+    /**
+     * Last sighting per `id6`, kept after scanning stops (e.g. the Send sheet closed the moment a peer was tapped)
+     * so [negotiate] can still reach a peer the user just picked instead of failing "out of Bluetooth range".
+     */
+    private val recentDevices = ConcurrentHashMap<String, Seen>()
     private val infoReadAttempted = ConcurrentHashMap.newKeySet<String>()
     private val infoReadQueue = Channel<BluetoothDevice>(capacity = 16)
 
@@ -213,6 +246,9 @@ class BlePeerCoordinator(
         @Volatile var accepted: Boolean = false,
         @Volatile var hostedHotspot: Boolean = false,
         @Volatile var httpStartedHere: Boolean = false,
+        /** Listening L2CAP server (API 29+) whose PSM went out in `ack`; closed after one accept or on any end. */
+        @Volatile var l2capServer: BluetoothServerSocket? = null,
+        @Volatile var l2capSocket: BluetoothSocket? = null,
     )
 
     @Volatile
@@ -221,6 +257,10 @@ class BlePeerCoordinator(
     // --- Central (sender) state ---
     @Volatile
     private var negotiationJob: Job? = null
+
+    /** Open sender-side L2CAP channel, closed by [cancelLink] so a blocked write unblocks at once. */
+    @Volatile
+    private var activeSenderSocket: BluetoothSocket? = null
 
     init {
         refreshAvailability()
@@ -503,7 +543,9 @@ class BlePeerCoordinator(
         }
         if (adv.id6 == selfId6()) return
         val prev = seen[adv.id6]
-        seen[adv.id6] = Seen(adv, result.device, System.currentTimeMillis(), prev?.fullId)
+        val entry = Seen(adv, result.device, System.currentTimeMillis(), prev?.fullId ?: recentDevices[adv.id6]?.fullId)
+        seen[adv.id6] = entry
+        recentDevices[adv.id6] = entry
         if (prev == null || prev.adv != adv) publishPeers()
     }
 
@@ -518,6 +560,7 @@ class BlePeerCoordinator(
             }
         }
         if (changed) publishPeers()
+        recentDevices.entries.removeIf { now - it.value.lastSeenMs > RECENT_DEVICE_TTL_MS }
     }
 
     private fun publishPeers() {
@@ -556,7 +599,9 @@ class BlePeerCoordinator(
                     name = card.name,
                     flags = if (card.os == HotspotLinkCodec.OS_ANDROID) HotspotLinkCodec.FLAG_ANDROID else 0,
                 )
-                seen[id6] = Seen(adv, device, System.currentTimeMillis(), card.id)
+                val entry = Seen(adv, device, System.currentTimeMillis(), card.id)
+                seen[id6] = entry
+                recentDevices[id6] = entry
                 publishPeers()
             }
         } catch (_: Exception) {
@@ -845,20 +890,27 @@ class BlePeerCoordinator(
             true -> {
                 sess.accepted = true
                 updateReceiverUi(sess, "Preparing…")
+                // Zero-QR, zero-password direct channel: listen for one L2CAP connection and advertise its PSM.
+                val psm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) openL2capServer(sess) else 0
                 val port = try {
                     ensureHttpForReceive(sess)
                 } catch (e: Exception) {
-                    notifyMessage(device, HotspotLinkMessage.Error(HotspotLinkMessage.ERR_LOHS_FAILED))
-                    endIncomingSession(error = e.message ?: "Could not start receiving")
-                    return
+                    if (psm in 1..65535) {
+                        0 // HTTP could not start: Bluetooth (L2CAP) can still deliver the files.
+                    } else {
+                        notifyMessage(device, HotspotLinkMessage.Error(HotspotLinkMessage.ERR_LOHS_FAILED))
+                        endIncomingSession(error = e.message ?: "Could not start receiving")
+                        return
+                    }
                 }
                 val ack = HotspotLinkMessage.Ack(
                     id = s.peerDeviceId,
                     name = PeerPathPolicy.sanitizeDisplayName(s.peerDeviceName, 64).ifEmpty { "Files" },
                     os = HotspotLinkCodec.OS_ANDROID,
-                    caps = HostDecision.capsFor(canHostHotspot()),
+                    caps = HostDecision.capsFor(canHostHotspot(), l2cap = psm in 1..65535),
                     port = port,
                     lan = lanIpv4s().take(4),
+                    psm = psm,
                 )
                 if (!notifyMessage(device, ack)) {
                     endIncomingSession(error = "Bluetooth link lost")
@@ -890,7 +942,16 @@ class BlePeerCoordinator(
     private suspend fun onLink(device: BluetoothDevice, mode: LinkMode) {
         val sess = incomingSession ?: return
         if (sess.device.address != device.address || !sess.accepted) return
+        if (mode != LinkMode.L2CAP) closeL2capServer(sess) // e.g. iOS fell back to lohs-r after a failed channel
         when (mode) {
+            LinkMode.L2CAP -> {
+                if (sess.l2capServer == null && sess.l2capSocket == null) {
+                    notifyMessage(device, HotspotLinkMessage.Error(HotspotLinkMessage.ERR_BUSY))
+                    endIncomingSession(error = "Bluetooth direct transfer is unavailable on this phone")
+                    return
+                }
+                if (sess.l2capSocket == null) updateReceiverUi(sess, "Connecting over Bluetooth…")
+            }
             LinkMode.LAN -> updateReceiverUi(sess, "Waiting for files over Wi-Fi…")
             LinkMode.LOHS_R -> {
                 if (!canHostHotspot()) {
@@ -952,6 +1013,9 @@ class BlePeerCoordinator(
     private fun onHttpPeerEvent(ev: HttpEvent) {
         val sess = incomingSession ?: return
         if (!sess.accepted) return
+        // Bluetooth (L2CAP) sessions are driven by runL2capReceiver; their mirrored log events are ignored here.
+        if (ev is HttpEvent.PeerSessionStart && ev.sessionId.startsWith(L2CAP_SESSION_PREFIX)) return
+        if (ev is HttpEvent.PeerSessionEnd && ev.sessionId.startsWith(L2CAP_SESSION_PREFIX)) return
         when (ev) {
             is HttpEvent.PeerSessionStart -> updateReceiverUi(sess, "Receiving from ${ev.deviceName}…")
             is HttpEvent.PeerSessionEnd -> scope.launch {
@@ -963,6 +1027,7 @@ class BlePeerCoordinator(
 
     private suspend fun finishIncoming(sess: IncomingSession, ok: Boolean, message: String) {
         if (incomingSession !== sess) return
+        closeL2capServer(sess)
         _linkUi.value = _linkUi.value?.copy(phase = message, finished = true, showQr = false, qrFallback = false)
             ?: BleLinkUiState(BleLinkRole.RECEIVER, sess.hello.name, message, finished = true)
         if (sess.hostedHotspot) hotspotManager.scheduleStop(LocalOnlyHotspotManager.SESSION_GRACE_MS)
@@ -986,6 +1051,8 @@ class BlePeerCoordinator(
         incomingSession = null
         _pendingIncoming.value = null
         sess.decision.complete(false)
+        closeL2capServer(sess)
+        sess.l2capSocket?.let { sock -> runCatching { sock.close() } }
         if (sess.hostedHotspot) hotspotManager.stop()
         HttpServerHolder.hotspotGate.clearSessionToken()
         if (sess.httpStartedHere && !sess.hostedHotspot) runCatching { FtpServerService.stopHttp(appContext) }
@@ -1019,6 +1086,7 @@ class BlePeerCoordinator(
     /** Cancel button on the link dialog (either role). */
     fun cancelLink() {
         negotiationJob?.cancel(CancellationException("Cancelled"))
+        activeSenderSocket?.let { sock -> runCatching { sock.close() } }
         val sess = incomingSession
         if (sess != null) {
             scope.launch {
@@ -1032,6 +1100,244 @@ class BlePeerCoordinator(
     fun dismissLinkUi() {
         if (_linkUi.value?.finished == true || _linkUi.value?.error != null) _linkUi.value = null
     }
+
+    // =============================================================================================
+    // BLE L2CAP CoC direct transfer (`MFL2` v1): zero QR, zero hotspot, zero password
+    // =============================================================================================
+
+    /** Opens the receiver's insecure L2CAP server and starts the single accept; returns its PSM or `0`. */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun openL2capServer(sess: IncomingSession): Int {
+        if (fileSystem == null || !NearbyPermissions.hasBleConnectPermission(appContext)) return 0
+        val server = runCatching { adapter?.listenUsingInsecureL2capChannel() }.getOrNull() ?: return 0
+        val psm = runCatching { server.psm }.getOrDefault(0)
+        if (psm !in 1..65535) {
+            runCatching { server.close() }
+            return 0
+        }
+        sess.l2capServer = server
+        scope.launch {
+            // Blocks until the sender connects; closing the server (any session end / other link mode) unblocks it.
+            val sock = runCatching { server.accept() }.getOrNull()
+            if (sock != null) sess.l2capSocket = sock // set before closing the server: onLink(l2cap) checks both
+            closeL2capServer(sess)
+            if (sock == null) return@launch
+            if (incomingSession !== sess || !sess.accepted) {
+                sess.l2capSocket = null
+                runCatching { sock.close() }
+                return@launch
+            }
+            runL2capReceiver(sess, sock)
+        }
+        return psm
+    }
+
+    private fun closeL2capServer(sess: IncomingSession) {
+        val server = sess.l2capServer ?: return
+        sess.l2capServer = null
+        runCatching { server.close() }
+    }
+
+    /** Where Bluetooth transfers are saved: the shared root (same as HTTP Share) + `/Received`. */
+    private fun receiveRoot(): VfsPath {
+        val st = settingsRepository.settings.value
+        val raw = st.ftpRoot ?: st.httpRoot
+        return raw?.let { runCatching { VfsPath.parse(it) }.getOrNull() }
+            ?: VfsPath.Local(Environment.getExternalStorageDirectory().absolutePath)
+    }
+
+    private suspend fun runL2capReceiver(sess: IncomingSession, sock: BluetoothSocket) {
+        val fs = fileSystem ?: return
+        val sessionId = "$L2CAP_SESSION_PREFIX${sess.requestId}"
+        val peerName = PeerPathPolicy.sanitizeDisplayName(sess.hello.name, 64).ifEmpty { "Nearby device" }
+        val startedAt = System.currentTimeMillis()
+        var began = false
+        var lastUiBytes = -L2CAP_UI_STEP_BYTES
+        updateReceiverUi(sess, "Receiving via Bluetooth…")
+        val listener = object : L2capReceiveListener {
+            override fun onBegin(senderId: String, senderName: String, files: Int, bytes: Long) {
+                began = true
+                HttpServerHolder.onEvent(HttpEvent.PeerSessionStart(sessionId, BLUETOOTH_CLIENT, senderName, files, bytes))
+            }
+
+            override fun onProgress(
+                processedFiles: Int,
+                totalFiles: Int,
+                processedBytes: Long,
+                totalBytes: Long,
+                currentItem: String,
+            ) {
+                val due = processedBytes - lastUiBytes >= L2CAP_UI_STEP_BYTES || processedBytes >= totalBytes
+                if (!due) {
+                    return
+                }
+                lastUiBytes = processedBytes
+                if (incomingSession === sess) {
+                    val cur = _linkUi.value
+                    val phase = "Receiving via Bluetooth… (${byteProgress(processedBytes, totalBytes)})"
+                    val fraction = if (totalBytes > 0) (processedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else null
+                    _linkUi.value = if (cur != null && cur.role == BleLinkRole.RECEIVER && !cur.finished) {
+                        cur.copy(phase = phase, progress = fraction, showQr = false, qrFallback = false)
+                    } else {
+                        BleLinkUiState(BleLinkRole.RECEIVER, peerName, phase, progress = fraction)
+                    }
+                }
+                HttpServerHolder.onEvent(
+                    HttpEvent.PeerProgress(sessionId, processedFiles, totalFiles, processedBytes, totalBytes, currentItem),
+                )
+            }
+
+            override fun onFileSaved(savedRelPath: String, path: VfsPath, bytes: Long, durationMs: Long) {
+                runCatching { mediaScanNotifier.rescan(path) }
+                HttpServerHolder.onEvent(
+                    HttpEvent.Transfer(
+                        clientIp = BLUETOOTH_CLIENT,
+                        direction = HttpTransferDirection.UPLOAD,
+                        path = "/${L2capPeerTransferEngine.DEFAULT_INBOX}/$savedRelPath",
+                        bytes = bytes,
+                        durationMs = durationMs,
+                        peerSessionId = sessionId,
+                    ),
+                )
+            }
+        }
+        val res = try {
+            L2capPeerTransferEngine().receive(
+                input = sock.inputStream,
+                output = sock.outputStream,
+                token = SingleUseToken(sess.hello.tok),
+                fs = fs,
+                root = receiveRoot(),
+                inboxDir = L2capPeerTransferEngine.DEFAULT_INBOX,
+                listener = listener,
+                isCancelled = { incomingSession !== sess },
+            )
+        } finally {
+            runCatching { sock.close() }
+            sess.l2capSocket = null
+        }
+        if (began) {
+            HttpServerHolder.onEvent(
+                HttpEvent.PeerSessionEnd(
+                    sessionId = sessionId,
+                    clientIp = BLUETOOTH_CLIENT,
+                    deviceName = res.senderName.ifEmpty { peerName },
+                    files = res.files,
+                    bytes = res.bytes,
+                    durationMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(1L),
+                    ok = res.ok,
+                    cancelled = res.cancelled,
+                    error = res.error,
+                ),
+            )
+        }
+        if (incomingSession !== sess) return
+        if (res.ok) {
+            val count = if (res.files == 1) "1 file" else "${res.files} files"
+            finishIncoming(sess, ok = true, message = "Received $count (${PathUtils.formatBytes(res.bytes)})")
+        } else {
+            endIncomingSession(error = res.error ?: "Bluetooth transfer failed")
+        }
+    }
+
+    /**
+     * Sender side of [LinkMode.L2CAP]: writes `link{l2cap}`, opens the channel to `ack.psm` (8 s timeout) and returns a
+     * [LinkResult] whose [LinkResult.directSend] streams `MFL2` over it while GATT stays up until `done`. Returns
+     * `null` when the channel could not be opened so the caller can fall back to a hotspot.
+     */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private suspend fun runL2capSender(
+        c: GattClient,
+        device: BluetoothDevice,
+        ack: HotspotLinkMessage.Ack,
+        ackName: String,
+        receiverOs: String,
+        tok: String,
+        phase: (String) -> Unit,
+    ): LinkResult? {
+        phase("Connecting to $ackName over Bluetooth…")
+        c.requestHighPriority()
+        if (!c.writeMessage(HotspotLinkMessage.Link(LinkMode.L2CAP))) return null
+        val sock = openL2capSocket(device, ack.psm) ?: return null
+        activeSenderSocket = sock
+        phase("Sending to $ackName via Bluetooth…")
+        val s = settingsRepository.settings.value
+        val senderName = PeerPathPolicy.sanitizeDisplayName(s.peerDeviceName, 64).ifEmpty { "Files" }
+        val peerInfo = PeerInfo(
+            id = ack.id.ifEmpty { ackName },
+            name = ackName,
+            host = "",
+            port = 0,
+            version = "",
+            readOnly = false,
+            source = PeerSource.BLE,
+            lastSeenMs = System.currentTimeMillis(),
+            platform = receiverOs,
+        )
+        return LinkResult(
+            peer = peerInfo,
+            mode = LinkMode.L2CAP,
+            teardown = { ok ->
+                if (activeSenderSocket === sock) activeSenderSocket = null
+                runCatching { sock.close() }
+                senderTeardown(c, ok, joined = false, hosted = false)
+            },
+            directSend = { items, sink ->
+                L2capPeerTransferEngine().send(
+                    input = sock.inputStream,
+                    output = sock.outputStream,
+                    token = tok,
+                    senderId = s.peerDeviceId,
+                    senderName = senderName,
+                    peerName = ackName,
+                    items = items,
+                    sink = senderProgressSink(sink),
+                )
+            },
+        )
+    }
+
+    /** Connects an insecure L2CAP channel with a hard timeout (closing the socket unblocks `connect()`). */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private suspend fun openL2capSocket(device: BluetoothDevice, psm: Int): BluetoothSocket? {
+        val sock = runCatching { device.createInsecureL2capChannel(psm) }.getOrNull() ?: return null
+        val connecting = scope.async(Dispatchers.IO) { sock.connect() }
+        var connected = false
+        try {
+            connected = withTimeoutOrNull(L2CAP_CONNECT_TIMEOUT_MS) {
+                runCatching { connecting.await() }.isSuccess
+            } == true
+            return if (connected) sock else null
+        } finally {
+            if (!connected) runCatching { sock.close() }
+        }
+    }
+
+    /** Mirrors sender byte progress into the link dialog ("Sending via Bluetooth… (X / Y)"). */
+    private fun senderProgressSink(base: ProgressSink): ProgressSink = object : ProgressSink {
+        private var lastBytes = -L2CAP_UI_STEP_BYTES
+
+        override fun onProgress(p: com.minifile.explorer.core.model.OperationProgress) {
+            base.onProgress(p)
+            val due = p.processedBytes - lastBytes >= L2CAP_UI_STEP_BYTES || p.processedBytes >= p.totalBytes
+            if (!due) {
+                return
+            }
+            lastBytes = p.processedBytes
+            val cur = _linkUi.value ?: return
+            if (cur.role != BleLinkRole.SENDER || cur.finished) return
+            val fraction = if (p.totalBytes > 0) (p.processedBytes.toFloat() / p.totalBytes).coerceIn(0f, 1f) else null
+            _linkUi.value = cur.copy(
+                phase = "Sending via Bluetooth… (${byteProgress(p.processedBytes, p.totalBytes)})",
+                progress = fraction,
+            )
+        }
+
+        override fun isCancelled(): Boolean = base.isCancelled()
+    }
+
+    private fun byteProgress(done: Long, total: Long): String =
+        "${PathUtils.formatBytes(done)} / ${PathUtils.formatBytes(total)}"
 
     // =============================================================================================
     // Central (sender) negotiation (spec §2.3)
@@ -1049,11 +1355,14 @@ class BlePeerCoordinator(
             _linkUi.value = BleLinkUiState(BleLinkRole.SENDER, peerName, text, hotspot, showQr)
         }
         if (refreshAvailability() != BleAvailability.READY) {
-            throw PeerTransferException(null, NearbyPermissions.nearbyHint(appContext) ?: "Bluetooth is unavailable")
+            val msg = NearbyPermissions.nearbyHint(appContext) ?: "Bluetooth is unavailable"
+            phaseError(peerName, msg)
+            throw PeerTransferException(null, msg)
         }
-        val id6 = HotspotLinkCodec.id6Of(peer.id)
-        val target = seen[peer.id] ?: seen[id6] ?: seen.values.firstOrNull { it.fullId == peer.id }
-            ?: throw PeerTransferException(null, "$peerName is out of Bluetooth range")
+        val target = findTarget(peer) ?: run {
+            phaseError(peerName, "$peerName is out of Bluetooth range — keep Files open on $peerName and try again")
+            throw PeerTransferException(null, "$peerName is out of Bluetooth range")
+        }
 
         var client: GattClient? = null
         var hostedHotspot = false
@@ -1065,7 +1374,12 @@ class BlePeerCoordinator(
             client = c
             if (!c.connect()) throw PeerTransferException(null, "Could not connect to $peerName over Bluetooth")
             c.requestMtu(517)
-            if (!c.discover()) throw PeerTransferException(null, "$peerName does not offer Files direct transfer")
+            if (!c.discover()) {
+                throw PeerTransferException(
+                    null,
+                    "Could not reach Files on $peerName — keep Files open on $peerName with Bluetooth enabled",
+                )
+            }
             if (!c.enableNotifications()) throw PeerTransferException(null, "Bluetooth setup with $peerName failed")
 
             val s = settingsRepository.settings.value
@@ -1127,86 +1441,115 @@ class BlePeerCoordinator(
                 lanOverlap = false,
                 receiverCaps = ack.caps,
                 senderCanHost = canHostHotspot(),
+                ackPsm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ack.psm else 0,
+                bytes = bytes,
             )
             plan.blocker?.let { blocker ->
                 if (blocker != LinkBlocker.IOS_PAIR) c.writeMessage(HotspotLinkMessage.Error(HotspotLinkMessage.ERR_PERM))
                 throw PeerTransferException(null, HostDecision.blockerMessage(blocker, ackName))
             }
+
+            suspend fun runLohsR(): LinkResult {
+                c.writeMessage(HotspotLinkMessage.Link(LinkMode.LOHS_R))
+                phase("$ackName is starting a hotspot…")
+                val hs = c.awaitMessage(HOTSPOT_WAIT_MS) {
+                    it is HotspotLinkMessage.Hotspot || it is HotspotLinkMessage.Error
+                }
+                val hotspot = when (hs) {
+                    is HotspotLinkMessage.Hotspot -> hs
+                    is HotspotLinkMessage.Error -> throw PeerTransferException(
+                        null,
+                        when (hs.code) {
+                            HotspotLinkMessage.ERR_LOHS_FAILED -> "$ackName could not start a hotspot"
+                            HotspotLinkMessage.ERR_PERM -> HostDecision.blockerMessage(LinkBlocker.RECEIVER_CANNOT_HOST, ackName)
+                            else -> "$ackName: ${hs.code}"
+                        },
+                    )
+                    else -> throw PeerTransferException(null, "$ackName did not start a hotspot in time")
+                }
+                phase("Connecting to Wi-Fi “${hotspot.ssid}”…")
+                val joined = try {
+                    connector.join(hotspot.ssid, hotspot.pass, hotspot.sec, hotspot.ip)
+                } catch (e: JoinException) {
+                    c.writeMessage(HotspotLinkMessage.Error(HotspotLinkMessage.ERR_JOIN_FAILED))
+                    throw PeerTransferException(null, e.message ?: "Could not join $ackName's hotspot")
+                }
+                joinedWifi = true
+                phase("Finding $ackName…")
+                val hostIp = hotspot.ip.ifEmpty { joined.gateway.orEmpty() }
+                val linked = probeWithRetries(listOfNotNull(hostIp, joined.gateway).distinct(), hotspot.port, 10)
+                    ?: throw PeerTransferException(null, "$ackName not reachable on its hotspot")
+                c.writeMessage(HotspotLinkMessage.Joined(joined.ownIp.orEmpty()))
+                phase("Sending to $ackName…")
+                success = true
+                val cc = c
+                return LinkResult(
+                    peer = linked.copy(linkToken = hotspot.tok.ifEmpty { tok }, platform = receiverOs),
+                    mode = LinkMode.LOHS_R,
+                    teardown = { ok -> senderTeardown(cc, ok, joined = true, hosted = false) },
+                )
+            }
+
+            suspend fun runLohsS(): LinkResult {
+                phase("Starting hotspot…")
+                val info = try {
+                    hotspotManager.start(HotspotPurpose.BLE_SENDER, tok)
+                } catch (e: Exception) {
+                    c.writeMessage(HotspotLinkMessage.Error(HotspotLinkMessage.ERR_LOHS_FAILED))
+                    throw PeerTransferException(null, e.message ?: "Could not start a hotspot")
+                }
+                hostedHotspot = true
+                c.writeMessage(HotspotLinkMessage.Link(LinkMode.LOHS_S))
+                c.writeMessage(
+                    HotspotLinkMessage.Hotspot(
+                        ssid = info.ssid,
+                        pass = info.pass,
+                        sec = if (info.sec == "open") "wpa2" else info.sec,
+                        ip = info.hostIp,
+                        port = info.httpPort,
+                        tok = tok,
+                    ),
+                )
+                phase("On the iPhone: tap Accept, then scan this QR with the Camera and return to Files", info, showQr = true)
+                val target2 = awaitAnnounceOrReady(c, info)
+                    ?: throw PeerTransferException(null, "$ackName did not join the hotspot in time")
+                phase("Sending to $ackName…", info, showQr = false)
+                success = true
+                val cc = c
+                return LinkResult(
+                    peer = target2.copy(linkToken = tok, platform = HotspotLinkCodec.OS_IOS, name = target2.name.ifEmpty { ackName }),
+                    mode = LinkMode.LOHS_S,
+                    teardown = { ok -> senderTeardown(cc, ok, joined = false, hosted = true) },
+                )
+            }
+
             when (plan.mode) {
-                LinkMode.LOHS_R -> {
-                    c.writeMessage(HotspotLinkMessage.Link(LinkMode.LOHS_R))
-                    phase("$ackName is starting a hotspot…")
-                    val hs = c.awaitMessage(HOTSPOT_WAIT_MS) {
-                        it is HotspotLinkMessage.Hotspot || it is HotspotLinkMessage.Error
+                LinkMode.L2CAP -> {
+                    val direct = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        runL2capSender(c, target.device, ack, ackName, receiverOs, tok) { text -> phase(text) }
+                    } else {
+                        null
                     }
-                    val hotspot = when (hs) {
-                        is HotspotLinkMessage.Hotspot -> hs
-                        is HotspotLinkMessage.Error -> throw PeerTransferException(
-                            null,
-                            when (hs.code) {
-                                HotspotLinkMessage.ERR_LOHS_FAILED -> "$ackName could not start a hotspot"
-                                HotspotLinkMessage.ERR_PERM -> HostDecision.blockerMessage(LinkBlocker.RECEIVER_CANNOT_HOST, ackName)
-                                else -> "$ackName: ${hs.code}"
-                            },
-                        )
-                        else -> throw PeerTransferException(null, "$ackName did not start a hotspot in time")
+                    if (direct != null) {
+                        success = true
+                        direct
+                    } else {
+                        // Channel refused / timed out: fall back to a hotspot on the same GATT session.
+                        when (HostDecision.l2capFallback(receiverOs, ack.caps, canHostHotspot())) {
+                            LinkMode.LOHS_S -> runLohsS()
+                            LinkMode.LOHS_R -> runLohsR()
+                            else -> {
+                                c.writeMessage(HotspotLinkMessage.Error(HotspotLinkMessage.ERR_JOIN_FAILED))
+                                throw PeerTransferException(
+                                    null,
+                                    "Could not open a Bluetooth channel to $ackName — keep Files open on $ackName and try again",
+                                )
+                            }
+                        }
                     }
-                    phase("Connecting to Wi-Fi “${hotspot.ssid}”…")
-                    val joined = try {
-                        connector.join(hotspot.ssid, hotspot.pass, hotspot.sec, hotspot.ip)
-                    } catch (e: JoinException) {
-                        c.writeMessage(HotspotLinkMessage.Error(HotspotLinkMessage.ERR_JOIN_FAILED))
-                        throw PeerTransferException(null, e.message ?: "Could not join $ackName's hotspot")
-                    }
-                    joinedWifi = true
-                    phase("Finding $ackName…")
-                    val hostIp = hotspot.ip.ifEmpty { joined.gateway.orEmpty() }
-                    val linked = probeWithRetries(listOfNotNull(hostIp, joined.gateway).distinct(), hotspot.port, 10)
-                        ?: throw PeerTransferException(null, "$ackName not reachable on its hotspot")
-                    c.writeMessage(HotspotLinkMessage.Joined(joined.ownIp.orEmpty()))
-                    phase("Sending to $ackName…")
-                    success = true
-                    val cc = c
-                    LinkResult(
-                        peer = linked.copy(linkToken = hotspot.tok.ifEmpty { tok }, platform = receiverOs),
-                        mode = LinkMode.LOHS_R,
-                        teardown = { ok -> senderTeardown(cc, ok, joined = true, hosted = false) },
-                    )
                 }
-
-                LinkMode.LOHS_S -> {
-                    phase("Starting hotspot…")
-                    val info = try {
-                        hotspotManager.start(HotspotPurpose.BLE_SENDER, tok)
-                    } catch (e: Exception) {
-                        c.writeMessage(HotspotLinkMessage.Error(HotspotLinkMessage.ERR_LOHS_FAILED))
-                        throw PeerTransferException(null, e.message ?: "Could not start a hotspot")
-                    }
-                    hostedHotspot = true
-                    c.writeMessage(HotspotLinkMessage.Link(LinkMode.LOHS_S))
-                    c.writeMessage(
-                        HotspotLinkMessage.Hotspot(
-                            ssid = info.ssid,
-                            pass = info.pass,
-                            sec = if (info.sec == "open") "wpa2" else info.sec,
-                            ip = info.hostIp,
-                            port = info.httpPort,
-                            tok = tok,
-                        ),
-                    )
-                    phase("On the iPhone: tap Accept, then scan this QR with the Camera and return to Files", info, showQr = true)
-                    val target2 = awaitAnnounceOrReady(c, info)
-                        ?: throw PeerTransferException(null, "$ackName did not join the hotspot in time")
-                    phase("Sending to $ackName…", info, showQr = false)
-                    success = true
-                    val cc = c
-                    LinkResult(
-                        peer = target2.copy(linkToken = tok, platform = HotspotLinkCodec.OS_IOS, name = target2.name.ifEmpty { ackName }),
-                        mode = LinkMode.LOHS_S,
-                        teardown = { ok -> senderTeardown(cc, ok, joined = false, hosted = true) },
-                    )
-                }
-
+                LinkMode.LOHS_R -> runLohsR()
+                LinkMode.LOHS_S -> runLohsS()
                 else -> throw PeerTransferException(null, "Use Nearby (AWDL) between two iPhones")
             }
         } catch (e: CancellationException) {
@@ -1235,6 +1578,42 @@ class BlePeerCoordinator(
         }
     }
 
+    private fun findTarget(peer: PeerInfo): Seen? {
+        val id6 = HotspotLinkCodec.id6Of(peer.id)
+        val now = System.currentTimeMillis()
+        return seen[peer.id] ?: seen[id6] ?: seen.values.firstOrNull { it.fullId == peer.id }
+            ?: (recentDevices[id6] ?: recentDevices.values.firstOrNull { it.fullId == peer.id })
+                ?.takeIf { now - it.lastSeenMs <= RECENT_DEVICE_TTL_MS }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Instant sender feedback ("tapped Send, nothing happened")
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Shows the sender link dialog immediately (t = 0 ms) — before files are enumerated or Bluetooth connects — so
+     * tapping a Bluetooth peer is never followed by a silent gap.
+     */
+    fun beginSenderPreparing(peerName: String) {
+        val cur = _linkUi.value
+        if (cur != null && !cur.finished && cur.error == null) return // another link is already in progress
+        _linkUi.value = BleLinkUiState(BleLinkRole.SENDER, sanitizePeerName(peerName), "Preparing files…")
+    }
+
+    /** Ends the "Preparing files…" state when the send stopped before [negotiate] ran. */
+    fun endSenderPreparing(peerName: String, error: String?) {
+        val cur = _linkUi.value ?: return
+        if (cur.role != BleLinkRole.SENDER || cur.finished || negotiationJob?.isActive == true) return
+        _linkUi.value = if (error != null) {
+            BleLinkUiState(BleLinkRole.SENDER, sanitizePeerName(peerName), "Failed", error = error, finished = true)
+        } else {
+            null
+        }
+    }
+
+    private fun sanitizePeerName(name: String): String =
+        PeerPathPolicy.sanitizeDisplayName(name, 64).ifEmpty { "Nearby device" }
+
     private fun phaseError(peerName: String, message: String) {
         _linkUi.value = BleLinkUiState(BleLinkRole.SENDER, peerName, "Failed", error = message, finished = true)
     }
@@ -1262,7 +1641,7 @@ class BlePeerCoordinator(
             coroutineScope {
                 val announce = CompletableDeferred<PeerInfo?>()
                 val annJob = launch {
-                    val ev = HttpServerHolder.peerEvents.first { it is HttpEvent.PeerAnnounce } as HttpEvent.PeerAnnounce
+                    val ev = HttpServerHolder.peerEvents.first { it is HttpEvent.PeerAnnounce && !it.open } as HttpEvent.PeerAnnounce
                     announce.complete(
                         PeerInfo(
                             id = ev.id,
@@ -1326,13 +1705,13 @@ class BlePeerCoordinator(
     // GATT client (central): strictly serialized ops
     // =============================================================================================
 
-    private inner class GattClient(private val device: BluetoothDevice) {
+    private inner class GattClient(val device: BluetoothDevice) {
         @Volatile
         private var gatt: BluetoothGatt? = null
         private val opMutex = Mutex()
 
-        @Volatile
-        private var pending: CompletableDeferred<Any?>? = null
+        /** Type-safe op ↔ callback correlation: unsolicited MTU / service-changed callbacks never clobber an op. */
+        private val ops = GattOpCorrelator()
 
         @Volatile
         private var connectResult: CompletableDeferred<Int>? = null
@@ -1342,9 +1721,7 @@ class BlePeerCoordinator(
         private val reassembler = HotspotLinkCodec.Reassembler()
         val messages = Channel<HotspotLinkMessage>(capacity = 32)
 
-        @Volatile
-        var mtu: Int = 23
-            private set
+        val mtu: Int get() = ops.mtu
 
         private val cb = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
@@ -1352,33 +1729,38 @@ class BlePeerCoordinator(
                     connectResult?.complete(status)
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     connectResult?.complete(if (status == BluetoothGatt.GATT_SUCCESS) -1 else status)
-                    pending?.completeExceptionally(IOException("Bluetooth disconnected"))
+                    ops.onEvent(GattEvent.Disconnected)
                     runCatching { g.close() }
                     if (gatt === g) gatt = null
                 }
             }
 
             override fun onMtuChanged(g: BluetoothGatt, newMtu: Int, status: Int) {
-                if (status == BluetoothGatt.GATT_SUCCESS) mtu = newMtu
-                pending?.complete(newMtu)
+                // iOS starts its own ATT MTU exchange on connect: this may arrive while discovery is pending.
+                ops.onEvent(GattEvent.MtuChanged(newMtu, status))
             }
 
             override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-                pending?.complete(status)
+                ops.onEvent(GattEvent.ServicesDiscovered(status))
+            }
+
+            override fun onServiceChanged(g: BluetoothGatt) {
+                // API 31+: the peer (iPhone) changed its GATT table, e.g. Files published its service just now.
+                ops.onEvent(GattEvent.ServiceChanged)
             }
 
             override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-                pending?.complete(status)
+                ops.onEvent(GattEvent.DescriptorWritten(descriptor.uuid, status))
             }
 
             override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-                pending?.complete(status)
+                ops.onEvent(GattEvent.CharacteristicWritten(characteristic.uuid, status))
             }
 
             @Deprecated("Deprecated in API 33")
             @Suppress("DEPRECATION")
             override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-                pending?.complete(if (status == BluetoothGatt.GATT_SUCCESS) characteristic.value else null)
+                ops.onEvent(GattEvent.CharacteristicRead(characteristic.uuid, status, characteristic.value))
             }
 
             override fun onCharacteristicRead(
@@ -1387,7 +1769,7 @@ class BlePeerCoordinator(
                 value: ByteArray,
                 status: Int,
             ) {
-                pending?.complete(if (status == BluetoothGatt.GATT_SUCCESS) value else null)
+                ops.onEvent(GattEvent.CharacteristicRead(characteristic.uuid, status, value))
             }
 
             @Deprecated("Deprecated in API 33")
@@ -1437,34 +1819,40 @@ class BlePeerCoordinator(
             return false
         }
 
-        private suspend fun <T> op(timeoutMs: Long, start: (BluetoothGatt) -> Boolean): T? = opMutex.withLock {
-            val g = gatt ?: return@withLock null
-            val d = CompletableDeferred<Any?>()
-            pending = d
-            val started = runCatching { start(g) }.getOrDefault(false)
-            if (!started) {
-                pending = null
-                return@withLock null
+        @Suppress("UNCHECKED_CAST")
+        private suspend fun <T> op(kind: PendingGattOp, timeoutMs: Long, start: (BluetoothGatt) -> Boolean): T? =
+            opMutex.withLock {
+                val g = gatt ?: return@withLock null
+                val d = ops.begin(kind)
+                val started = runCatching { start(g) }.getOrDefault(false)
+                if (!started) {
+                    ops.end(kind)
+                    return@withLock null
+                }
+                val r = runCatching { withTimeoutOrNull(timeoutMs) { d.await() } }.getOrNull() as T?
+                ops.end(kind)
+                r
             }
-            @Suppress("UNCHECKED_CAST")
-            val r = runCatching { withTimeoutOrNull(timeoutMs) { d.await() } }.getOrNull() as T?
-            pending = null
-            r
-        }
 
         suspend fun requestMtu(want: Int) {
-            op<Int>(MTU_TIMEOUT_MS) { it.requestMtu(want) }
+            op<Int>(PendingGattOp.Mtu, MTU_TIMEOUT_MS) { it.requestMtu(want) }
         }
 
-        suspend fun discover(): Boolean {
-            val st = op<Int>(DISCOVER_TIMEOUT_MS) { it.discoverServices() }
-            return st == BluetoothGatt.GATT_SUCCESS && gatt?.getService(HotspotLinkUuids.SERVICE_UUID) != null
-        }
+        /**
+         * Discovers services, recovering from Android's stale GATT cache (iPhone system table cached before Files
+         * published its service) and API 31+ `onServiceChanged`: best-effort `refresh()` + 350 ms, up to 3 attempts.
+         */
+        suspend fun discover(): Boolean = GattDiscoveryPolicy.discoverWithRetry(
+            discover = { op<Int>(PendingGattOp.Discover, DISCOVER_TIMEOUT_MS) { it.discoverServices() } },
+            hasService = { gatt?.getService(HotspotLinkUuids.SERVICE_UUID) != null },
+            consumeServiceChanged = { ops.consumeServiceChanged() },
+            refresh = { gatt?.let { refreshGattCache(it) } },
+        )
 
         suspend fun readInfo(): ByteArray? {
             val ch = gatt?.getService(HotspotLinkUuids.SERVICE_UUID)?.getCharacteristic(HotspotLinkUuids.INFO_UUID)
                 ?: return null
-            return op<ByteArray>(DISCOVER_TIMEOUT_MS) { it.readCharacteristic(ch) }
+            return op<ByteArray>(PendingGattOp.Read(ch.uuid), DISCOVER_TIMEOUT_MS) { it.readCharacteristic(ch) }
         }
 
         suspend fun enableNotifications(): Boolean {
@@ -1473,7 +1861,7 @@ class BlePeerCoordinator(
                 ?: return false
             if (!runCatching { g.setCharacteristicNotification(evt, true) }.getOrDefault(false)) return false
             val cccd = evt.getDescriptor(HotspotLinkUuids.CCCD_UUID) ?: return false
-            val st = op<Int>(WRITE_TIMEOUT_MS) { gg ->
+            val st = op<Int>(PendingGattOp.WriteDescriptor(cccd.uuid), WRITE_TIMEOUT_MS) { gg ->
                 if (Build.VERSION.SDK_INT >= 33) {
                     writeDescriptorApi33(gg, cccd)
                 } else {
@@ -1489,7 +1877,7 @@ class BlePeerCoordinator(
                 ?: return false
             val frames = HotspotLinkCodec.split(HotspotLinkCodec.encodeMessage(msg), HotspotLinkCodec.chunkForMtu(mtu))
             for (frame in frames) {
-                val st = op<Int>(WRITE_TIMEOUT_MS) { gg ->
+                val st = op<Int>(PendingGattOp.WriteCharacteristic(ctrl.uuid), WRITE_TIMEOUT_MS) { gg ->
                     if (Build.VERSION.SDK_INT >= 33) {
                         writeCharApi33(gg, ctrl, frame)
                     } else {
@@ -1499,6 +1887,11 @@ class BlePeerCoordinator(
                 if (st != BluetoothGatt.GATT_SUCCESS) return false
             }
             return true
+        }
+
+        /** Best-effort: faster connection interval while an L2CAP transfer runs. */
+        fun requestHighPriority() {
+            runCatching { gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
         }
 
         suspend fun awaitMessage(timeoutMs: Long, predicate: (HotspotLinkMessage) -> Boolean): HotspotLinkMessage? =
@@ -1516,12 +1909,20 @@ class BlePeerCoordinator(
             closed = true
             val g = gatt
             gatt = null
-            pending?.completeExceptionally(IOException("closed"))
+            ops.failPending(IOException("closed"))
             if (g != null) {
                 runCatching { g.disconnect() }
                 runCatching { g.close() }
             }
             messages.close()
+        }
+    }
+
+    /** Hidden `BluetoothGatt.refresh()` (drops Android's cached GATT table for this device); best effort. */
+    private fun refreshGattCache(g: BluetoothGatt) {
+        runCatching {
+            val m = g.javaClass.getMethod("refresh")
+            m.invoke(g)
         }
     }
 
@@ -1552,6 +1953,10 @@ class BlePeerCoordinator(
         const val HOTSPOT_WAIT_MS = 30_000L
         const val ANNOUNCE_WAIT_MS = 180_000L
         private const val SEEN_TTL_MS = 10_000L
+        private const val RECENT_DEVICE_TTL_MS = 120_000L
+        private const val L2CAP_CONNECT_TIMEOUT_MS = 8_000L
+        private const val L2CAP_ACCEPT_WAIT_MS = 20_000L
+        private const val L2CAP_UI_STEP_BYTES = 64L * 1024
         private const val INFO_READ_TIMEOUT_MS = 8_000L
         private const val CONNECT_TIMEOUT_MS = 10_000L
         private const val MTU_TIMEOUT_MS = 2_000L
@@ -1560,5 +1965,7 @@ class BlePeerCoordinator(
         private const val NOTIFY_TIMEOUT_MS = 2_000L
         private const val HTTP_START_TIMEOUT_MS = 6_000L
         private const val GATT_ERROR_133 = 133
+        private const val L2CAP_SESSION_PREFIX = "l2cap-"
+        private const val BLUETOOTH_CLIENT = "Bluetooth"
     }
 }

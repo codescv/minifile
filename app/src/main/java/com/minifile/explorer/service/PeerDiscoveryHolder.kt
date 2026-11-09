@@ -10,11 +10,13 @@ import com.minifile.explorer.BuildConfig
 import com.minifile.explorer.core.peer.HostDecision
 import com.minifile.explorer.core.peer.PeerDiscoveryEngine
 import com.minifile.explorer.core.peer.PeerInfo
+import com.minifile.explorer.core.peer.PeerSource
 import com.minifile.explorer.data.LanAddressResolver
 import com.minifile.explorer.data.SettingsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -230,7 +232,7 @@ class PeerDiscoveryHolder(
 
     suspend fun probeAddress(
         rawAddress: String,
-        source: com.minifile.explorer.core.peer.PeerSource = com.minifile.explorer.core.peer.PeerSource.MANUAL,
+        source: PeerSource = PeerSource.MANUAL,
         timeoutMs: Int = 3_000,
     ): PeerInfo {
         return engine.probeAddress(
@@ -239,6 +241,52 @@ class PeerDiscoveryHolder(
             source = source,
             timeoutMs = timeoutMs,
         )
+    }
+
+    /**
+     * Hotspot Direct open announce (spec §2.4): a device that joined this phone's LocalOnlyHotspot (typically an
+     * iPhone via the Camera `WIFI:` QR) announced its HTTP [port]. Probes `GET /api/peer/info` (a few retries while
+     * its server settles) and upserts it with source [PeerSource.PROBE] so the browser keeps re-probing it and it
+     * shows under Hotspot Direct "Joined devices". If every probe fails, the announced identity is upserted as an
+     * [PeerSource.ANNOUNCE] peer (expires after the probe TTL unless re-announced). Returns the stored peer.
+     */
+    suspend fun probeAnnouncedPeer(
+        clientIp: String,
+        port: Int,
+        id: String,
+        name: String,
+        os: String?,
+        attempts: Int = ANNOUNCE_PROBE_ATTEMPTS,
+    ): PeerInfo? {
+        val host = clientIp.substringBefore('%')
+        if (host.isEmpty() || port !in 1..65535) return null
+        repeat(attempts.coerceAtLeast(1)) { i ->
+            val probed = runCatching {
+                engine.probe(host = host, port = port, source = PeerSource.PROBE, timeoutMs = ANNOUNCE_PROBE_TIMEOUT_MS)
+            }.getOrNull()
+            if (probed != null) {
+                if (probed.platform == null && os != null) {
+                    val withOs = probed.copy(platform = os)
+                    engine.upsert(withOs)
+                    return withOs
+                }
+                return probed
+            }
+            if (i < attempts - 1) delay(ANNOUNCE_PROBE_RETRY_MS)
+        }
+        val fallback = PeerInfo(
+            id = id,
+            name = name,
+            host = host,
+            port = port,
+            version = "",
+            readOnly = false,
+            source = PeerSource.ANNOUNCE,
+            lastSeenMs = System.currentTimeMillis(),
+            platform = os,
+        )
+        engine.upsert(fallback)
+        return fallback
     }
 
     private fun registerWifiNetworkCallback() {
@@ -277,5 +325,11 @@ class PeerDiscoveryHolder(
                 multicastLock?.let { if (it.isHeld) it.release() }
             }
         }
+    }
+
+    companion object {
+        private const val ANNOUNCE_PROBE_ATTEMPTS = 4
+        private const val ANNOUNCE_PROBE_TIMEOUT_MS = 2_500
+        private const val ANNOUNCE_PROBE_RETRY_MS = 600L
     }
 }

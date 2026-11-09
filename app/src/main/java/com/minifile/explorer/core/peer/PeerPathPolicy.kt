@@ -29,7 +29,14 @@ object PeerPathPolicy {
         if (raw.isEmpty()) {
             throw FtpAccessDeniedException("Relative path cannot be empty")
         }
-        val decoded = decodePercentStrict(raw)
+        return validateDecodedRelPath(decodePercentStrict(raw), fatSafe)
+    }
+
+    /**
+     * Same rules as [validateRelPath] but for a path that is already plain UTF-8 (no percent-decoding), e.g. the
+     * `path` of an `MFL2` L2CAP frame where `%` is an ordinary filename character.
+     */
+    fun validateDecodedRelPath(decoded: String, fatSafe: Boolean = false): List<String> {
         if (decoded.isEmpty() || decoded.length > MAX_REL_PATH_CHARS) {
             throw FtpAccessDeniedException("Relative path exceeds maximum length")
         }

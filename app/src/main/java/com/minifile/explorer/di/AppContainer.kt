@@ -158,6 +158,8 @@ class AppContainer(context: Context) {
             peerDiscoveryHolder = peerDiscoveryHolder,
             hotspotManager = localOnlyHotspotManager,
             connector = wifiSpecifierConnector,
+            fileSystem = fileSystem,
+            mediaScanNotifier = mediaScanNotifier,
         )
     }
 }

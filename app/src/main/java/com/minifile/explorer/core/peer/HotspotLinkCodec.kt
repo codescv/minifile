@@ -224,15 +224,20 @@ object HotspotLinkCodec {
             "tok" to JsonValue.Str(msg.tok),
             "lan" to jsonStrList(msg.lan),
         )
-        is HotspotLinkMessage.Ack -> MiniJson.obj(
-            "t" to JsonValue.Str(msg.type),
-            "id" to JsonValue.Str(msg.id),
-            "name" to JsonValue.Str(msg.name),
-            "os" to JsonValue.Str(msg.os),
-            "caps" to jsonStrList(msg.caps),
-            "port" to JsonValue.Num(msg.port),
-            "lan" to jsonStrList(msg.lan),
-        )
+        is HotspotLinkMessage.Ack -> {
+            val pairs = mutableListOf<Pair<String, JsonValue>>(
+                "t" to JsonValue.Str(msg.type),
+                "id" to JsonValue.Str(msg.id),
+                "name" to JsonValue.Str(msg.name),
+                "os" to JsonValue.Str(msg.os),
+                "caps" to jsonStrList(msg.caps),
+                "port" to JsonValue.Num(msg.port),
+                "lan" to jsonStrList(msg.lan),
+            )
+            // Only emitted when usable so v1.0.19 decoders (and size-tight BLE frames) are unaffected.
+            if (msg.hasL2cap) pairs += "psm" to JsonValue.Num(msg.psm)
+            MiniJson.obj(*pairs.toTypedArray())
+        }
         is HotspotLinkMessage.Decline -> MiniJson.obj(
             "t" to JsonValue.Str(msg.type),
             "reason" to JsonValue.Str(msg.reason),
@@ -301,6 +306,7 @@ object HotspotLinkCodec {
             caps = o.strList("caps"),
             port = o.int("port", 0),
             lan = o.strList("lan"),
+            psm = o.int("psm", 0).takeIf { it in 1..65535 } ?: 0,
         )
         "decline" -> HotspotLinkMessage.Decline(o.str("reason") ?: HotspotLinkMessage.DECLINE_USER)
         "link" -> LinkMode.fromWire(o.str("mode"))?.let { HotspotLinkMessage.Link(it) }

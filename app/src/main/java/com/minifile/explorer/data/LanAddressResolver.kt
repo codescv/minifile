@@ -7,6 +7,8 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import com.minifile.explorer.core.ftp.FtpServerEngine
+import com.minifile.explorer.core.net.HotspotInterfaceClassifier
+import com.minifile.explorer.core.net.IfaceIpv4
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -85,35 +87,39 @@ class LanAddressResolver(
     fun currentIpv4List(): List<String> = currentEndpoints().map { it.ipv4 }
 
     /**
-     * IPv4s (with the real `InterfaceAddress.networkPrefixLength`, fallback 24) on up soft-AP style interfaces
-     * (`ap*`, `swlan*`, `softap*`, `sap*`, `p2p*`, `wlan[1-9]*`) that are **not** the address of any tracked
-     * [ConnectivityManager] network (i.e. not a station/STA address). `*.1` addresses are listed first.
+     * LocalOnlyHotspot gateway IPv4s (real `InterfaceAddress.networkPrefixLength`, fallback 24), classified by
+     * [HotspotInterfaceClassifier]: soft-AP style interfaces (`ap*`, `swlan*`, `softap*`, `sap*`, `p2p*`) and
+     * secondary radios (`wlan[1-9]*`, OnePlus/Qualcomm STA+AP) whose address is **not** any tracked
+     * [ConnectivityManager] network (i.e. not a station/STA address). With a pre-LOHS [before] snapshot
+     * (see [snapshotLocalIpv4s]) newly appeared wireless IPv4s — even on `wlan0` — are recognised and ranked first.
      */
-    fun hotspotEndpoints(): List<HotspotEndpoint> {
+    fun hotspotEndpoints(before: Set<String>? = null): List<HotspotEndpoint> =
+        HotspotInterfaceClassifier.classify(localIpv4s(), trackedNetworkIpv4s(), before)
+            .map { HotspotEndpoint(interfaceName = it.interfaceName, ipv4 = it.ipv4, prefixLength = it.prefixLength) }
+
+    /** Every LAN-range IPv4 currently on an up local interface; call just before `startLocalOnlyHotspot`. */
+    fun snapshotLocalIpv4s(): Set<String> = localIpv4s().mapTo(HashSet()) { it.ipv4 }
+
+    private fun localIpv4s(): List<IfaceIpv4> {
         val rawIfaces = runCatching {
             val enum = NetworkInterface.getNetworkInterfaces()
             if (enum != null) Collections.list(enum) else emptyList()
         }.getOrDefault(emptyList())
-        val staIps = trackedNetworkIpv4s()
-        val out = ArrayList<HotspotEndpoint>()
+        val out = ArrayList<IfaceIpv4>()
         for (nif in rawIfaces) {
             val up = runCatching { nif.isUp }.getOrDefault(false)
             if (!up || runCatching { nif.isLoopback }.getOrDefault(true)) continue
             val name = nif.name ?: continue
-            if (!isHotspotInterfaceName(name)) continue
+            if (isExcludedInterface(name)) continue
             val ifaceAddrs = runCatching { nif.interfaceAddresses.toList() }.getOrDefault(emptyList())
             for (ia in ifaceAddrs) {
                 val addr = ia.address as? Inet4Address ?: continue
                 if (!isAllowedLanIpv4(addr)) continue
                 val ip = addr.hostAddress ?: continue
-                if (ip in staIps) continue
-                val prefix = ia.networkPrefixLength.toInt().takeIf { it in 8..30 } ?: 24
-                out.add(HotspotEndpoint(interfaceName = name, ipv4 = ip, prefixLength = prefix))
+                out.add(IfaceIpv4(interfaceName = name, ipv4 = ip, prefixLength = ia.networkPrefixLength.toInt()))
             }
         }
-        return out.distinctBy { it.ipv4 }.sortedWith(
-            compareBy<HotspotEndpoint> { if (it.ipv4.endsWith(".1")) 0 else 1 }.thenBy { it.interfaceName },
-        )
+        return out
     }
 
     /** IPv4 addresses of every network ConnectivityManager tracks (Wi-Fi STA, Ethernet, cellular…). */
@@ -212,14 +218,10 @@ class LanAddressResolver(
         )
 
         private val WLAN_SECONDARY = Regex("^wlan[1-9][0-9]*$")
-        private val HOTSPOT_PREFIXES = listOf("ap", "swlan", "softap", "sap", "p2p")
 
         /** Spec §3.4: interface names that can carry a LocalOnlyHotspot / soft-AP gateway address. */
-        fun isHotspotInterfaceName(interfaceName: String): Boolean {
-            val lower = interfaceName.trim().lowercase()
-            if (lower.isEmpty() || isExcludedInterface(lower)) return false
-            return HOTSPOT_PREFIXES.any { lower.startsWith(it) } || WLAN_SECONDARY.matches(lower)
-        }
+        fun isHotspotInterfaceName(interfaceName: String): Boolean =
+            !isExcludedInterface(interfaceName) && HotspotInterfaceClassifier.isHotspotInterfaceName(interfaceName)
 
         fun isExcludedInterface(interfaceName: String): Boolean {
             val lower = interfaceName.trim().lowercase()

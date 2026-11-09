@@ -25,6 +25,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.net.InetAddress
+import java.net.InetSocketAddress
 
 /** Spec §2.4 hotspot additions: `/api/peer/info` fields, `/api/peer/announce`, `begin` token gate, confinement. */
 class HttpPeerHotspotTest {
@@ -164,6 +165,83 @@ class HttpPeerHotspotTest {
 
         gate.hotspotBindIp = InetAddress.getByName("127.0.0.1")
         assertEquals(200, client.postEmpty(announceUrl(srv, tok)).status)
+    }
+
+    /** Client whose sockets originate from 127.0.0.2 so the server sees a joiner distinct from the AP (127.0.0.1). */
+    private fun joinerClient() = PeerHttpClient(
+        connectTimeoutMs = 3_000,
+        soTimeoutMs = 5_000,
+        socketBinder = { s, _ -> s.bind(InetSocketAddress(InetAddress.getByName("127.0.0.2"), 0)) },
+    )
+
+    private fun openAnnounceUrl(srv: HttpFileServerEngine, id: String = "ios-cam-1") =
+        "${base(srv)}/api/peer/announce?port=8123&id=$id&name=iPhone%2016&os=ios"
+
+    @Test
+    fun announce_hotspotDirectOpen_acceptsTokenlessJoiner_andEmitsOpenEvent() = runBlocking {
+        val srv = start()
+        gate.hotspotBindIp = InetAddress.getByName("127.0.0.1")
+        gate.hotspotPrefixLength = 8
+        gate.setOpenAnnounce(true)
+        val ev = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeout(5_000) { srv.events.first { it is HttpEvent.PeerAnnounce } as HttpEvent.PeerAnnounce }
+        }
+        joinerClient().use { c ->
+            val resp = c.postEmpty(openAnnounceUrl(srv))
+            assertEquals(200, resp.status)
+            assertEquals("127.0.0.2", json(resp).str("ip"))
+            // Empty tok is treated the same as absent.
+            assertEquals(200, c.postEmpty(openAnnounceUrl(srv) + "&tok=").status)
+        }
+        val announce = ev.await()
+        assertTrue(announce.open)
+        assertEquals("127.0.0.2", announce.clientIp)
+        assertEquals(8123, announce.port)
+        assertEquals("ios-cam-1", announce.id)
+        assertEquals("iPhone 16", announce.name)
+        assertEquals("ios", announce.os)
+    }
+
+    @Test
+    fun announce_hotspotDirectOpen_rejectsOffHotspotSubnetAndRateLimits() {
+        val srv = start()
+        gate.setOpenAnnounce(true)
+        joinerClient().use { c ->
+            // Not hosting yet (no hotspot IP) ⇒ refused.
+            assertEquals(403, c.postEmpty(openAnnounceUrl(srv)).status)
+            // Arrives on a non-hotspot address (STA spoof).
+            gate.hotspotBindIp = InetAddress.getByName("127.0.0.3")
+            assertEquals(403, c.postEmpty(openAnnounceUrl(srv)).status)
+            // Right interface, but client outside the hotspot subnet.
+            gate.hotspotBindIp = InetAddress.getByName("127.0.0.1")
+            gate.hotspotPrefixLength = 31
+            val outside = c.postEmpty(openAnnounceUrl(srv))
+            assertEquals(403, outside.status)
+            assertEquals("token", json(outside).str("code"))
+
+            gate.hotspotPrefixLength = 8
+            repeat(HotspotSessionGate.OPEN_ANNOUNCE_MAX_PER_WINDOW) {
+                assertEquals(200, c.postEmpty(openAnnounceUrl(srv)).status)
+            }
+            val limited = c.postEmpty(openAnnounceUrl(srv))
+            assertEquals(429, limited.status)
+            assertEquals("rate", json(limited).str("code"))
+        }
+    }
+
+    @Test
+    fun announce_armedTokenStillRequired_evenWhenOpenAnnounceEnabled() {
+        val srv = start()
+        gate.hotspotBindIp = InetAddress.getByName("127.0.0.1")
+        gate.hotspotPrefixLength = 8
+        gate.setOpenAnnounce(true)
+        gate.armAnnounceToken(tok)
+        joinerClient().use { c ->
+            assertEquals(403, c.postEmpty(openAnnounceUrl(srv)).status)
+            assertTrue(gate.isAnnounceArmed)
+            assertEquals(200, c.postEmpty(openAnnounceUrl(srv) + "&tok=$tok").status)
+            assertFalse(gate.isAnnounceArmed)
+        }
     }
 
     @Test

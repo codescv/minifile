@@ -57,6 +57,22 @@ object QrPayloads {
         return "WIFI:T:$t;S:${escapeWifi(ssid)};P:${escapeWifi(password)};;"
     }
 
+    /**
+     * Universal **Camera** `WIFI:` QR for a hotspot this device hosts (iPhone Camera / Android camera / Files).
+     * Every WPA-family [sec] (`wpa2`, `wpa3t`, `wpa3`, `sae`, `wpa`…) is emitted as `T:WPA`: iOS Camera then
+     * auto-negotiates WPA2/WPA3, whereas `T:SAE` makes it fail to join. `wep` → `T:WEP`; open / empty
+     * [password] → `T:nopass`. The exact `sec` still travels in the `minifile://hotspot` URI and BLE JSON.
+     */
+    fun buildCameraWifi(ssid: String, password: String, sec: String): String {
+        val s = sec.trim().lowercase()
+        val qrSec = when {
+            password.isEmpty() || s == "open" || s == "nopass" || s == "none" -> "nopass"
+            s == "wep" -> "wep"
+            else -> "wpa2"
+        }
+        return buildWifi(ssid, password, qrSec)
+    }
+
     fun buildHotspotUri(h: QrPayload.Hotspot): String {
         val params = ArrayList<Pair<String, String>>()
         params += "v" to "1"
