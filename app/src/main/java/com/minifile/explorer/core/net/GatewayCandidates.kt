@@ -50,7 +50,8 @@ object GatewayCandidates {
 
     /**
      * `true` when this Wi-Fi looks like a phone hotspot: iPhone `172.20.10.x`, Android `192.168.43.x`, LOHS / Wi-Fi
-     * Direct `192.168.49.x`, or the network is metered (Android marks phone hotspots metered).
+     * Direct `192.168.49.x`, OnePlus / ColorOS / MIUI system hotspot `192.168.191.x`, or the network is metered
+     * (Android marks phone hotspots metered).
      */
     fun looksLikePhoneHotspot(ownIpv4: String?, metered: Boolean): Boolean {
         if (metered) return true
@@ -59,7 +60,7 @@ object GatewayCandidates {
         val a0 = b[0].toInt() and 0xFF
         val a1 = b[1].toInt() and 0xFF
         val a2 = b[2].toInt() and 0xFF
-        return a0 == 192 && a1 == 168 && (a2 == 43 || a2 == 49)
+        return a0 == 192 && a1 == 168 && (a2 == 43 || a2 == 49 || a2 == 191)
     }
 
     /** [BASE_PORTS] plus [HOTSPOT_EXTRA_PORTS] for phone hotspots, with [preferredPort] (if valid) first. */

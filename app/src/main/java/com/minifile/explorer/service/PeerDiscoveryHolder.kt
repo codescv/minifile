@@ -122,9 +122,13 @@ class PeerDiscoveryHolder(
      */
     private var ifaceWatchJob: Job? = null
 
-    /** `(handle, ownIpv4, gateway)` of the last Wi-Fi the gateway prober ran for. */
+    /** `(handle, ownIpv4, gateway)` of the last Wi-Fi whose gateway host was found and announced to. */
     @Volatile
-    private var lastGatewayKey: String? = null
+    private var lastAnnouncedKey: String? = null
+
+    /** Key of the Wi-Fi the running [gatewayProbeJob] probes (avoids duplicate concurrent probes). */
+    @Volatile
+    private var probingKey: String? = null
 
     /** Network for which this holder auto-started the HTTP receiver (stopped again when that Wi-Fi goes away). */
     @Volatile
@@ -409,17 +413,23 @@ class PeerDiscoveryHolder(
         if (!foreground) return
         if (network == pinnedNetwork) return // in-app join runs its own host discovery
         val snap = wifiSnapshot(network) ?: return
-        if (!force && snap.key == lastGatewayKey) return
-        lastGatewayKey = snap.key
+        // Only a completed announce marks this Wi-Fi done: a probe that found nothing (host not open yet) or could not
+        // announce is retried on the next resume / Wi-Fi change / Transfer-or-Send open.
+        if (!force && snap.key == lastAnnouncedKey) return
         synchronized(lock) {
+            if (gatewayProbeJob?.isActive == true && probingKey == snap.key) return
             gatewayProbeJob?.cancel()
-            gatewayProbeJob = scope.launch { runGatewayProbe(snap) }
+            probingKey = snap.key
+            gatewayProbeJob = scope.launch {
+                if (runGatewayProbe(snap)) lastAnnouncedKey = snap.key
+            }
         }
     }
 
-    private suspend fun runGatewayProbe(snap: WifiSnapshot) {
+    /** Probes the gateway for a Files host; returns `true` once it was found **and** this phone announced itself. */
+    private suspend fun runGatewayProbe(snap: WifiSnapshot): Boolean {
         val hosts = GatewayCandidates.forWifi(snap.ownIpv4, snap.prefix, snap.gateway)
-        if (hosts.isEmpty()) return
+        if (hosts.isEmpty()) return false
         val ports = GatewayCandidates.probePorts(snap.ownIpv4, snap.metered, settingsRepository.settings.value.httpPort)
             .let { if (GatewayCandidates.looksLikePhoneHotspot(snap.ownIpv4, snap.metered)) it else it.take(4) }
         var found: PeerInfo? = null
@@ -428,9 +438,9 @@ class PeerDiscoveryHolder(
             if (attempt > 0) delay(GATEWAY_RETRY_MS)
             found = probeFirstGateway(hosts, ports)
         }
-        val host = found ?: return
+        val host = found ?: return false
         HttpServerHolder.logInfo("discovery", "Found ${host.name} on Wi-Fi gateway ${host.endpoint}")
-        announceTo(host, snap)
+        return announceTo(host, snap)
     }
 
     private suspend fun probeFirstGateway(hosts: List<String>, ports: List<Int>): PeerInfo? = coroutineScope {
@@ -449,10 +459,11 @@ class PeerDiscoveryHolder(
     /**
      * Announces this phone to the hotspot host [host] (`POST /api/peer/announce`) so its Hotspot Direct screen lists
      * us under "Joined devices". Uses the running HTTP receiver; when none runs, it is started only while Files is in
-     * the foreground with Transfer / Send open and the Wi-Fi looks like a phone hotspot.
+     * the foreground and the Wi-Fi looks like a phone hotspot (a live Files host was already verified on its gateway).
+     * Returns `true` when the host accepted the announce.
      */
-    private suspend fun announceTo(host: PeerInfo, snap: WifiSnapshot) {
-        val myPort = ensureHttpPortForAnnounce(snap) ?: return
+    private suspend fun announceTo(host: PeerInfo, snap: WifiSnapshot): Boolean {
+        val myPort = ensureHttpPortForAnnounce(snap) ?: return false
         val s = settingsRepository.settings.value
         val url = PeerAnnounceWire.url(host.host, host.port, s.peerDeviceId, s.peerDeviceName, myPort)
         val body = PeerAnnounceWire.body(s.peerDeviceId, s.peerDeviceName, myPort).toByteArray(Charsets.UTF_8)
@@ -470,17 +481,19 @@ class PeerDiscoveryHolder(
             }.getOrDefault(false)
             if (ok) {
                 HttpServerHolder.logInfo("discovery", "Announced to ${host.name} (${host.endpoint})")
-                return
+                return true
             }
             if (attempt < ANNOUNCE_ATTEMPTS - 1) delay(ANNOUNCE_RETRY_MS)
         }
+        return false
     }
 
     private suspend fun ensureHttpPortForAnnounce(snap: WifiSnapshot): Int? {
         val st = HttpServerHolder.state.value
         if (st.isRunning && st.boundPort in 1..65535) return st.boundPort
-        val browsing = synchronized(lock) { browserRefCount > 0 || receiverEnabled }
-        if (!foreground || !browsing || !GatewayCandidates.looksLikePhoneHotspot(snap.ownIpv4, snap.metered)) return null
+        // No Transfer / Send screen requirement: `onAppResumed` runs before Compose starts browsing, and a live Files
+        // host was already verified on this phone-hotspot gateway.
+        if (!foreground || !GatewayCandidates.looksLikePhoneHotspot(snap.ownIpv4, snap.metered)) return null
         val started = runCatching { FtpServerService.startHttp(appContext) }.isSuccess
         if (!started) {
             runCatching { HttpServerHolder.markStopped(null) }
@@ -520,6 +533,8 @@ class PeerDiscoveryHolder(
         }
         if (shouldEnable) {
             engine.setBrowserRole(true)
+            // Transfer / Send opened: retry gateway pairing if the host was not ready when Files resumed.
+            activeWifiNetwork?.let { maybeProbeGateway(it, force = false) }
         }
     }
 
