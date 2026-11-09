@@ -97,6 +97,34 @@ class LanAddressResolver(
         HotspotInterfaceClassifier.classify(localIpv4s(), trackedNetworkIpv4s(), before)
             .map { HotspotEndpoint(interfaceName = it.interfaceName, ipv4 = it.ipv4, prefixLength = it.prefixLength) }
 
+    /**
+     * Every live local IPv4 subnet `(ifaceName, Inet4Address, prefixLength)` on an up, non-loopback interface that can
+     * carry peer traffic (Wi-Fi STA, System Personal Hotspot `wlan1`/`ap0`/`ap_br_*`/`swlan*`/`softap*`, LOHS, USB
+     * tether `rndis*`/`ncm*`/`usb*`, Wi-Fi Direct `p2p*`, `bridge*`, Ethernet). Cellular, VPN, loopback and dummy
+     * interfaces are excluded. Never throws: an enumeration failure yields an empty list.
+     */
+    fun allLocalIpv4Subnets(): List<Triple<String, Inet4Address, Int>> = runCatching {
+        val rawIfaces = runCatching {
+            val enum = NetworkInterface.getNetworkInterfaces()
+            if (enum != null) Collections.list(enum) else emptyList()
+        }.getOrDefault(emptyList())
+        val out = ArrayList<Triple<String, Inet4Address, Int>>()
+        for (nif in rawIfaces) {
+            val up = runCatching { nif.isUp }.getOrDefault(false)
+            if (!up || runCatching { nif.isLoopback }.getOrDefault(true)) continue
+            val name = nif.name ?: continue
+            if (!isAllowedLocalInterface(name)) continue
+            val ifaceAddrs = runCatching { nif.interfaceAddresses.toList() }.getOrDefault(emptyList())
+            for (ia in ifaceAddrs) {
+                val addr = ia?.address as? Inet4Address ?: continue
+                if (!isAllowedLanIpv4(addr)) continue
+                val prefix = ia.networkPrefixLength.toInt().takeIf { it in 1..32 } ?: 24
+                out.add(Triple(name, addr, prefix))
+            }
+        }
+        out.toList()
+    }.getOrDefault(emptyList())
+
     /** Every LAN-range IPv4 currently on an up local interface; call just before `startLocalOnlyHotspot`. */
     fun snapshotLocalIpv4s(): Set<String> = localIpv4s().mapTo(HashSet()) { it.ipv4 }
 
@@ -214,7 +242,10 @@ class LanAddressResolver(
             "eth",
             "bridge",
             "sap",
+            "uap",
             "p2p",
+            "wfd",
+            "wifi",
         )
 
         private val WLAN_SECONDARY = Regex("^wlan[1-9][0-9]*$")
@@ -226,13 +257,14 @@ class LanAddressResolver(
         fun isExcludedInterface(interfaceName: String): Boolean {
             val lower = interfaceName.trim().lowercase()
             if (lower.isEmpty()) return true
-            return EXCLUDED_WAN_OR_TUNNEL_PREFIXES.any { lower.startsWith(it) }
+            return EXCLUDED_WAN_OR_TUNNEL_PREFIXES.any { lower.startsWith(it) } ||
+                HotspotInterfaceClassifier.isExcluded(lower)
         }
 
         fun isAllowedLocalInterface(interfaceName: String): Boolean {
             val lower = interfaceName.trim().lowercase()
             if (lower.isEmpty() || isExcludedInterface(lower)) return false
-            return ALLOWED_LOCAL_PREFIXES.any { lower.startsWith(it) }
+            return ALLOWED_LOCAL_PREFIXES.any { lower.startsWith(it) } || HotspotInterfaceClassifier.isLocalLanName(lower)
         }
 
         fun isAllowedLanIpv4(addr: Inet4Address): Boolean {

@@ -109,11 +109,11 @@ class PeerTransferEngine(
                 client.cancelActive()
                 return@withContext PeerSendResult(0, 0L, 0, emptyList(), cancelled = true)
             }
-            throw mapTransportError(peer, e)
+            throw mapTransportError(peer, e, beforeSession = true)
         }
 
         if (beginResp.status !in 200..299) {
-            throw mapHttpError(peer, beginResp)
+            throw mapHttpError(peer, beginResp, beforeSession = true)
         }
         val beginObj = parseJsonObj(beginResp.bodyText)
         val sessionId = beginObj?.str("session")?.takeIf { it.isNotBlank() }
@@ -456,8 +456,21 @@ class PeerTransferEngine(
         internal fun peerDisplayName(peer: PeerInfo): String =
             PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host }
 
-        internal fun mapHttpError(peer: PeerInfo, resp: PeerHttpResponse): PeerTransferException {
+        internal fun mapHttpError(
+            peer: PeerInfo,
+            resp: PeerHttpResponse,
+            beforeSession: Boolean = false,
+        ): PeerTransferException {
             val name = peerDisplayName(peer)
+            if (PeerTransferException.isRedirectStatus(resp.status)) {
+                // Files never redirects /api/peer/…: a VPN (tun0), proxy or captive portal answered instead.
+                return PeerTransferException(
+                    httpStatus = resp.status,
+                    userMessage = PeerTransferException.interceptedMessage(name, resp.status),
+                    beforeSession = beforeSession,
+                    kind = PeerFailureKind.INTERCEPTED,
+                )
+            }
             val errObj = parseJsonObj(resp.bodyText)
             val serverErr = errObj?.str("error")?.trim().orEmpty()
             val code = errObj?.str("code")?.trim().orEmpty()
@@ -491,25 +504,51 @@ class PeerTransferEngine(
                     }
                 }
             }
-            return PeerTransferException(resp.status, msg)
+            return PeerTransferException(resp.status, msg, beforeSession = beforeSession)
         }
 
         internal fun mapTransportError(
             peer: PeerInfo,
             cause: Throwable,
             midTransfer: Boolean = false,
+            beforeSession: Boolean = false,
         ): PeerTransferException {
             if (cause is PeerTransferException) return cause
             val name = peerDisplayName(peer)
             if (cause is FtpAccessDeniedException) {
-                return PeerTransferException(null, "Only local network (LAN) addresses are allowed", cause)
+                return PeerTransferException(null, "Only local network (LAN) addresses are allowed", cause, beforeSession)
             }
             val msg = if (midTransfer) {
                 "Connection to $name lost"
             } else {
                 "$name not reachable"
             }
-            return PeerTransferException(null, msg, cause)
+            return PeerTransferException(
+                httpStatus = null,
+                userMessage = msg,
+                cause = cause,
+                beforeSession = beforeSession,
+                kind = if (!midTransfer && isConnectFailure(cause)) PeerFailureKind.UNREACHABLE else PeerFailureKind.OTHER,
+            )
+        }
+
+        /**
+         * `true` when [cause] (or any cause in its chain) is a TCP connect failure — refused, no route, unreachable or
+         * a connect timeout — as opposed to a read timeout while the receiver shows its consent prompt.
+         */
+        internal fun isConnectFailure(cause: Throwable?): Boolean {
+            var c = cause
+            var depth = 0
+            while (c != null && depth < 8) {
+                when (c) {
+                    is java.net.ConnectException, is java.net.NoRouteToHostException, is java.net.PortUnreachableException -> return true
+                    is java.net.SocketTimeoutException -> if (c.message.orEmpty().contains("connect", ignoreCase = true)) return true
+                }
+                if (c is PreContinueIOException && c.message.orEmpty().contains("connect", ignoreCase = true)) return true
+                c = c.cause
+                depth++
+            }
+            return false
         }
 
         private fun parseJsonObj(raw: String): JsonValue.Obj? {

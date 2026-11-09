@@ -33,11 +33,21 @@ data class HotspotCandidate(
  */
 object HotspotInterfaceClassifier {
     private val WLAN_SECONDARY = Regex("^wlan[1-9][0-9]*$")
-    private val SOFTAP_PREFIXES = listOf("ap", "swlan", "softap", "sap")
-    private val WIRELESS_PREFIXES = listOf("wlan", "ap", "swlan", "softap", "sap", "p2p", "wifi")
+
+    /** Soft-AP names: AOSP `ap0`/`ap_br_wlan1` (bridged AP), Samsung `swlan0`, `softap0`, Qualcomm `sap0`, NXP `uap0`. */
+    private val SOFTAP_PREFIXES = listOf("ap", "swlan", "softap", "sap", "uap")
+    private val WIRELESS_PREFIXES = listOf("wlan", "ap", "swlan", "softap", "sap", "uap", "p2p", "wfd", "wifi")
+
+    /** USB / Bluetooth / bridge tethering and Wi-Fi Direct interfaces that may serve a local subnet. */
+    private val TETHER_PREFIXES = listOf("p2p", "wfd", "bridge", "rndis", "ncm", "usb", "bt-pan", "bnep")
+
+    /** Every name prefix that can carry a peer-reachable LAN subnet (STA, soft-AP, tether, Ethernet). */
+    private val LOCAL_LAN_PREFIXES = WIRELESS_PREFIXES + TETHER_PREFIXES + listOf("eth")
+
     private val EXCLUDED_PREFIXES = listOf(
         "rmnet", "r_rmnet", "ccmni", "pdp", "wwan", "tun", "tap", "ppp", "wg", "ipsec", "clat", "v4-",
-        "utun", "epdg", "sit", "ip6tnl", "dummy", "lo",
+        "utun", "epdg", "sit", "ip6tnl", "dummy", "lo", "tailscale", "ims", "oem", "gre", "ip_vti", "ip6_vti",
+        "seth", "nlmon", "vcan", "tunl", "erspan", "ifb",
     )
 
     fun isExcluded(interfaceName: String): Boolean {
@@ -55,6 +65,25 @@ object HotspotInterfaceClassifier {
     fun isWireless(interfaceName: String): Boolean {
         val n = interfaceName.trim().lowercase()
         return WIRELESS_PREFIXES.any { n.startsWith(it) }
+    }
+
+    /**
+     * System Personal Hotspot / LOHS / tethering style interface (`ap*`, `ap_br_*`, `swlan*`, `softap*`, `sap*`,
+     * `uap*`, `wlan[1-9]*`, `p2p*`, `wfd*`, `bridge*`, `rndis*`, `ncm*`, `usb*`). Never cellular / VPN / loopback.
+     * `wlan0` itself is **not** included by name (it is usually the station); callers detect a standalone soft-AP on
+     * `wlan0` by it being absent from every tracked network.
+     */
+    fun isHotspotOrTetherName(interfaceName: String): Boolean {
+        if (isExcluded(interfaceName)) return false
+        val n = interfaceName.trim().lowercase()
+        return isSoftApName(n) || isSecondaryWlan(n) || TETHER_PREFIXES.any { n.startsWith(it) }
+    }
+
+    /** Any interface that may carry a peer-reachable local subnet (Wi-Fi STA / soft-AP / tether / Ethernet). */
+    fun isLocalLanName(interfaceName: String): Boolean {
+        if (isExcluded(interfaceName)) return false
+        val n = interfaceName.trim().lowercase()
+        return LOCAL_LAN_PREFIXES.any { n.startsWith(it) }
     }
 
     /** Spec §3.4: interface names that can carry a LocalOnlyHotspot / soft-AP gateway address by name alone. */

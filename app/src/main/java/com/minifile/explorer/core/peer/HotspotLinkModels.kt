@@ -230,6 +230,9 @@ object HostDecision {
      *   the hotspot mode is blocked.
      * - Android ↔ Android: `lohs-r` stays first (fast, QR-free via `WifiNetworkSpecifier`); `l2cap` replaces the
      *   `RECEIVER_CANNOT_HOST` blocker.
+     *
+     * [lanHttpBlocked] (LAN / hotspot HTTP just failed with a VPN / proxy `3xx` or was unreachable): `lan` is never
+     * chosen, and `l2cap` wins outright whenever the receiver offers a PSM.
      */
     fun plan(
         senderOs: String,
@@ -239,9 +242,13 @@ object HostDecision {
         senderCanHost: Boolean,
         ackPsm: Int = 0,
         bytes: Long = 0L,
+        lanHttpBlocked: Boolean = false,
     ): LinkPlan {
-        val mode = decide(senderOs, receiverOs, lanOverlap) ?: return LinkPlan(null, LinkBlocker.IOS_PAIR)
         val l2cap = ackPsm in 1..65535
+        // LAN / hotspot HTTP to this peer was just proven intercepted (VPN `tun0` / proxy 3xx) or isolated: never pick
+        // `lan` again, and stream over the Bluetooth L2CAP channel whenever the receiver offers one.
+        if (lanHttpBlocked && l2cap) return LinkPlan(LinkMode.L2CAP, null)
+        val mode = decide(senderOs, receiverOs, lanOverlap && !lanHttpBlocked) ?: return LinkPlan(null, LinkBlocker.IOS_PAIR)
         val small = bytes in 0..L2CAP_AUTO_MAX_BYTES
         val crossOs = senderOs.lowercase() != receiverOs.lowercase()
         return when (mode) {

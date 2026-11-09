@@ -1347,7 +1347,12 @@ class BlePeerCoordinator(
      * Negotiates a link to the BLE-only [peer] and returns where to send. Throws [PeerTransferException] with a
      * user-facing message on decline / timeout / failure. The caller MUST invoke [LinkResult.teardown].
      */
-    suspend fun negotiate(peer: PeerInfo, files: Int, bytes: Long): LinkResult = coroutineScope {
+    suspend fun negotiate(
+        peer: PeerInfo,
+        files: Int,
+        bytes: Long,
+        lanHttpBlocked: Boolean = false,
+    ): LinkResult = coroutineScope {
         negotiationJob = coroutineContext[Job]
         refreshAdvertisedFlags()
         val peerName = PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { "Nearby device" }
@@ -1419,7 +1424,8 @@ class BlePeerCoordinator(
             val receiverOs = ack.os.ifEmpty { peer.platform ?: HotspotLinkCodec.OS_ANDROID }
 
             // --- LAN short-circuit ---
-            if (HostDecision.sharesSlash24(myIps, ack.lan) && ack.port in 1..65535) {
+            // Skipped when LAN HTTP to this peer was just intercepted by a VPN / proxy (it would fail the same way).
+            if (!lanHttpBlocked && HostDecision.sharesSlash24(myIps, ack.lan) && ack.port in 1..65535) {
                 phase("Checking shared Wi-Fi…")
                 val lanPeer = probeFirst(ack.lan.filter { HostDecision.sharesSlash24(myIps, listOf(it)) }, ack.port)
                 if (lanPeer != null) {
@@ -1443,6 +1449,7 @@ class BlePeerCoordinator(
                 senderCanHost = canHostHotspot(),
                 ackPsm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ack.psm else 0,
                 bytes = bytes,
+                lanHttpBlocked = lanHttpBlocked,
             )
             plan.blocker?.let { blocker ->
                 if (blocker != LinkBlocker.IOS_PAIR) c.writeMessage(HotspotLinkMessage.Error(HotspotLinkMessage.ERR_PERM))
@@ -1577,6 +1584,10 @@ class BlePeerCoordinator(
             }
         }
     }
+
+    /** `true` when the same Files installation as [peer] (by full id or `id6`) is currently reachable over BLE. */
+    fun hasBleRouteTo(peer: PeerInfo): Boolean = findTarget(peer) != null ||
+        blePeers.value.any { com.minifile.explorer.core.peer.PeerSendFallback.sameDevice(peer, it) }
 
     private fun findTarget(peer: PeerInfo): Seen? {
         val id6 = HotspotLinkCodec.id6Of(peer.id)

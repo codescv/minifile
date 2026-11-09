@@ -132,6 +132,15 @@ class NearbyStatusCopyTest {
             "$base/service/LocalOnlyHotspotManager.kt",
             "$base/service/WifiSpecifierConnector.kt",
             "$base/core/peer/HotspotLinkModels.kt",
+            "$base/ui/components/JoinHotspotDialog.kt",
+            "$base/ui/util/SystemWifiJoin.kt",
+            "$base/service/PeerDiscoveryHolder.kt",
+            "$base/core/peer/PeerModels.kt",
+            "$base/core/peer/PeerTransferEngine.kt",
+            "$base/core/peer/PeerSendFallback.kt",
+            "$base/core/peer/PeerAnnounceWire.kt",
+            "$base/core/net/LocalSubnetRouter.kt",
+            "$base/core/net/GatewayCandidates.kt",
         )
         for (rel in files) {
             val f = File(repoRoot, rel)

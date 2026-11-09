@@ -178,9 +178,11 @@ class MainActivity : ComponentActivity() {
         // Foreground-wide Bluetooth presence: discoverable (and consent dialog reachable) from any tab.
         // Only activates when BLE permissions are already granted and Bluetooth is on; never prompts.
         (application as MiniFileApplication).container.blePeerCoordinator.acquirePresence()
+        (application as MiniFileApplication).container.peerDiscoveryHolder.setForeground(true)
     }
 
     override fun onStop() {
+        (application as MiniFileApplication).container.peerDiscoveryHolder.setForeground(false)
         (application as MiniFileApplication).container.blePeerCoordinator.releasePresence()
         super.onStop()
     }
@@ -190,6 +192,8 @@ class MainActivity : ComponentActivity() {
         val container = (application as MiniFileApplication).container
         // Returning from App info / Bluetooth settings: pick up newly granted permissions immediately.
         container.blePeerCoordinator.restartRadios()
+        // Camera `WIFI:` QR joined a phone hotspot while away: probe its gateway for a Files host + announce.
+        container.peerDiscoveryHolder.onAppResumed()
         // v1.0.16: auto-install the verified update APK once 'Install unknown apps' was granted.
         val resumedInstall = container.updateManager.onHostResume(this)
         if (resumedInstall is InstallLaunchResult.Failed) {

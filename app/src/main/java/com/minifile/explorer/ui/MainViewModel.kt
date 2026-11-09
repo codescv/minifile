@@ -40,6 +40,7 @@ import com.minifile.explorer.core.qr.QrPayload
 import com.minifile.explorer.core.qr.QrPayloads
 import com.minifile.explorer.core.peer.PeerPathPolicy
 import com.minifile.explorer.core.peer.PeerSendItem
+import com.minifile.explorer.core.peer.PeerSendFallback
 import com.minifile.explorer.core.peer.PeerSendResult
 import com.minifile.explorer.core.peer.PeerTransferEngine
 import com.minifile.explorer.core.peer.PeerTransferException
@@ -64,6 +65,7 @@ import com.minifile.explorer.service.HotspotPurpose
 import com.minifile.explorer.service.HotspotState
 import com.minifile.explorer.service.IncomingBleRequest
 import com.minifile.explorer.service.JoinException
+import com.minifile.explorer.service.LinkResult
 import com.minifile.explorer.service.OperationCompletionEvent
 import com.minifile.explorer.service.OperationRegistry
 import com.minifile.explorer.service.OperationRunOutcome
@@ -176,6 +178,13 @@ internal class MainViewModelDependencies(
     val beginBleSendAction: (peerName: String) -> Unit = {},
     /** Ends the "Preparing files…" dialog when sending stopped before negotiation (error ⇒ visible + Close). */
     val endBleSendPreparingAction: (peerName: String, error: String?) -> Unit = { _, _ -> },
+    /** `true` when the same device as a LAN peer is in Bluetooth range (automatic LAN → BLE fallback). */
+    val hasBleRouteTo: (PeerInfo) -> Boolean = { false },
+    /** Negotiates a BLE link to a peer (`lanHttpBlocked` = LAN HTTP was just intercepted / unreachable). */
+    val negotiateBleLink: suspend (peer: PeerInfo, files: Int, bytes: Long, lanHttpBlocked: Boolean) -> LinkResult =
+        { _, _, _, _ -> throw PeerTransferException(null, "Bluetooth is unavailable") },
+    /** `true` when a VPN (`TRANSPORT_VPN`) is active — words interception errors. */
+    val isVpnActive: () -> Boolean = { false },
     val primaryStoragePathProvider: () -> String = {
         Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
     },
@@ -215,6 +224,11 @@ internal class MainViewModelDependencies(
                 cancelBleLinkAction = { container.blePeerCoordinator.cancelLink() },
                 beginBleSendAction = { container.blePeerCoordinator.beginSenderPreparing(it) },
                 endBleSendPreparingAction = { name, error -> container.blePeerCoordinator.endSenderPreparing(name, error) },
+                hasBleRouteTo = { container.blePeerCoordinator.hasBleRouteTo(it) },
+                negotiateBleLink = { peer, files, bytes, lanHttpBlocked ->
+                    container.blePeerCoordinator.negotiate(peer, files, bytes, lanHttpBlocked)
+                },
+                isVpnActive = { container.peerDiscoveryHolder.isVpnActive() },
             )
     }
 }
@@ -1676,16 +1690,20 @@ class MainViewModel internal constructor(
         joinJob = vmScope.launch {
             var joinedHere = false
             var completed = false
+            var wifiCreds: WifiJoinFallback? = null
+            var wifiJoined = false
             try {
                 val peer: PeerInfo = when (payload) {
                     is QrPayload.Wifi -> {
                         _joinState.value = JoinUiState.Joining(payload.ssid)
                         joinedHere = true
+                        wifiCreds = WifiJoinFallback(payload.ssid, payload.password, payload.sec)
                         val joined = deps.hotspotJoinController.join(
                             ssid = payload.ssid,
                             pass = payload.password,
                             sec = payload.sec,
                         )
+                        wifiJoined = true
                         _joinState.value = JoinUiState.FindingHost(payload.ssid)
                         findHotspotHost(joined.gateway, joined.ownIp, joined.prefixLength)
                             ?: throw JoinException("Joined ${payload.ssid}, but no Files device answered")
@@ -1693,12 +1711,14 @@ class MainViewModel internal constructor(
                     is QrPayload.Hotspot -> {
                         _joinState.value = JoinUiState.Joining(payload.ssid)
                         joinedHere = true
+                        wifiCreds = WifiJoinFallback(payload.ssid, payload.password, payload.sec)
                         val joined = deps.hotspotJoinController.join(
                             ssid = payload.ssid,
                             pass = payload.password,
                             sec = payload.sec,
                             expectedHostIp = payload.ip,
                         )
+                        wifiJoined = true
                         _joinState.value = JoinUiState.FindingHost(payload.ssid)
                         val direct = probeRetrying(listOf(payload.ip), listOf(payload.port), attempts = 10)
                             ?: findHotspotHost(joined.gateway, joined.ownIp, joined.prefixLength)
@@ -1724,7 +1744,7 @@ class MainViewModel internal constructor(
                 throw e
             } catch (e: Exception) {
                 val msg = (e as? PeerTransferException)?.userMessage ?: e.message ?: "Could not connect"
-                _joinState.value = JoinUiState.Failed(msg)
+                _joinState.value = JoinUiState.Failed(msg, wifiFallback = wifiCreds?.takeIf { !wifiJoined })
             } finally {
                 if (joinedHere && !completed) {
                     runCatching { deps.hotspotJoinController.release() }
@@ -1803,24 +1823,54 @@ class MainViewModel internal constructor(
         sendItems: List<PeerSendItem>,
         client: PeerHttpClient,
         sink: ProgressSink,
+        bleFallbackActive: java.util.concurrent.atomic.AtomicBoolean? = null,
     ): PeerSendResult {
         val engine = PeerTransferEngine(
             client = client,
             senderDeviceNameProvider = { settings.value.peerDeviceName },
         )
+        val files = sendItems.count { !it.isDirectory }
+        val bytes = sendItems.sumOf { if (it.isDirectory) 0L else it.size.coerceAtLeast(0L) }
         if (!peer.needsLink) {
             var ok = false
             try {
-                val res = engine.send(peer = peer, items = sendItems, sink = sink)
+                // LAN / hotspot first; a VPN-intercepted (301..308) or unreachable `begin` is retried over Bluetooth
+                // when the same device is in BLE range (<= 50 MB), e.g. iPhone on this phone's manual hotspot + VPN.
+                val res = PeerSendFallback.sendWithBleFallback(
+                    peer = peer,
+                    bytes = bytes,
+                    isCancelled = { sink.isCancelled() },
+                    blePeerAvailable = { deps.hasBleRouteTo(peer) },
+                    vpnActive = { deps.isVpnActive() },
+                    lanSend = { engine.send(peer = peer, items = sendItems, sink = sink) },
+                    onFallback = {
+                        bleFallbackActive?.set(true)
+                        deps.beginBleSendAction(PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host })
+                    },
+                    bleSend = { lanHttpBlocked ->
+                        sendOverNegotiatedLink(peer, sendItems, engine, sink, files, bytes, lanHttpBlocked)
+                    },
+                )
                 ok = !res.cancelled && !sink.isCancelled() && res.errors.isEmpty()
                 return res
             } finally {
                 releaseJoinedNetworkIfTarget(peer, immediate = !ok)
             }
         }
-        val files = sendItems.count { !it.isDirectory }
-        val bytes = sendItems.sumOf { if (it.isDirectory) 0L else it.size.coerceAtLeast(0L) }
-        val link = container.blePeerCoordinator.negotiate(peer, files, bytes)
+        return sendOverNegotiatedLink(peer, sendItems, engine, sink, files, bytes, lanHttpBlocked = false)
+    }
+
+    /** Negotiates a BLE link (L2CAP / hotspot / LAN) to [peer] and sends over it (spec §3.7). */
+    private suspend fun sendOverNegotiatedLink(
+        peer: PeerInfo,
+        sendItems: List<PeerSendItem>,
+        engine: PeerTransferEngine,
+        sink: ProgressSink,
+        files: Int,
+        bytes: Long,
+        lanHttpBlocked: Boolean,
+    ): PeerSendResult {
+        val link = deps.negotiateBleLink(peer, files, bytes, lanHttpBlocked)
         var ok = false
         try {
             // L2CAP links stream over the open Bluetooth channel; hotspot / LAN links use HTTP.
@@ -1899,6 +1949,7 @@ class MainViewModel internal constructor(
 
         val countLabel = if (items.size == 1) items.first().displayName else "${items.size} items"
         val txClient = PeerHttpClient(socketBinder = deps.peerSocketBinder)
+        val bleFallback = java.util.concurrent.atomic.AtomicBoolean(false)
 
         deps.operationRegistry.enqueue(
             context = appContext,
@@ -1907,9 +1958,10 @@ class MainViewModel internal constructor(
             retryAction = { sendToPeer(appContext, peer, items) },
             onCancel = {
                 txClient.close()
-                if (peer.needsLink) {
+                if (peer.needsLink || bleFallback.get()) {
                     deps.cancelBleLinkAction()
-                } else {
+                }
+                if (!peer.needsLink) {
                     releaseJoinedNetworkIfTarget(peer, immediate = true)
                 }
             },
@@ -1932,7 +1984,7 @@ class MainViewModel internal constructor(
                             return@use OperationRunOutcome(message = "Nothing to send to $peerName")
                         }
                         enteredRunPeerSend = true
-                        val res = runPeerSend(peer, sendItems, client, sink)
+                        val res = runPeerSend(peer, sendItems, client, sink, bleFallback)
                         formatPeerSendOutcome(peerName, res, sink.isCancelled())
                     } catch (e: PeerTransferException) {
                         if (sink.isCancelled()) {
@@ -1982,6 +2034,7 @@ class MainViewModel internal constructor(
 
         val countLabel = if (uris.size == 1) "1 file" else "${uris.size} files"
         val txClient = PeerHttpClient(socketBinder = deps.peerSocketBinder)
+        val bleFallback = java.util.concurrent.atomic.AtomicBoolean(false)
 
         deps.operationRegistry.enqueue(
             context = appContext,
@@ -1990,9 +2043,10 @@ class MainViewModel internal constructor(
             retryAction = { sendUrisToPeer(appContext, peer, uris) },
             onCancel = {
                 txClient.close()
-                if (peer.needsLink) {
+                if (peer.needsLink || bleFallback.get()) {
                     deps.cancelBleLinkAction()
-                } else {
+                }
+                if (!peer.needsLink) {
                     releaseJoinedNetworkIfTarget(peer, immediate = true)
                 }
             },
@@ -2011,7 +2065,7 @@ class MainViewModel internal constructor(
                             return@use OperationRunOutcome(message = "Nothing to send to $peerName")
                         }
                         enteredRunPeerSend = true
-                        val res = runPeerSend(peer, sendItems, client, sink)
+                        val res = runPeerSend(peer, sendItems, client, sink, bleFallback)
                         formatPeerSendOutcome(peerName, res, sink.isCancelled())
                     } catch (e: PeerTransferException) {
                         if (sink.isCancelled()) {
@@ -2186,5 +2240,14 @@ sealed interface JoinUiState {
     data class Joining(val ssid: String) : JoinUiState
     data class FindingHost(val label: String) : JoinUiState
     data class Found(val peer: PeerInfo) : JoinUiState
-    data class Failed(val message: String) : JoinUiState
+    /**
+     * [wifiFallback] is set when joining the scanned Wi-Fi itself failed (e.g. OxygenOS / ColorOS rejected the
+     * `WifiNetworkSpecifier` request): the dialog then offers "Join via System Wi-Fi" + "Copy password".
+     */
+    data class Failed(val message: String, val wifiFallback: WifiJoinFallback? = null) : JoinUiState
+}
+
+/** Credentials of a scanned `WIFI:` / `minifile://hotspot` QR, kept for the system Wi-Fi fallback. */
+data class WifiJoinFallback(val ssid: String, val password: String, val sec: String) {
+    override fun toString(): String = "WifiJoinFallback(ssid=$ssid, password=***, sec=$sec)"
 }

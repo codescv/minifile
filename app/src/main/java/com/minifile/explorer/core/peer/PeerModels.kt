@@ -94,8 +94,57 @@ data class PeerSendResult(
     val cancelled: Boolean = false,
 )
 
+/** Coarse failure class of a [PeerTransferException], used to decide on an automatic Bluetooth fallback. */
+enum class PeerFailureKind {
+    /** Anything else (declined, read-only, disk full, protocol, …): never retried over another link. */
+    OTHER,
+
+    /** TCP connect / read failed before the receiver answered (AP isolation, VPN black-hole, wrong subnet). */
+    UNREACHABLE,
+
+    /** A `301/302/303/307/308` came back: a VPN, proxy or captive portal intercepted the LAN request. */
+    INTERCEPTED,
+}
+
 class PeerTransferException(
     val httpStatus: Int?,
     val userMessage: String,
     cause: Throwable? = null,
-) : IOException(userMessage, cause)
+    /** `true` when the failure happened before a `/api/peer/begin` session existed (no file bytes were sent). */
+    val beforeSession: Boolean = false,
+    val kind: PeerFailureKind = if (httpStatus != null && isRedirectStatus(httpStatus)) {
+        PeerFailureKind.INTERCEPTED
+    } else {
+        PeerFailureKind.OTHER
+    },
+) : IOException(userMessage, cause) {
+    /** Files servers never redirect `/api/peer/…`: a `3xx` means a VPN / proxy / captive portal answered instead. */
+    val isInterceptedRedirect: Boolean
+        get() = kind == PeerFailureKind.INTERCEPTED
+
+    companion object {
+        val REDIRECT_STATUSES: Set<Int> = setOf(301, 302, 303, 307, 308)
+
+        fun isRedirectStatus(status: Int): Boolean = status in REDIRECT_STATUSES
+
+        /** Actionable English copy for an intercepted LAN request (never "returned HTTP 302"). */
+        fun interceptedMessage(peerName: String, status: Int): String =
+            "Connection to $peerName was intercepted (HTTP $status) — turn off VPN or proxy (or enable LAN bypass) and try again"
+
+        /**
+         * `Location` header reduced to `scheme://host[:port]/path` for logs: query, fragment and userinfo stripped so
+         * captive-portal / proxy tokens are never exposed. Returns `null` when absent or unparsable.
+         */
+        fun sanitizeLocation(raw: String?): String? {
+            val v = raw?.trim().orEmpty()
+            if (v.isEmpty()) return null
+            return runCatching {
+                val u = java.net.URI(v)
+                val host = u.host ?: return@runCatching u.rawPath?.substringBefore('?')?.takeIf { it.isNotEmpty() }
+                val scheme = u.scheme ?: "http"
+                val port = if (u.port > 0) ":${u.port}" else ""
+                "$scheme://$host$port${u.rawPath.orEmpty()}"
+            }.getOrNull()
+        }
+    }
+}

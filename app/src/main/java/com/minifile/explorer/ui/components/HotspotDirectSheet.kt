@@ -254,7 +254,7 @@ fun HotspotCredentialsPanel(
                     .fillMaxWidth(0.8f),
             )
             Text(
-                text = if (filesOnlyQr) "Scan with Files on the other phone" else "Scan with the Camera app (iPhone / Android)",
+                text = if (filesOnlyQr) "Scan with Files on the other phone" else "Scan with Camera to join Wi-Fi (iPhone / Android)",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,

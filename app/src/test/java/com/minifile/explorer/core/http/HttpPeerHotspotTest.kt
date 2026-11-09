@@ -177,6 +177,34 @@ class HttpPeerHotspotTest {
     private fun openAnnounceUrl(srv: HttpFileServerEngine, id: String = "ios-cam-1") =
         "${base(srv)}/api/peer/announce?port=8123&id=$id&name=iPhone%2016&os=ios"
 
+    /** Android Camera-QR joiner auto-announce (`PeerAnnounceWire`): query params + mirrored JSON body. */
+    @Test
+    fun announce_androidAutoAnnounceWire_queryPlusJsonBody_isAccepted() = runBlocking {
+        val srv = start()
+        gate.hotspotBindIp = InetAddress.getByName("127.0.0.1")
+        gate.hotspotPrefixLength = 8
+        gate.setOpenAnnounce(true)
+        val ev = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeout(5_000) { srv.events.first { it is HttpEvent.PeerAnnounce } as HttpEvent.PeerAnnounce }
+        }
+        val url = com.minifile.explorer.core.peer.PeerAnnounceWire.url("127.0.0.1", srv.boundPort, "android-op-1", "OnePlus PKX110", 8090)
+        val body = com.minifile.explorer.core.peer.PeerAnnounceWire.body("android-op-1", "OnePlus PKX110", 8090).toByteArray()
+        joinerClient().use { c ->
+            val resp = c.postStream(url, body.size.toLong(), "application/json", expectContinue = false) { it.write(body) }
+            assertEquals(200, resp.status)
+        }
+        val announce = ev.await()
+        assertTrue(announce.open)
+        assertEquals(8090, announce.port)
+        assertEquals("android-op-1", announce.id)
+        assertEquals("OnePlus PKX110", announce.name)
+        assertEquals("android", announce.os)
+        val parsed = MiniJson.parse(String(body)) as JsonValue.Obj
+        assertEquals("android-op-1", parsed.str("id"))
+        assertEquals(8090, parsed.int("port"))
+        assertEquals("", parsed.str("tok"))
+    }
+
     @Test
     fun announce_hotspotDirectOpen_acceptsTokenlessJoiner_andEmitsOpenEvent() = runBlocking {
         val srv = start()

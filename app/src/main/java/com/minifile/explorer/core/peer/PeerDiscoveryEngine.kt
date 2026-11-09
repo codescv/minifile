@@ -172,6 +172,36 @@ class PeerDiscoveryEngine(
         }
     }
 
+    /**
+     * Drops cached LAN peers whose IPv4 [PeerInfo.host] is no longer inside any live local subnet ([localSubnets] =
+     * `(ip, prefix)` of every current Wi-Fi / hotspot / tether interface), e.g. an iPhone's old `192.168.1.x` right
+     * after switching onto a hotspot. Only peers learned on a directly attached subnet (beacon / sweep probe /
+     * announce) are pruned; BLE-only, manually typed or QR peers (may sit on a routed VLAN), loopback and IPv6 peers are
+     * kept. An empty [localSubnets] (interfaces unknown / enumeration failed) prunes nothing. Returns the removed count.
+     */
+    fun pruneOffSubnet(localSubnets: List<Pair<ByteArray, Int>>): Int {
+        if (localSubnets.isEmpty()) return 0
+        synchronized(stateLock) {
+            var removed = 0
+            val it = peerMap.entries.iterator()
+            while (it.hasNext()) {
+                val p = it.next().value
+                if (p.needsLink) continue
+                // Manually typed / QR peers may legitimately sit on a routed VLAN; beacons, sweeps and announces
+                // only ever come from a directly attached subnet.
+                if (p.source == PeerSource.MANUAL || p.source == PeerSource.QR || p.source == PeerSource.BLE) continue
+                val ip = HostDecision.parseIpv4(p.host) ?: continue
+                if ((ip[0].toInt() and 0xFF) == 127) continue
+                if (!com.minifile.explorer.core.net.LocalSubnetRouter.isOnAnyLocalSubnet(ip, localSubnets)) {
+                    it.remove()
+                    removed++
+                }
+            }
+            if (removed > 0) publishPeersLocked()
+            return removed
+        }
+    }
+
     internal fun evictExpired(nowMs: Long = clock.nowMs()) {
         synchronized(stateLock) {
             val changed = pruneExpiredLocked(nowMs)
@@ -234,12 +264,21 @@ class PeerDiscoveryEngine(
         } catch (e: FtpAccessDeniedException) {
             throw PeerTransferException(null, "Only local network (LAN) addresses are allowed", e)
         } catch (e: IOException) {
-            throw PeerTransferException(null, "$endpointLabel not reachable", e)
+            throw PeerTransferException(null, "$endpointLabel not reachable", e, beforeSession = true, kind = PeerFailureKind.UNREACHABLE)
         }
 
         when (resp.status) {
             404 -> throw PeerTransferException(404, "$endpointLabel needs Files 1.0.6+")
             401 -> throw PeerTransferException(401, "$endpointLabel requires a PIN — update Files")
+        }
+        if (PeerTransferException.isRedirectStatus(resp.status)) {
+            // Files never redirects /api/peer/info: a VPN / proxy / captive portal answered for this address.
+            throw PeerTransferException(
+                resp.status,
+                PeerTransferException.interceptedMessage(endpointLabel, resp.status),
+                beforeSession = true,
+                kind = PeerFailureKind.INTERCEPTED,
+            )
         }
         if (resp.status != 200) {
             throw PeerTransferException(resp.status, "$endpointLabel returned HTTP ${resp.status}")
@@ -253,6 +292,10 @@ class PeerDiscoveryEngine(
 
         val app = obj.str("app")
         if (app != null && app != "Files") {
+            throw PeerTransferException(null, "$endpointLabel is not a Files peer")
+        }
+        // A captive portal / proxy JSON blob carries none of the Files identity fields.
+        if (app == null && obj.str("id").isNullOrBlank() && obj.entries["proto"] == null) {
             throw PeerTransferException(null, "$endpointLabel is not a Files peer")
         }
 
