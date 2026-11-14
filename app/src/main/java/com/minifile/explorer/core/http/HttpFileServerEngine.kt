@@ -153,10 +153,25 @@ private class HttpStatusException(
  *   explicitly rejecting `.` / `..` traversal segments, NUL bytes, backslashes, and out-of-root symlinks with `403`.
  * - Enforces [HttpConfig.readOnly] on `POST /mkdir` and `POST /upload` with `403`.
  */
+/** Incoming `POST /api/peer/begin` offer handed to [HttpFileServerEngine]'s `peerBeginApprover`. */
+data class PeerBeginOffer(
+    val clientIp: String,
+    val deviceName: String,
+    val files: Int,
+    val bytes: Long,
+)
+
 class HttpFileServerEngine(
     val config: HttpConfig,
     private val fs: FileSystem,
     val hotspotGate: HotspotSessionGate = HotspotSessionGate(),
+    /** Transfer ▸ Discoverable: `false` rejects un-tokened peer `begin` offers with 403 `not_discoverable`. */
+    private val peerReceiveAllowed: () -> Boolean = { true },
+    /**
+     * Transfer ▸ Require Approval: blocks the connection thread until the user accepts (`true`) or declines /
+     * times out (`false` ⇒ 403 `declined`). `null` auto-accepts. Not consulted for token-gated (BLE-accepted) sessions.
+     */
+    private val peerBeginApprover: ((PeerBeginOffer) -> Boolean)? = null,
 ) {
     private val pathResolver = FtpPathResolver(config.root, fs)
     private val sortComparator = SortSpec().comparator()
@@ -1314,6 +1329,21 @@ class HttpFileServerEngine(
         val expectedBytes = query["bytes"]?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
         val senderDevice = PeerPathPolicy.sanitizeDisplayName(query["device"].orEmpty(), 64)
             .ifEmpty { clientIp }
+
+        if (gate != HotspotSessionGate.BeginGate.MATCHED) {
+            if (!peerReceiveAllowed()) {
+                throw HttpStatusException(403, "Forbidden", "Receiver is not discoverable", code = "not_discoverable")
+            }
+            val approver = peerBeginApprover
+            if (approver != null) {
+                val approved = runCatching {
+                    approver(PeerBeginOffer(clientIp, senderDevice, expectedFiles, expectedBytes))
+                }.getOrDefault(false)
+                if (!approved) {
+                    throw HttpStatusException(403, "Forbidden", "Transfer declined", code = "declined")
+                }
+            }
+        }
 
         val sessionId = UUID.randomUUID().toString().replace("-", "").take(16)
         val session = PeerReceiveSession(

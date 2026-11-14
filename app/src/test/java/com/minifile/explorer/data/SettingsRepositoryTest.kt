@@ -5,6 +5,7 @@ import com.minifile.explorer.core.model.SortField
 import com.minifile.explorer.core.model.SortSpec
 import com.minifile.explorer.core.model.ThemeMode
 import com.minifile.explorer.core.model.ViewMode
+import com.minifile.explorer.core.peer.PeerConflictPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -106,5 +107,37 @@ class SettingsRepositoryTest {
         repo2.setAgentFeedbackEmail("   ")
         assertEquals("", repo2.settings.value.agentFeedbackEmail)
         assertEquals("", SettingsRepository(store).settings.value.agentFeedbackEmail)
+    }
+
+    @Test
+    fun transferSettings_defaultsAndPersistAcrossReload() {
+        val store = InMemoryKeyValueStore()
+        val repo1 = SettingsRepository(store)
+        val d = repo1.settings.value
+        assertTrue(d.peerDiscoverable)
+        assertTrue(d.peerConfirmReceive)
+        assertEquals(PeerConflictPolicy.RENAME, d.peerConflictPolicy)
+        assertEquals(8080, d.httpPort)
+        assertEquals(2121, d.ftpPort)
+
+        repo1.setPeerDiscoverable(false)
+        repo1.setPeerConfirmReceive(false)
+        repo1.setPeerConflictPolicy(PeerConflictPolicy.SKIP)
+        assertTrue(repo1.setHttpPort(8181))
+        assertTrue(repo1.setFtpPort(2222))
+        assertFalse(repo1.setHttpPort(80))
+        assertFalse(repo1.setFtpPort(70000))
+        assertEquals(false, store.getBoolean(SettingsRepository.KEY_PEER_DISCOVERABLE, true))
+        assertEquals("skip", store.getString(SettingsRepository.KEY_PEER_CONFLICT_POLICY, null))
+
+        val r = SettingsRepository(store).settings.value
+        assertFalse(r.peerDiscoverable)
+        assertFalse(r.peerConfirmReceive)
+        assertEquals(PeerConflictPolicy.SKIP, r.peerConflictPolicy)
+        assertEquals(8181, r.httpPort)
+        assertEquals(2222, r.ftpPort)
+
+        store.putString(SettingsRepository.KEY_PEER_CONFLICT_POLICY, "bogus")
+        assertEquals(PeerConflictPolicy.RENAME, SettingsRepository(store).settings.value.peerConflictPolicy)
     }
 }

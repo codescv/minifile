@@ -60,6 +60,7 @@ import com.minifile.explorer.di.AppContainer
 import com.minifile.explorer.service.BleAvailability
 import com.minifile.explorer.service.BleLinkUiState
 import com.minifile.explorer.service.HotspotException
+import com.minifile.explorer.service.HttpServerHolder
 import com.minifile.explorer.service.HotspotJoinController
 import com.minifile.explorer.service.HotspotPurpose
 import com.minifile.explorer.service.HotspotState
@@ -69,6 +70,7 @@ import com.minifile.explorer.service.LinkResult
 import com.minifile.explorer.service.OperationCompletionEvent
 import com.minifile.explorer.service.OperationRegistry
 import com.minifile.explorer.service.OperationRunOutcome
+import com.minifile.explorer.service.PeerOfferApprovals
 import com.minifile.explorer.ui.util.UiFormatters
 import java.io.FileNotFoundException
 import java.net.InetAddress
@@ -307,8 +309,11 @@ class MainViewModel internal constructor(
     // --- v1.0.18 Direct Hotspot / BLE / QR state ---
     val hotspotState: StateFlow<HotspotState> =
         _container?.localOnlyHotspotManager?.state ?: MutableStateFlow(HotspotState.Idle)
-    val pendingIncomingBle: StateFlow<IncomingBleRequest?> =
-        _container?.blePeerCoordinator?.pendingIncoming ?: MutableStateFlow(null)
+    /** Pending incoming offer for the consent dialog: BLE hello first, else a LAN `begin` (Require Approval). */
+    val pendingIncomingBle: StateFlow<IncomingBleRequest?> = _container?.let { c ->
+        combine(c.blePeerCoordinator.pendingIncoming, PeerOfferApprovals.instance.pendingRequest) { ble, lan -> ble ?: lan }
+            .stateIn(vmScope, SharingStarted.Eagerly, c.blePeerCoordinator.pendingIncoming.value)
+    } ?: MutableStateFlow(null)
     val bleLinkUi: StateFlow<BleLinkUiState?> =
         _container?.blePeerCoordinator?.linkUi ?: MutableStateFlow(null)
 
@@ -1663,7 +1668,30 @@ class MainViewModel internal constructor(
 
     // --- Consent / link dialog (MainActivity level) ---
     fun respondToIncomingBle(requestId: Long, accept: Boolean) {
+        // Request ids are disjoint (LAN ids start at PeerOfferApprovals.REQUEST_ID_BASE): each side ignores the other's.
+        PeerOfferApprovals.instance.respond(requestId, accept)
         container.blePeerCoordinator.respondToIncoming(requestId, accept)
+    }
+
+    /**
+     * Transfer ▸ Nearby Devices ▸ Discoverable (iOS `setDiscoverable(_:)`): persists the flag, then gates BLE
+     * advertising / GATT receiver (via [com.minifile.explorer.service.BlePeerCoordinator.onDiscoverableChanged]),
+     * the LAN UDP receiver role + Bonjour advertisement while HTTP runs, and incoming peer `begin` offers.
+     */
+    fun setDiscoverable(on: Boolean) {
+        val c = _container ?: return
+        c.settingsRepository.setPeerDiscoverable(on)
+        c.blePeerCoordinator.onDiscoverableChanged()
+        val http = HttpServerHolder.state.value
+        if (http.isRunning) {
+            c.peerDiscoveryHolder.setReceiverRole(on)
+            if (on) {
+                runCatching { c.nsdAdvertiser.register(http.boundPort) }
+            } else {
+                runCatching { c.nsdAdvertiser.unregister() }
+            }
+        }
+        if (!on) PeerOfferApprovals.instance.declinePending()
     }
 
     fun cancelBleLink() {
@@ -1842,7 +1870,7 @@ class MainViewModel internal constructor(
                     isCancelled = { sink.isCancelled() },
                     blePeerAvailable = { deps.hasBleRouteTo(peer) },
                     vpnActive = { deps.isVpnActive() },
-                    lanSend = { engine.send(peer = peer, items = sendItems, sink = sink) },
+                    lanSend = { engine.send(peer = peer, items = sendItems, sink = sink, conflict = settings.value.peerConflictPolicy) },
                     onFallback = {
                         bleFallbackActive?.set(true)
                         deps.beginBleSendAction(PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host })
@@ -1875,7 +1903,7 @@ class MainViewModel internal constructor(
         try {
             // L2CAP links stream over the open Bluetooth channel; hotspot / LAN links use HTTP.
             val res = link.directSend?.invoke(sendItems, sink)
-                ?: engine.send(peer = link.peer, items = sendItems, sink = sink)
+                ?: engine.send(peer = link.peer, items = sendItems, sink = sink, conflict = settings.value.peerConflictPolicy)
             ok = !res.cancelled && !sink.isCancelled() && res.errors.isEmpty()
             return res
         } finally {

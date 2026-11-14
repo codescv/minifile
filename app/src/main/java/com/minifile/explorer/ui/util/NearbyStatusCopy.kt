@@ -25,6 +25,26 @@ object NearbyStatusCopy {
     const val HOTSPOT_DIRECT_SUBTITLE = "No router or mobile data needed"
     const val SHOW_QR_INSTEAD = "Show QR code instead"
 
+    // --- Transfer tab (1:1 with iOS `TransferView`) ---
+    const val DISCOVERABLE_LABEL = "Discoverable"
+    const val TRANSFER_EMPTY_DISCOVERABLE =
+        "Looking for nearby devices over Bluetooth, Wi-Fi and Nearby P2P… Open Files on the other phone — no QR or password needed."
+    const val TRANSFER_EMPTY_HIDDEN =
+        "Turn on Discoverable above to receive files from nearby devices, or keep browsing to send."
+    const val ADD_PEER_PLACEHOLDER = "Add by IP or URI (e.g. 192.168.1.20:8080)"
+    const val NEARBY_FOOTER =
+        "Send files from Browse → Select → Send. While Discoverable is on, nearby phones running Files can find and " +
+            "send to this phone (Bluetooth, Wi-Fi, Nearby P2P) while Files is open on any tab. Incoming transfers land in Received/."
+    const val FILE_SERVER_TITLE = "HTTP & FTP Server"
+    const val FILE_SERVER_RUNNING = "HTTP & FTP Running"
+    const val FILE_SERVER_FOOTER =
+        "Scan the QR code or open the address in any browser on the same network to browse, upload and download " +
+            "files. Use the FTP address with Finder, Windows Explorer or FileZilla."
+
+    /** Transfer tab empty state for the Nearby Devices card (iOS copy when [discoverable]). */
+    fun transferEmptyState(discoverable: Boolean): String =
+        if (discoverable) TRANSFER_EMPTY_DISCOVERABLE else TRANSFER_EMPTY_HIDDEN
+
     fun issue(
         hasBleHardware: Boolean,
         hasAllNearbyPermissions: Boolean,

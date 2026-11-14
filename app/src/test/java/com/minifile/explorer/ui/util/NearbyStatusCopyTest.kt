@@ -90,12 +90,33 @@ class NearbyStatusCopyTest {
     }
 
     @Test
+    fun transferEmptyState_matchesIosAndDiscoverableToggle() {
+        assertEquals(
+            "Looking for nearby devices over Bluetooth, Wi-Fi and Nearby P2P… Open Files on the other phone — no QR or password needed.",
+            NearbyStatusCopy.transferEmptyState(discoverable = true),
+        )
+        assertTrue(NearbyStatusCopy.transferEmptyState(discoverable = false).startsWith("Turn on Discoverable above"))
+        assertTrue(NearbyStatusCopy.NEARBY_FOOTER.startsWith("Send files from Browse → Select → Send. While Discoverable is on"))
+        assertTrue(NearbyStatusCopy.NEARBY_FOOTER.endsWith("Incoming transfers land in Received/."))
+        assertEquals("HTTP & FTP Server", NearbyStatusCopy.FILE_SERVER_TITLE)
+        assertTrue(NearbyStatusCopy.FILE_SERVER_FOOTER.endsWith("Use the FTP address with Finder, Windows Explorer or FileZilla."))
+    }
+
+    @Test
     fun allCopy_isEnglishOnly() {
         val strings = buildList {
             add(NearbyStatusCopy.HOTSPOT_DIRECT_LABEL)
             add(NearbyStatusCopy.SCAN_QR_LABEL)
             add(NearbyStatusCopy.HOTSPOT_DIRECT_SUBTITLE)
             add(NearbyStatusCopy.SHOW_QR_INSTEAD)
+            add(NearbyStatusCopy.DISCOVERABLE_LABEL)
+            add(NearbyStatusCopy.ADD_PEER_PLACEHOLDER)
+            add(NearbyStatusCopy.NEARBY_FOOTER)
+            add(NearbyStatusCopy.FILE_SERVER_TITLE)
+            add(NearbyStatusCopy.FILE_SERVER_RUNNING)
+            add(NearbyStatusCopy.FILE_SERVER_FOOTER)
+            add(NearbyStatusCopy.transferEmptyState(true))
+            add(NearbyStatusCopy.transferEmptyState(false))
             NearbyAccessIssue.entries.forEach { add(NearbyStatusCopy.hint(it)); add(NearbyStatusCopy.actionLabel(it)) }
             for (a in BleAvailability.entries) {
                 add(NearbyStatusCopy.emptyState(a, true))
@@ -126,6 +147,7 @@ class NearbyStatusCopyTest {
             "$base/ui/components/PeerConsentDialog.kt",
             "$base/ui/components/QrScannerSheet.kt",
             "$base/ui/screens/WirelessScreen.kt",
+            "$base/service/PeerOfferApprovals.kt",
             "$base/ui/util/NearbyPermissions.kt",
             "$base/ui/util/NearbyStatusCopy.kt",
             "$base/service/BlePeerCoordinator.kt",

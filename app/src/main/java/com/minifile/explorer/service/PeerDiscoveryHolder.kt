@@ -463,6 +463,8 @@ class PeerDiscoveryHolder(
      * Returns `true` when the host accepted the announce.
      */
     private suspend fun announceTo(host: PeerInfo, snap: WifiSnapshot): Boolean {
+        // Transfer ▸ Discoverable OFF: never announce (or auto-start HTTP for) this phone to a hotspot host.
+        if (!settingsRepository.settings.value.peerDiscoverable) return false
         val myPort = ensureHttpPortForAnnounce(snap) ?: return false
         val s = settingsRepository.settings.value
         val url = PeerAnnounceWire.url(host.host, host.port, s.peerDeviceId, s.peerDeviceName, myPort)

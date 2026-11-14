@@ -746,7 +746,8 @@ private fun MiniFileRoot(
         PeerConsentDialog(
             request = req,
             onAccept = accept@{
-                if (!NearbyPermissions.hasHotspotPermissions(context)) {
+                // LAN offers (Require Approval on a `begin`) never need the hotspot permission.
+                if (!req.viaLan && !NearbyPermissions.hasHotspotPermissions(context)) {
                     // A permission prompt is already up: ignore repeated taps until the user answers it.
                     if (acceptAfterHotspotPermission != null) return@accept
                     acceptAfterHotspotPermission = req.requestId

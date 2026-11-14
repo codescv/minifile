@@ -73,6 +73,30 @@ class FtpServerService : Service() {
             val intent = Intent(context, FtpServerService::class.java).setAction(ACTION_STOP_ALL)
             context.startService(intent)
         }
+
+        /**
+         * Intent actions behind the unified Transfer ▸ "HTTP & FTP Server" switch (iOS `startFileSharing` /
+         * `stopFileSharing`): ON starts HTTP then FTP (shared root + Read-only), OFF stops both.
+         */
+        fun unifiedActions(start: Boolean): List<String> =
+            if (start) listOf(ACTION_HTTP_START, ACTION_START) else listOf(ACTION_STOP_ALL)
+
+        /** Starts both the HTTP and FTP servers (Transfer ▸ "HTTP & FTP Server" ON). */
+        fun startBoth(context: Context) {
+            for (action in unifiedActions(start = true)) {
+                when (action) {
+                    ACTION_HTTP_START -> startHttp(context)
+                    ACTION_START -> start(context)
+                }
+            }
+        }
+
+        /** Stops both the HTTP and FTP servers (Transfer ▸ "HTTP & FTP Server" OFF). */
+        fun stopBoth(context: Context) {
+            for (action in unifiedActions(start = false)) {
+                if (action == ACTION_STOP_ALL) stopAll(context)
+            }
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -315,10 +339,18 @@ class FtpServerService : Service() {
         var startedSrv: HttpFileServerEngine? = null
         var lastBindError: BindException? = null
         for (candidatePort in candidatePorts) {
+            val repo = container.settingsRepository
             val srv = HttpFileServerEngine(
                 config = baseConfig.copy(port = candidatePort),
                 fs = container.fileSystem,
                 hotspotGate = HttpServerHolder.hotspotGate,
+                peerReceiveAllowed = { repo.settings.value.peerDiscoverable },
+                peerBeginApprover = { offer ->
+                    PeerOfferApprovals.instance.requestApproval(
+                        offer,
+                        confirmRequired = repo.settings.value.peerConfirmReceive,
+                    )
+                },
             )
             try {
                 srv.start()
@@ -359,9 +391,12 @@ class FtpServerService : Service() {
 
         val initialIps = container.lanAddressResolver.currentIpv4List()
         HttpServerHolder.markStarted(srv.boundPort, initialIps)
-        container.peerDiscoveryHolder.setReceiverRole(true)
-        // D1: Bonjour `_minifile._tcp` so iOS discovers this phone instantly.
-        runCatching { container.nsdAdvertiser.register(srv.boundPort) }
+        // Transfer ▸ Discoverable gates the LAN UDP receiver role + Bonjour advertisement (iOS `setDiscoverable`).
+        if (settings.peerDiscoverable) {
+            container.peerDiscoveryHolder.setReceiverRole(true)
+            // D1: Bonjour `_minifile._tcp` so iOS discovers this phone instantly.
+            runCatching { container.nsdAdvertiser.register(srv.boundPort) }
+        }
         refreshRunningNotification()
 
         httpEventsJob = scope.launch {
@@ -426,6 +461,7 @@ class FtpServerService : Service() {
 
         httpEngine?.let { runCatching { it.stop() } }
         httpEngine = null
+        PeerOfferApprovals.instance.declinePending()
         container?.peerReceiveBridge?.cancelAndClearAll()
         HttpServerHolder.markStopped(errorMessage)
     }

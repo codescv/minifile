@@ -8,6 +8,7 @@ import com.minifile.explorer.core.model.MiniJson
 import com.minifile.explorer.core.model.SortSpec
 import com.minifile.explorer.core.model.ThemeMode
 import com.minifile.explorer.core.model.ViewMode
+import com.minifile.explorer.core.peer.PeerConflictPolicy
 import com.minifile.explorer.core.peer.PeerPathPolicy
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,6 +52,9 @@ class SettingsRepository(
         const val KEY_FAV_PICKER_RECENCY = "fav_picker_recency"
         const val KEY_PEER_DEVICE_ID = "peer_device_id"
         const val KEY_PEER_DEVICE_NAME = "peer_device_name"
+        const val KEY_PEER_DISCOVERABLE = "peer_discoverable"
+        const val KEY_PEER_CONFLICT_POLICY = "peer_conflict_policy"
+        const val KEY_PEER_CONFIRM_RECEIVE = "peer_confirm_receive"
 
         const val KEY_UPDATE_AUTO_CHECK = "update_auto_check"
         const val KEY_UPDATE_INCLUDE_PRE = "update_include_pre"
@@ -139,6 +143,10 @@ class SettingsRepository(
             favoritePickerSortByRecency = store.getBoolean(KEY_FAV_PICKER_RECENCY, true),
             peerDeviceId = persistedPeerId,
             peerDeviceName = peerName,
+            peerDiscoverable = store.getBoolean(KEY_PEER_DISCOVERABLE, true),
+            peerConflictPolicy = store.getString(KEY_PEER_CONFLICT_POLICY, null)
+                ?.let { PeerConflictPolicy.fromWire(it) } ?: PeerConflictPolicy.RENAME,
+            peerConfirmReceive = store.getBoolean(KEY_PEER_CONFIRM_RECEIVE, true),
             updateAutoCheck = store.getBoolean(KEY_UPDATE_AUTO_CHECK, true),
             updateIncludePre = store.getBoolean(KEY_UPDATE_INCLUDE_PRE, false),
             updateLastCheckMs = store.getLong(KEY_UPDATE_LAST_CHECK_MS, 0L),
@@ -204,6 +212,32 @@ class SettingsRepository(
         update { it.copy(peerDeviceName = clean) }
     }
 
+    fun setPeerDiscoverable(on: Boolean) {
+        update { it.copy(peerDiscoverable = on) }
+    }
+
+    fun setPeerConflictPolicy(policy: PeerConflictPolicy) {
+        update { it.copy(peerConflictPolicy = policy) }
+    }
+
+    fun setPeerConfirmReceive(on: Boolean) {
+        update { it.copy(peerConfirmReceive = on) }
+    }
+
+    /** Transfer ▸ HTTP Port; ignored unless within `1024..65535` (same bounds as [loadFromStore]). */
+    fun setHttpPort(port: Int): Boolean {
+        if (port !in 1024..65535) return false
+        update { it.copy(httpPort = port) }
+        return true
+    }
+
+    /** Transfer ▸ FTP Port; ignored unless within `1024..65535`. */
+    fun setFtpPort(port: Int): Boolean {
+        if (port !in 1024..65535) return false
+        update { it.copy(ftpPort = port) }
+        return true
+    }
+
     fun setAgentFeedbackEmail(raw: String) {
         val normalized = AgentFeedbackBuilder.normalizeEmail(raw)
         update { it.copy(agentFeedbackEmail = normalized) }
@@ -247,6 +281,9 @@ class SettingsRepository(
             KEY_PEER_DEVICE_NAME,
             PeerPathPolicy.sanitizeDisplayName(s.peerDeviceName, 64).ifEmpty { "Files" },
         )
+        store.putBoolean(KEY_PEER_DISCOVERABLE, s.peerDiscoverable)
+        store.putString(KEY_PEER_CONFLICT_POLICY, s.peerConflictPolicy.wireValue)
+        store.putBoolean(KEY_PEER_CONFIRM_RECEIVE, s.peerConfirmReceive)
 
         store.putBoolean(KEY_UPDATE_AUTO_CHECK, s.updateAutoCheck)
         store.putBoolean(KEY_UPDATE_INCLUDE_PRE, s.updateIncludePre)

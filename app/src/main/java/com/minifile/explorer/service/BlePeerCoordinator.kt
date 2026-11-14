@@ -106,6 +106,8 @@ data class IncomingBleRequest(
     val files: Int,
     val bytes: Long,
     val deadlineMs: Long,
+    /** `true` for a LAN `POST /api/peer/begin` offer (no hotspot permission needed to accept). */
+    val viaLan: Boolean = false,
 )
 
 enum class BleLinkRole { SENDER, RECEIVER }
@@ -280,6 +282,13 @@ class BlePeerCoordinator(
                 .drop(1)
                 .collect { refreshAdvertisedFlags() }
         }
+        scope.launch {
+            settingsRepository.settings
+                .map { it.peerDiscoverable }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { onDiscoverableChanged() }
+        }
     }
 
     private data class AdvertisedSettings(
@@ -347,8 +356,15 @@ class BlePeerCoordinator(
                 if (incomingSession == null) closeGattServer()
                 return
             }
-            ensureGattServer()
-            startAdvertising()
+            // Transfer ▸ Discoverable OFF: keep scanning (this phone can still send) but stop advertising and
+            // drop the GATT receiver so nearby phones neither see nor reach it (iOS `setDiscoverable(false)`).
+            if (isDiscoverable()) {
+                ensureGattServer()
+                startAdvertising()
+            } else {
+                stopAdvertising()
+                if (incomingSession == null) closeGattServer()
+            }
             if (scan) {
                 startScan()
                 if (pruneJob?.isActive != true) {
@@ -435,8 +451,17 @@ class BlePeerCoordinator(
         }
     }
 
+    private fun isDiscoverable(): Boolean = settingsRepository.settings.value.peerDiscoverable
+
+    /** Transfer ▸ Discoverable toggled: re-apply advertising / GATT server against the new setting. */
+    fun onDiscoverableChanged() {
+        restartRadios()
+        applyRefs()
+    }
+
     private fun startAdvertising() {
         if (!NearbyPermissions.hasBleAdvertisePermission(appContext)) return
+        if (!isDiscoverable()) return
         val adv = adapter?.bluetoothLeAdvertiser ?: return
         val s = settingsRepository.settings.value
         val payload = HotspotLinkCodec.encodeAndroidManufacturerData(s.peerDeviceId, s.peerDeviceName, currentFlags())
@@ -855,6 +880,10 @@ class BlePeerCoordinator(
             return
         }
         val s = settingsRepository.settings.value
+        if (!s.peerDiscoverable) {
+            notifyMessage(device, HotspotLinkMessage.Decline(HotspotLinkMessage.DECLINE_USER))
+            return
+        }
         if (s.httpReadOnly || s.ftpReadOnly) {
             notifyMessage(device, HotspotLinkMessage.Decline(HotspotLinkMessage.DECLINE_PERM))
             return
@@ -872,8 +901,13 @@ class BlePeerCoordinator(
             bytes = hello.bytes,
             deadlineMs = System.currentTimeMillis() + CONSENT_TIMEOUT_MS,
         )
-        _pendingIncoming.value = req
-        _incoming.tryEmit(req)
+        if (s.peerConfirmReceive) {
+            _pendingIncoming.value = req
+            _incoming.tryEmit(req)
+        } else {
+            // Transfer ▸ Require Approval OFF: auto-accept without the consent dialog.
+            sess.decision.complete(true)
+        }
 
         val accepted = withTimeoutOrNull(CONSENT_TIMEOUT_MS) { sess.decision.await() }
         _pendingIncoming.value = null

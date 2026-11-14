@@ -303,6 +303,13 @@ data class AppSettings(
     val favoritePickerSortByRecency: Boolean = true,
     val peerDeviceId: String = "",
     val peerDeviceName: String = "Files",
+    /** Transfer ▸ Nearby Devices ▸ Discoverable (iOS `isDiscoverable`): advertise + accept incoming peer offers. */
+    val peerDiscoverable: Boolean = true,
+    /** Transfer ▸ Transfer Settings ▸ When File Exists (sent as `conflict=` on outgoing peer transfers). */
+    val peerConflictPolicy: com.minifile.explorer.core.peer.PeerConflictPolicy =
+        com.minifile.explorer.core.peer.PeerConflictPolicy.RENAME,
+    /** Transfer ▸ Transfer Settings ▸ Require Approval: show the consent dialog for incoming peer offers. */
+    val peerConfirmReceive: Boolean = true,
     val updateAutoCheck: Boolean = true,
     val updateIncludePre: Boolean = false,
     val updateLastCheckMs: Long = 0L,
