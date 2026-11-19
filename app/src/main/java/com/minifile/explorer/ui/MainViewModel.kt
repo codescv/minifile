@@ -38,24 +38,31 @@ import com.minifile.explorer.core.peer.PeerMerge
 import com.minifile.explorer.core.peer.PeerSource
 import com.minifile.explorer.core.qr.QrPayload
 import com.minifile.explorer.core.qr.QrPayloads
+import com.minifile.explorer.core.peer.PeerConflictPolicy
 import com.minifile.explorer.core.peer.PeerPathPolicy
 import com.minifile.explorer.core.peer.PeerSendItem
 import com.minifile.explorer.core.peer.PeerSendFallback
 import com.minifile.explorer.core.peer.PeerSendResult
 import com.minifile.explorer.core.peer.PeerTransferEngine
 import com.minifile.explorer.core.peer.PeerTransferException
+import com.minifile.explorer.core.share.ShareImportEngine
+import com.minifile.explorer.core.share.ShareImportProgress
 import com.minifile.explorer.core.vfs.FileSystem
 import com.minifile.explorer.core.vfs.NameValidation
 import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.vfs.Volume
+import com.minifile.explorer.core.vfs.VolumeKind
 import com.minifile.explorer.data.FavoritesRepository
 import com.minifile.explorer.data.FtpServersRepository
 import com.minifile.explorer.data.GDriveServersRepository
 import com.minifile.explorer.data.SettingsRepository
 import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
 import com.minifile.explorer.data.gdrive.GDriveSignInState
+import com.minifile.explorer.data.share.IncomingSharePayload
+import com.minifile.explorer.data.share.RawShareIntent
+import com.minifile.explorer.data.share.ShareIntentExtractor
 import com.minifile.explorer.di.AppContainer
 import com.minifile.explorer.service.BleAvailability
 import com.minifile.explorer.service.BleLinkUiState
@@ -190,6 +197,7 @@ internal class MainViewModelDependencies(
     val primaryStoragePathProvider: () -> String = {
         Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
     },
+    val shareImportEngine: ShareImportEngine = ShareImportEngine(fileSystem),
 ) {
     companion object {
         fun fromContainer(container: AppContainer): MainViewModelDependencies =
@@ -231,6 +239,7 @@ internal class MainViewModelDependencies(
                     container.blePeerCoordinator.negotiate(peer, files, bytes, lanHttpBlocked)
                 },
                 isVpnActive = { container.peerDiscoveryHolder.isVpnActive() },
+                shareImportEngine = container.shareImportEngine,
             )
     }
 }
@@ -328,6 +337,18 @@ class MainViewModel internal constructor(
 
     private val _reauthGDriveBookmark = MutableStateFlow<GDriveServerBookmark?>(null)
     val reauthGDriveBookmark: StateFlow<GDriveServerBookmark?> = _reauthGDriveBookmark.asStateFlow()
+
+    private val _saveSharedState = MutableStateFlow<SaveSharedUiState?>(null)
+    val saveSharedState: StateFlow<SaveSharedUiState?> = _saveSharedState.asStateFlow()
+    private val pendingIncomingShares = ArrayDeque<PendingIncomingShare>()
+    private var shareResolveJob: Job? = null
+    private var shareSaveJob: Job? = null
+    private var shareSaveCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private sealed interface PendingIncomingShare {
+        data class Raw(val appContext: Context, val raw: RawShareIntent) : PendingIncomingShare
+        data class Resolved(val payload: IncomingSharePayload) : PendingIncomingShare
+    }
 
     private var directoryLoadJob: Job? = null
     private var recursiveSearchJob: Job? = null
@@ -681,6 +702,10 @@ class MainViewModel internal constructor(
 
     override fun onCleared() {
         deps.cancelGDriveSignIn()
+        shareResolveJob?.cancel()
+        shareSaveCancelled.set(true)
+        shareSaveJob?.cancel()
+        pendingIncomingShares.clear()
         joinJob?.cancel()
         joinJob = null
         // Spec §3.3 [v2]: never leave the user's Wi-Fi pinned to a peer hotspot.
@@ -2248,6 +2273,363 @@ class MainViewModel internal constructor(
             }
         }
         return OperationRunOutcome(message = summary)
+    }
+
+    // --- Incoming External Share ("Save to Files") ---
+
+    fun defaultShareReceivedPath(): VfsPath {
+        val st = settings.value
+        val rootRaw = st.ftpRoot ?: st.httpRoot
+        val baseRoot = rootRaw?.let { runCatching { VfsPath.parse(it) }.getOrNull() }
+            ?: VfsPath.Local(deps.primaryStoragePathProvider())
+        return when (baseRoot) {
+            is VfsPath.Local -> {
+                if (baseRoot.displayName.equals("Received", ignoreCase = true)) {
+                    baseRoot
+                } else {
+                    VfsPath.Local("${baseRoot.normalized.trimEnd('/')}/Received")
+                }
+            }
+
+            is VfsPath.Ftp -> {
+                if (baseRoot.displayName.equals("Received", ignoreCase = true)) {
+                    baseRoot
+                } else {
+                    val p = if (baseRoot.normalizedRemotePath == "/") {
+                        "/Received"
+                    } else {
+                        "${baseRoot.normalizedRemotePath}/Received"
+                    }
+                    VfsPath.Ftp(baseRoot.serverId, p)
+                }
+            }
+
+            is VfsPath.GDrive -> {
+                if (baseRoot.displayName.equals("Received", ignoreCase = true)) {
+                    baseRoot
+                } else {
+                    val p = if (baseRoot.normalizedRemotePath == "/") {
+                        "/Received"
+                    } else {
+                        "${baseRoot.normalizedRemotePath}/Received"
+                    }
+                    VfsPath.GDrive(baseRoot.serverId, p)
+                }
+            }
+
+            is VfsPath.Saf -> baseRoot
+        }
+    }
+
+    fun defaultDownloadsPath(): VfsPath.Local =
+        VfsPath.Local("${deps.primaryStoragePathProvider().trimEnd('/')}/Download")
+
+    fun friendlyShareDestinationLabel(path: VfsPath): String {
+        if (path == defaultShareReceivedPath()) return "Received"
+        if (path == defaultDownloadsPath()) return "Downloads"
+        return when (path) {
+            is VfsPath.Ftp -> {
+                val serverName = deps.ftpServersRepository.findById(path.serverId)?.name ?: "FTP"
+                if (path.normalizedRemotePath == "/") serverName else "$serverName / ${path.displayName}"
+            }
+
+            is VfsPath.GDrive -> {
+                val serverName = deps.gdriveServersRepository.findById(path.serverId)?.name ?: "Google Drive"
+                if (path.normalizedRemotePath == "/") serverName else "$serverName / ${path.displayName}"
+            }
+
+            is VfsPath.Local, is VfsPath.Saf -> path.displayName
+        }
+    }
+
+    fun buildShareQuickDestinations(): List<ShareQuickDestination> {
+        val result = ArrayList<ShareQuickDestination>()
+        val seen = HashSet<VfsPath>()
+        fun addUnique(id: String, label: String, path: VfsPath, kind: ShareDestinationKind) {
+            if (seen.add(path)) {
+                result.add(ShareQuickDestination(id = id, label = label, path = path, kind = kind))
+            }
+        }
+
+        val received = defaultShareReceivedPath()
+        addUnique("received", "Received", received, ShareDestinationKind.RECEIVED)
+
+        val downloads = defaultDownloadsPath()
+        addUnique("downloads", "Downloads", downloads, ShareDestinationKind.DOWNLOADS)
+
+        val curDir = _browser.value.currentDir
+        val curWritable = _browser.value.currentDirNode?.canWrite != false
+        if (curDir != null && curWritable) {
+            val curLabel = "Current (${friendlyShareDestinationLabel(curDir)})"
+            addUnique("current", curLabel, curDir, ShareDestinationKind.CURRENT)
+        }
+
+        for (gd in gdriveServers.value) {
+            addUnique("gdrive:${gd.id}", gd.name, gd.rootPath, ShareDestinationKind.GDRIVE)
+        }
+
+        for (ftp in ftpServers.value) {
+            addUnique("ftp:${ftp.id}", ftp.name, ftp.rootPath, ShareDestinationKind.FTP)
+        }
+
+        for (vol in volumes.value) {
+            val root = vol.root ?: continue
+            if (vol.kind == VolumeKind.PRIMARY) continue
+            addUnique("vol:${vol.id}", vol.name, root, ShareDestinationKind.VOLUME)
+        }
+
+        for (fav in favorites.value) {
+            if (!fav.isDirectory) continue
+            addUnique("fav:${fav.id}", fav.name, fav.path, ShareDestinationKind.FAVORITE)
+        }
+
+        return result
+    }
+
+    fun handleIncomingShare(context: Context, raw: RawShareIntent) {
+        val appContext = context.applicationContext ?: context
+        if (_saveSharedState.value?.isSaving == true) {
+            pendingIncomingShares.addLast(PendingIncomingShare.Raw(appContext, raw))
+            emitSimpleMessage("Queued incoming share until current save finishes")
+            return
+        }
+        shareResolveJob?.cancel()
+        shareResolveJob = vmScope.launch {
+            val payload = ShareIntentExtractor.resolvePayload(appContext, raw) ?: return@launch
+            presentOrQueueIncomingPayload(payload)
+        }
+    }
+
+    internal fun presentOrQueueIncomingPayload(payload: IncomingSharePayload) {
+        if (payload is IncomingSharePayload.Files && payload.items.isEmpty()) {
+            if (payload.skippedBlockedCount > 0) {
+                emitSimpleMessage("Blocked unsafe private app file URI")
+            }
+            return
+        }
+        if (_saveSharedState.value?.isSaving == true) {
+            pendingIncomingShares.addLast(PendingIncomingShare.Resolved(payload))
+            emitSimpleMessage("Queued incoming share until current save finishes")
+            return
+        }
+        val defaultDest = defaultShareReceivedPath()
+        val editableName = when (payload) {
+            is IncomingSharePayload.Text -> payload.suggestedFileName
+            is IncomingSharePayload.Files -> if (payload.items.size == 1) payload.items.first().displayName else ""
+        }
+        _saveSharedState.value = SaveSharedUiState(
+            payload = payload,
+            editableFileName = editableName,
+            selectedDestination = defaultDest,
+            selectedDestinationLabel = friendlyShareDestinationLabel(defaultDest),
+            conflictPolicy = PeerConflictPolicy.RENAME,
+        )
+    }
+
+    private fun drainNextPendingShare() {
+        if (_saveSharedState.value != null) return
+        val next = pendingIncomingShares.removeFirstOrNull() ?: return
+        when (next) {
+            is PendingIncomingShare.Raw -> handleIncomingShare(next.appContext, next.raw)
+            is PendingIncomingShare.Resolved -> presentOrQueueIncomingPayload(next.payload)
+        }
+    }
+
+    fun selectShareDestination(path: VfsPath, label: String? = null) {
+        val cur = _saveSharedState.value ?: return
+        if (cur.isSaving) return
+        _saveSharedState.value = cur.copy(
+            selectedDestination = path,
+            selectedDestinationLabel = label ?: friendlyShareDestinationLabel(path),
+            errorMessage = null,
+            reauthGDriveServerId = null,
+        )
+    }
+
+    fun updateShareFileName(name: String) {
+        val cur = _saveSharedState.value ?: return
+        if (cur.isSaving) return
+        _saveSharedState.value = cur.copy(
+            editableFileName = name,
+            errorMessage = null,
+        )
+    }
+
+    fun updateShareConflictPolicy(policy: PeerConflictPolicy) {
+        val cur = _saveSharedState.value ?: return
+        if (cur.isSaving) return
+        _saveSharedState.value = cur.copy(conflictPolicy = policy)
+    }
+
+    fun clearShareSaveError() {
+        val cur = _saveSharedState.value ?: return
+        _saveSharedState.value = cur.copy(errorMessage = null, reauthGDriveServerId = null)
+    }
+
+    fun startSaveSharedFiles(context: Context) {
+        val cur = _saveSharedState.value ?: return
+        if (cur.isSaving) return
+
+        val appContext = context.applicationContext ?: context
+        val dest = cur.selectedDestination
+        val destLabel = cur.selectedDestinationLabel
+        val fatSafe = dest is VfsPath.Saf
+        val isSingleEditable = cur.payload is IncomingSharePayload.Text ||
+            (cur.payload is IncomingSharePayload.Files && cur.payload.items.size == 1)
+
+        if (isSingleEditable) {
+            val trimmed = cur.editableFileName.trim()
+            val v = PathUtils.validateName(trimmed, fatSafe = fatSafe)
+            if (v is NameValidation.Invalid) {
+                _saveSharedState.value = cur.copy(errorMessage = v.reason)
+                return
+            }
+        }
+
+        val sources = ShareIntentExtractor.buildImportSources(
+            context = appContext,
+            payload = cur.payload,
+            editedSingleName = if (isSingleEditable) cur.editableFileName.trim() else null,
+            fatSafe = fatSafe,
+        )
+        startSaveSharedSources(sources)
+    }
+
+    internal fun startSaveSharedSources(sources: List<com.minifile.explorer.core.share.ShareImportSource>) {
+        val cur = _saveSharedState.value ?: return
+        if (cur.isSaving) return
+        val dest = cur.selectedDestination
+        if (sources.isEmpty()) {
+            _saveSharedState.value = null
+            drainNextPendingShare()
+            return
+        }
+
+        val knownTotal = if (sources.all { it.sizeBytes >= 0L }) sources.sumOf { it.sizeBytes } else -1L
+        val cancelFlag = java.util.concurrent.atomic.AtomicBoolean(false)
+        shareSaveCancelled = cancelFlag
+        _saveSharedState.value = cur.copy(
+            isSaving = true,
+            errorMessage = null,
+            reauthGDriveServerId = null,
+            progress = ShareImportProgress(
+                processedItems = 0,
+                totalItems = sources.size,
+                currentItemName = sources.first().desiredName,
+                processedBytes = 0L,
+                totalBytes = knownTotal,
+            ),
+        )
+
+        shareSaveJob = vmScope.launch {
+            val res = withContext(ioDispatcher) {
+                deps.shareImportEngine.importItems(
+                    sources = sources,
+                    destinationDir = dest,
+                    conflictPolicy = cur.conflictPolicy,
+                    isCancelled = { cancelFlag.get() },
+                    onProgress = { progress ->
+                        val latest = _saveSharedState.value
+                        if (latest != null && latest.isSaving) {
+                            _saveSharedState.value = latest.copy(progress = progress)
+                        }
+                    },
+                )
+            }
+
+            val finalDest = res.destinationDir
+            val finalLabel = friendlyShareDestinationLabel(finalDest)
+            if (_browser.value.currentDir == finalDest || _browser.value.currentDir == dest) {
+                reloadCurrentDirectory(silent = true)
+            }
+            deps.refreshVolumesAction()
+
+            when {
+                res.cancelled -> {
+                    _saveSharedState.value = null
+                    val msg = if (res.saved.isNotEmpty()) {
+                        "Save cancelled (${res.saved.size} saved to $finalLabel)"
+                    } else {
+                        "Save cancelled"
+                    }
+                    emitShareSnackbar(
+                        message = msg,
+                        destinationToOpen = if (res.saved.isNotEmpty()) finalDest else null,
+                    )
+                    drainNextPendingShare()
+                }
+
+                res.saved.isEmpty() && res.failed.isNotEmpty() -> {
+                    val err = res.failed.first().second
+                    val latest = _saveSharedState.value
+                    if (latest != null) {
+                        _saveSharedState.value = latest.copy(
+                            isSaving = false,
+                            progress = null,
+                            errorMessage = err,
+                            reauthGDriveServerId = res.reauthGDriveServerId,
+                        )
+                    } else {
+                        emitShareSnackbar(
+                            message = "Save failed: $err",
+                            destinationToOpen = null,
+                            reauthGDriveServerId = res.reauthGDriveServerId,
+                        )
+                        drainNextPendingShare()
+                    }
+                }
+
+                else -> {
+                    _saveSharedState.value = null
+                    val msg = when {
+                        res.saved.size == 1 && res.skipped.isEmpty() && res.failed.isEmpty() ->
+                            "Saved ${res.saved.first().name} to $finalLabel"
+
+                        res.saved.isNotEmpty() -> buildString {
+                            append("Saved ${res.saved.size} file${if (res.saved.size == 1) "" else "s"} to $finalLabel")
+                            if (res.skipped.isNotEmpty()) append(" (${res.skipped.size} skipped)")
+                            if (res.failed.isNotEmpty()) append(" · ${res.failed.size} failed")
+                        }
+
+                        else -> "Skipped ${res.skipped.size} existing file${if (res.skipped.size == 1) "" else "s"} in $finalLabel"
+                    }
+                    emitShareSnackbar(
+                        message = msg,
+                        destinationToOpen = finalDest,
+                    )
+                    drainNextPendingShare()
+                }
+            }
+        }
+    }
+
+    fun cancelOrDismissShareSave() {
+        val cur = _saveSharedState.value ?: return
+        if (cur.isSaving) {
+            shareSaveCancelled.set(true)
+        } else {
+            shareResolveJob?.cancel()
+            _saveSharedState.value = null
+            drainNextPendingShare()
+        }
+    }
+
+    private fun emitShareSnackbar(
+        message: String,
+        destinationToOpen: VfsPath?,
+        reauthGDriveServerId: String? = null,
+    ) {
+        _snackbarMessages.tryEmit(
+            OperationCompletionEvent(
+                id = "share-save-${System.currentTimeMillis()}",
+                kind = OperationKind.RECEIVE,
+                title = "Save to Files",
+                snackbarMessage = message,
+                destinationToOpen = destinationToOpen,
+                openLabel = "Open",
+                reauthGDriveServerId = reauthGDriveServerId,
+            ),
+        )
     }
 
     fun emitSimpleMessage(text: String, destinationToOpen: VfsPath? = null) {

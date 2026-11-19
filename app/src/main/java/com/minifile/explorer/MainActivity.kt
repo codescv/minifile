@@ -77,8 +77,10 @@ import androidx.compose.ui.unit.dp
 import com.minifile.explorer.core.model.GDriveServerBookmark
 import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.vfs.PathUtils
+import com.minifile.explorer.data.AndroidVolumeProvider
 import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
 import com.minifile.explorer.data.gdrive.GDriveSignInState
+import com.minifile.explorer.data.share.ShareIntentExtractor
 import com.minifile.explorer.data.update.InstallLaunchResult
 import com.minifile.explorer.data.update.UpdateUiState
 import com.minifile.explorer.service.FtpServerHolder
@@ -93,6 +95,7 @@ import com.minifile.explorer.ui.components.ActiveOperationsSheet
 import com.minifile.explorer.ui.components.ConflictDialog
 import com.minifile.explorer.ui.components.HotspotLinkDialog
 import com.minifile.explorer.ui.components.PeerConsentDialog
+import com.minifile.explorer.ui.components.SaveSharedFilesSheet
 import com.minifile.explorer.ui.screens.ArchivePreviewScreen
 import com.minifile.explorer.ui.screens.BrowserScreen
 import com.minifile.explorer.ui.screens.EditGDriveServerDialog
@@ -136,10 +139,13 @@ class MainActivity : ComponentActivity() {
         MainViewModel.factory((application as MiniFileApplication).container)
     }
 
+    private var hasAllFilesAccess by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        handleLaunchIntent(intent)
+        hasAllFilesAccess = AndroidVolumeProvider.hasAllFilesAccess(this)
+        handleLaunchIntent(intent, isFreshLaunch = savedInstanceState == null)
 
         setContent {
             val settings by viewModel.settings.collectAsState()
@@ -162,7 +168,13 @@ class MainActivity : ComponentActivity() {
                 themeMode = settings.themeMode,
                 dynamicColor = settings.dynamicColor,
             ) {
-                MiniFileRoot(viewModel = viewModel)
+                MiniFileRoot(
+                    viewModel = viewModel,
+                    hasAllFilesAccess = hasAllFilesAccess,
+                    onRefreshStoragePermission = {
+                        hasAllFilesAccess = AndroidVolumeProvider.hasAllFilesAccess(this@MainActivity)
+                    },
+                )
             }
         }
     }
@@ -170,7 +182,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleLaunchIntent(intent)
+        handleLaunchIntent(intent, isFreshLaunch = true)
     }
 
     override fun onStart() {
@@ -189,6 +201,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        hasAllFilesAccess = AndroidVolumeProvider.hasAllFilesAccess(this)
         val container = (application as MiniFileApplication).container
         // Returning from App info / Bluetooth settings: pick up newly granted permissions immediately.
         container.blePeerCoordinator.restartRadios()
@@ -205,9 +218,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun handleLaunchIntent(intent: Intent?) {
+    private fun handleLaunchIntent(intent: Intent?, isFreshLaunch: Boolean) {
         if (intent == null) return
         val container = (application as MiniFileApplication).container
+
+        val launchedFromHistory = (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+        if (ShareIntentExtractor.isShareAction(intent)) {
+            if (!isFreshLaunch || launchedFromHistory) {
+                ShareIntentExtractor.extractAndConsume(this, intent)
+                setIntent(intent)
+                return
+            }
+            val rawShare = ShareIntentExtractor.extractAndConsume(this, intent)
+            setIntent(intent)
+            if (rawShare != null) {
+                viewModel.handleIncomingShare(applicationContext, rawShare)
+            }
+            return
+        }
 
         if (BuildConfig.DEBUG) {
             val port = readOptionalIntExtra(intent, "ftp_port")
@@ -266,6 +294,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MiniFileRoot(
     viewModel: MainViewModel,
+    hasAllFilesAccess: Boolean,
+    onRefreshStoragePermission: () -> Unit,
 ) {
     val context = LocalContext.current
     val container = viewModel.container
@@ -274,6 +304,11 @@ private fun MiniFileRoot(
     val overlay by viewModel.overlay.collectAsState()
     val browser by viewModel.browser.collectAsState()
     val settings by viewModel.settings.collectAsState()
+    val volumes by viewModel.volumes.collectAsState()
+    val ftpServers by viewModel.ftpServers.collectAsState()
+    val gdriveServers by viewModel.gdriveServers.collectAsState()
+    val favorites by viewModel.favorites.collectAsState()
+    val saveSharedState by viewModel.saveSharedState.collectAsState()
     val conflictPrompt by viewModel.conflictPrompt.collectAsState()
     val pendingIncomingBle by viewModel.pendingIncomingBle.collectAsState()
     val bleLinkUi by viewModel.bleLinkUi.collectAsState()
@@ -438,6 +473,7 @@ private fun MiniFileRoot(
         if (reauthGDriveBookmark != null && success != null) {
             viewModel.dismissReauthGDriveDialog()
             viewModel.resetGDriveSignIn()
+            viewModel.clearShareSaveError()
             viewModel.emitSimpleMessage("Signed in to Google Drive '${success.bookmark.name}'")
             if (browser.currentDir != null) {
                 viewModel.reloadCurrentDirectory(silent = false)
@@ -537,6 +573,7 @@ private fun MiniFileRoot(
     val allFilesSettingsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult(),
     ) {
+        onRefreshStoragePermission()
         viewModel.refreshVolumes()
         viewModel.reloadCurrentDirectory(silent = false)
     }
@@ -544,6 +581,7 @@ private fun MiniFileRoot(
     val legacyPermissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
     ) {
+        onRefreshStoragePermission()
         viewModel.refreshVolumes()
         viewModel.reloadCurrentDirectory(silent = false)
     }
@@ -780,6 +818,50 @@ private fun MiniFileRoot(
             prompt = conflictPrompt!!,
             onResolve = { resolution, applyAll ->
                 viewModel.answerConflict(resolution, applyAll)
+            },
+        )
+    }
+
+    saveSharedState?.let { shareUi ->
+        val quickDestinations = remember(
+            browser.currentDir,
+            browser.currentDirNode,
+            volumes,
+            ftpServers,
+            gdriveServers,
+            favorites,
+            settings.ftpRoot,
+            settings.httpRoot,
+        ) {
+            viewModel.buildShareQuickDestinations()
+        }
+        SaveSharedFilesSheet(
+            state = shareUi,
+            quickDestinations = quickDestinations,
+            volumes = volumes,
+            ftpServers = ftpServers,
+            gdriveServers = gdriveServers,
+            favorites = favorites,
+            fs = container.fileSystem,
+            hasAllFilesAccess = hasAllFilesAccess,
+            onSelectDestination = { dest, label ->
+                viewModel.selectShareDestination(dest, label)
+            },
+            onEditFileName = { name ->
+                viewModel.updateShareFileName(name)
+            },
+            onConflictPolicyChange = { policy ->
+                viewModel.updateShareConflictPolicy(policy)
+            },
+            onGrantAllFilesAccess = requestAllFilesAccess,
+            onReauthGDrive = { serverId ->
+                viewModel.openReauthGDriveDialog(serverId)
+            },
+            onSave = {
+                viewModel.startSaveSharedFiles(context)
+            },
+            onCancelOrDismiss = {
+                viewModel.cancelOrDismissShareSave()
             },
         )
     }

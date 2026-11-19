@@ -12,6 +12,7 @@ import com.minifile.explorer.core.ops.ChecksumCalculator
 import com.minifile.explorer.core.ops.FileOperations
 import com.minifile.explorer.core.ops.NomediaManager
 import com.minifile.explorer.core.ops.ZipArchiver
+import com.minifile.explorer.core.share.ShareImportEngine
 import com.minifile.explorer.core.vfs.FileSystemRepository
 import com.minifile.explorer.core.vfs.LocalFileSystem
 import com.minifile.explorer.data.AndroidMediaScanNotifier
@@ -113,6 +114,7 @@ class AppContainer(context: Context) {
     val mediaScanNotifier = AndroidMediaScanNotifier(appContext)
     val nomediaManager = NomediaManager(fileSystem, mediaScanNotifier)
     val fileOperations = FileOperations(fileSystem, Clock.SYSTEM)
+    val shareImportEngine = ShareImportEngine(fileSystem, mediaScanNotifier)
     val zipArchiver = ZipArchiver(fileSystem)
     val checksumCalculator = ChecksumCalculator(fileSystem)
     val lanAddressResolver = LanAddressResolver(appContext)
