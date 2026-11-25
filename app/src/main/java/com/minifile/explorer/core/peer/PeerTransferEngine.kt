@@ -52,6 +52,8 @@ class PeerTransferEngine(
         sink: ProgressSink = ProgressSink.NOOP,
         conflict: PeerConflictPolicy = PeerConflictPolicy.RENAME,
         senderDeviceName: String = senderDeviceNameProvider(),
+        /** Invoked once `begin` returned a session (bytes may follow); used by re-announce retry logic. */
+        onSessionStarted: (sessionId: String) -> Unit = {},
     ): PeerSendResult = withContext(ioDispatcher) {
         val peerName = peerDisplayName(peer)
         if (peer.proto > PeerDiscoveryEngine.SUPPORTED_PROTO) {
@@ -102,8 +104,9 @@ class PeerTransferEngine(
             if (tok.isNotEmpty()) append("&tok=").append(encodeQueryValue(tok))
         }
         val beginResp = try {
-            // D2: iOS `begin` blocks up to 60 s on its consent sheet — wait well past it.
-            client.postEmpty(beginUrl, timeoutMs = BEGIN_TIMEOUT_MS)
+            // D2: iOS `begin` blocks up to 60 s on its consent sheet — wait well past it. A BLE-negotiated session
+            // (`linkToken`) is normally pre-approved, so a silent receiver is detected sooner.
+            client.postEmpty(beginUrl, timeoutMs = beginTimeoutMs(peer))
         } catch (e: Exception) {
             if (sink.isCancelled()) {
                 client.cancelActive()
@@ -118,6 +121,7 @@ class PeerTransferEngine(
         val beginObj = parseJsonObj(beginResp.bodyText)
         val sessionId = beginObj?.str("session")?.takeIf { it.isNotBlank() }
             ?: throw PeerTransferException(beginResp.status, "Invalid session response from $peerName")
+        onSessionStarted(sessionId)
 
         var sentFiles = 0
         var sentDirs = 0
@@ -377,6 +381,15 @@ class PeerTransferEngine(
         const val BEGIN_TIMEOUT_MS = 150_000
 
         /**
+         * `begin` read timeout for a BLE-negotiated session (`linkToken`): the receiver pre-approved it, but still
+         * covers iOS's 60 s consent prompt if its session token already expired.
+         */
+        const val LINKED_BEGIN_TIMEOUT_MS = 75_000
+
+        internal fun beginTimeoutMs(peer: PeerInfo): Int =
+            if (peer.linkToken?.trim().isNullOrEmpty()) BEGIN_TIMEOUT_MS else LINKED_BEGIN_TIMEOUT_MS
+
+        /**
          * Walks VFS [roots] into flat [PeerSendItem]s with `relPath` rooted at each top-level node's name,
          * preserving empty directories (`isDirectory = true`) and skipping symlinks.
          */
@@ -518,7 +531,9 @@ class PeerTransferEngine(
             if (cause is FtpAccessDeniedException) {
                 return PeerTransferException(null, "Only local network (LAN) addresses are allowed", cause, beforeSession)
             }
-            val msg = if (midTransfer) {
+            val msg = if (hasCause<WriteStallException>(cause)) {
+                "$name stopped receiving — keep Files open on $name"
+            } else if (midTransfer) {
                 "Connection to $name lost"
             } else {
                 "$name not reachable"
@@ -530,6 +545,17 @@ class PeerTransferEngine(
                 beforeSession = beforeSession,
                 kind = if (!midTransfer && isConnectFailure(cause)) PeerFailureKind.UNREACHABLE else PeerFailureKind.OTHER,
             )
+        }
+
+        private inline fun <reified T : Throwable> hasCause(cause: Throwable?): Boolean {
+            var c = cause
+            var depth = 0
+            while (c != null && depth < 8) {
+                if (c is T) return true
+                c = c.cause
+                depth++
+            }
+            return false
         }
 
         /**

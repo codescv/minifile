@@ -98,6 +98,49 @@ class HotspotSessionGateTest {
     }
 
     @Test
+    fun announceToken_boundToId_allowsIdempotentReannounceFromSamePeerOnly() {
+        gate.armAnnounceToken(tok)
+        assertTrue(gate.consumeAnnounceToken(tok, "ios-1"))
+        assertFalse(gate.isAnnounceArmed)
+        // Re-announce (iPhone restarted its listener on a new port): same token + same id is accepted again.
+        assertEquals(HotspotSessionGate.AnnounceMode.TOKEN, gate.announceMode)
+        assertTrue(gate.consumeAnnounceToken(tok, "ios-1"))
+        assertTrue(gate.consumeAnnounceToken(tok, "ios-1"))
+        // Another device, a missing id, or a wrong token never ride on the consumed token.
+        assertFalse(gate.consumeAnnounceToken(tok, "ios-2"))
+        assertFalse(gate.consumeAnnounceToken(tok, null))
+        assertFalse(gate.consumeAnnounceToken(tok, ""))
+        assertFalse(gate.consumeAnnounceToken("ffffffffffffffffffffffffffffffff", "ios-1"))
+        assertFalse(gate.consumeAnnounceToken(null, "ios-1"))
+        // Open announces stay closed while the re-announce grant is alive.
+        gate.setOpenAnnounce(true)
+        assertEquals(HotspotSessionGate.OpenAnnounce.CLOSED, gate.admitOpenAnnounce(ap, iphone, "ios-3"))
+    }
+
+    @Test
+    fun reannounceGrant_expiresWithOriginalTtl_andClearsOnRearmOrReset() {
+        gate.armAnnounceToken(tok)
+        nowMs += 100_000L
+        assertTrue(gate.consumeAnnounceToken(tok, "ios-1"))
+        nowMs += HotspotSessionGate.TOKEN_TTL_MS - 100_000L - 1
+        assertTrue(gate.consumeAnnounceToken(tok, "ios-1"))
+        nowMs += 1
+        assertFalse(gate.consumeAnnounceToken(tok, "ios-1"))
+        assertEquals(HotspotSessionGate.AnnounceMode.CLOSED, gate.announceMode)
+
+        gate.armAnnounceToken(tok)
+        assertTrue(gate.consumeAnnounceToken(tok, "ios-1"))
+        gate.clearAnnounceToken()
+        assertFalse(gate.consumeAnnounceToken(tok, "ios-1"))
+
+        gate.armAnnounceToken(tok)
+        assertTrue(gate.consumeAnnounceToken(tok, "ios-1"))
+        gate.reset()
+        assertFalse(gate.consumeAnnounceToken(tok, "ios-1"))
+        assertEquals(HotspotSessionGate.AnnounceMode.CLOSED, gate.announceMode)
+    }
+
+    @Test
     fun resetAndDisable_clearOpenAnnounceAndBudget() {
         gate.setOpenAnnounce(true)
         repeat(HotspotSessionGate.OPEN_ANNOUNCE_MAX_PER_WINDOW) { gate.admitOpenAnnounce(ap, iphone, "x") }

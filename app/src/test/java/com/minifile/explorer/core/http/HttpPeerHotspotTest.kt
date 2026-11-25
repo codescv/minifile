@@ -112,7 +112,7 @@ class HttpPeerHotspotTest {
     }
 
     @Test
-    fun announce_success_emitsEvent_andIsSingleUse() = runBlocking {
+    fun announce_success_emitsEvent_andTokenIsBoundToTheAnnouncingPeer() = runBlocking {
         val srv = start()
         gate.armAnnounceToken(tok)
         val ev = async(start = CoroutineStart.UNDISPATCHED) {
@@ -130,10 +130,32 @@ class HttpPeerHotspotTest {
         assertEquals("ios-device-1", announce.id)
         assertEquals("iPhone 15", announce.name)
         assertEquals("ios", announce.os)
-
-        val again = client.postEmpty(announceUrl(srv, tok))
-        assertEquals(403, again.status)
         assertFalse(gate.isAnnounceArmed)
+
+        // A different device can never reuse the consumed token.
+        val other = client.postEmpty("${base(srv)}/api/peer/announce?tok=$tok&port=8123&id=ios-device-2&name=x&os=ios")
+        assertEquals(403, other.status)
+        assertEquals("token", json(other).str("code"))
+    }
+
+    /** iPhone suspended in the Camera app restarts its HTTP listener (new port) and re-announces with the same token. */
+    @Test
+    fun announce_samePeerReannounce_withNewPort_isAccepted_andEmitsUpdatedEndpoint() = runBlocking {
+        val srv = start()
+        gate.armAnnounceToken(tok)
+        assertEquals(200, client.postEmpty(announceUrl(srv, tok)).status)
+        val ev = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeout(5_000) { srv.events.first { it is HttpEvent.PeerAnnounce } as HttpEvent.PeerAnnounce }
+        }
+        val again = client.postEmpty("${base(srv)}/api/peer/announce?tok=$tok&port=8124&id=ios-device-1&name=iPhone%2015&os=ios")
+        assertEquals(200, again.status)
+        val re = ev.await()
+        assertEquals(8124, re.port)
+        assertEquals("ios-device-1", re.id)
+        assertFalse(re.open)
+
+        nowMs += HotspotSessionGate.TOKEN_TTL_MS + 1
+        assertEquals(403, client.postEmpty(announceUrl(srv, tok)).status)
     }
 
     @Test

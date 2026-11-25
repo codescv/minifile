@@ -66,6 +66,8 @@ import com.minifile.explorer.data.SettingsRepository
 import com.minifile.explorer.ui.util.NearbyPermissions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -83,6 +85,9 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
@@ -142,6 +147,11 @@ class LinkResult(
     val mode: LinkMode,
     val teardown: suspend (ok: Boolean) -> Unit,
     val directSend: (suspend (items: List<PeerSendItem>, sink: ProgressSink) -> PeerSendResult)? = null,
+    /**
+     * `lohs-s`: later token-authenticated re-announces from the same receiver (e.g. an iPhone that restarted its HTTP
+     * listener after being suspended) as routable [PeerInfo]s, so the sender can retry `begin` on the new endpoint.
+     */
+    val reannounces: Flow<PeerInfo>? = null,
 )
 
 /**
@@ -263,6 +273,17 @@ class BlePeerCoordinator(
     /** Open sender-side L2CAP channel, closed by [cancelLink] so a blocked write unblocks at once. */
     @Volatile
     private var activeSenderSocket: BluetoothSocket? = null
+
+    /**
+     * Aborts the HTTP send that runs over a negotiated hotspot / LAN link after [negotiate] returned (registered by the
+     * caller). Without it the link dialog's Cancel could not stop a stalled `lohs-s` send.
+     */
+    private val activeSendAbort = java.util.concurrent.atomic.AtomicReference<(() -> Unit)?>(null)
+
+    /** Registers (or clears with `null`) the abort hook of the send running over the current link. */
+    fun setActiveSendAbort(abort: (() -> Unit)?) {
+        activeSendAbort.set(abort)
+    }
 
     init {
         refreshAvailability()
@@ -1121,6 +1142,8 @@ class BlePeerCoordinator(
     fun cancelLink() {
         negotiationJob?.cancel(CancellationException("Cancelled"))
         activeSenderSocket?.let { sock -> runCatching { sock.close() } }
+        // HTTP phase of a hotspot / LAN link: `negotiationJob` already completed, so abort the send itself.
+        activeSendAbort.getAndSet(null)?.let { abort -> runCatching { abort() } }
         val sess = incomingSession
         if (sess != null) {
             scope.launch {
@@ -1348,7 +1371,13 @@ class BlePeerCoordinator(
     }
 
     /** Mirrors sender byte progress into the link dialog ("Sending via Bluetooth… (X / Y)"). */
-    private fun senderProgressSink(base: ProgressSink): ProgressSink = object : ProgressSink {
+    private fun senderProgressSink(base: ProgressSink): ProgressSink = linkProgressSink(base, "Sending via Bluetooth…")
+
+    /**
+     * Mirrors sender byte progress into the link dialog as "[label] (X / Y)" with a progress bar — used for direct
+     * Bluetooth and for HTTP sends over a negotiated hotspot / LAN link, so a live transfer never looks stuck.
+     */
+    fun linkProgressSink(base: ProgressSink, label: String = "Sending over Wi-Fi…"): ProgressSink = object : ProgressSink {
         private var lastBytes = -L2CAP_UI_STEP_BYTES
 
         override fun onProgress(p: com.minifile.explorer.core.model.OperationProgress) {
@@ -1362,12 +1391,20 @@ class BlePeerCoordinator(
             if (cur.role != BleLinkRole.SENDER || cur.finished) return
             val fraction = if (p.totalBytes > 0) (p.processedBytes.toFloat() / p.totalBytes).coerceIn(0f, 1f) else null
             _linkUi.value = cur.copy(
-                phase = "Sending via Bluetooth… (${byteProgress(p.processedBytes, p.totalBytes)})",
+                phase = "$label (${byteProgress(p.processedBytes, p.totalBytes)})",
                 progress = fraction,
+                showQr = false,
             )
         }
 
         override fun isCancelled(): Boolean = base.isCancelled()
+    }
+
+    /** Updates the sender link dialog's status line (no-op once finished / for the receiver role). */
+    fun updateSenderPhase(text: String) {
+        val cur = _linkUi.value ?: return
+        if (cur.role != BleLinkRole.SENDER || cur.finished || cur.error != null) return
+        _linkUi.value = cur.copy(phase = text, showQr = false)
     }
 
     private fun byteProgress(done: Long, total: Long): String =
@@ -1533,35 +1570,44 @@ class BlePeerCoordinator(
 
             suspend fun runLohsS(): LinkResult {
                 phase("Starting hotspot…")
-                val info = try {
+                var info = try {
                     hotspotManager.start(HotspotPurpose.BLE_SENDER, tok)
                 } catch (e: Exception) {
                     c.writeMessage(HotspotLinkMessage.Error(HotspotLinkMessage.ERR_LOHS_FAILED))
                     throw PeerTransferException(null, e.message ?: "Could not start a hotspot")
                 }
                 hostedHotspot = true
-                c.writeMessage(HotspotLinkMessage.Link(LinkMode.LOHS_S))
-                c.writeMessage(
-                    HotspotLinkMessage.Hotspot(
-                        ssid = info.ssid,
-                        pass = info.pass,
-                        sec = if (info.sec == "open") "wpa2" else info.sec,
-                        ip = info.hostIp,
-                        port = info.httpPort,
-                        tok = tok,
-                    ),
-                )
-                phase("On the iPhone: tap Accept, then scan this QR with the Camera and return to Files", info, showQr = true)
-                val target2 = awaitAnnounceOrReady(c, info)
-                    ?: throw PeerTransferException(null, "$ackName did not join the hotspot in time")
-                phase("Sending to $ackName…", info, showQr = false)
-                success = true
-                val cc = c
-                return LinkResult(
-                    peer = target2.copy(linkToken = tok, platform = HotspotLinkCodec.OS_IOS, name = target2.name.ifEmpty { ackName }),
-                    mode = LinkMode.LOHS_S,
-                    teardown = { ok -> senderTeardown(cc, ok, joined = false, hosted = true) },
-                )
+                // Subscribe BEFORE any credential leaves this phone: on a reused hotspot the iPhone may still be joined
+                // and announce within milliseconds; `peerEvents` has no replay, so a late subscriber would miss it.
+                val announced = startAnnounceWaiter(this@coroutineScope)
+                try {
+                    // The iPhone needs the gateway IP to announce (older iOS builds drop a `hotspot` without `ip`).
+                    if (info.hostIp.isEmpty()) info = awaitHotspotHostIp(HOST_IP_WAIT_MS) ?: info
+                    val credsSent = c.writeMessage(HotspotLinkMessage.Link(LinkMode.LOHS_S)) &&
+                        c.writeMessage(hotspotMessage(info, tok))
+                    phase(
+                        if (credsSent) {
+                            "Scan this QR with the iPhone Camera to join, then return to Files on the iPhone"
+                        } else {
+                            "Bluetooth link to $ackName lost — scan this QR with the iPhone Camera, then open Files on the iPhone"
+                        },
+                        info,
+                        showQr = true,
+                    )
+                    val target2 = awaitAnnounceOrReady(c, info, tok, announced)
+                        ?: throw PeerTransferException(null, "$ackName did not join the hotspot in time")
+                    phase("Sending to $ackName…", info, showQr = false)
+                    success = true
+                    val cc = c
+                    return LinkResult(
+                        peer = target2.copy(linkToken = tok, platform = HotspotLinkCodec.OS_IOS, name = target2.name.ifEmpty { ackName }),
+                        mode = LinkMode.LOHS_S,
+                        teardown = { ok -> senderTeardown(cc, ok, joined = false, hosted = true) },
+                        reannounces = reannouncesFrom(target2.id),
+                    )
+                } finally {
+                    announced.cancel()
+                }
             }
 
             when (plan.mode) {
@@ -1680,26 +1726,63 @@ class BlePeerCoordinator(
         }
     }
 
-    /** lohs-s: wait for `/api/peer/announce` (HTTP, survives BLE loss) or EVT `ready` (BLE). */
-    private suspend fun awaitAnnounceOrReady(c: GattClient, info: HotspotInfo): PeerInfo? =
+    /**
+     * Starts collecting the first token-authenticated `/api/peer/announce` right away (undispatched, so the
+     * subscription exists when this returns). The caller MUST cancel it.
+     */
+    private fun startAnnounceWaiter(scope: CoroutineScope): Deferred<HttpEvent.PeerAnnounce> =
+        scope.async(start = CoroutineStart.UNDISPATCHED) {
+            HttpServerHolder.peerEvents.first { it is HttpEvent.PeerAnnounce && !it.open } as HttpEvent.PeerAnnounce
+        }
+
+    /** `lohs-s` re-announces of the receiver that already announced as [peerId] (same token, see `HotspotSessionGate`). */
+    private fun reannouncesFrom(peerId: String): Flow<PeerInfo> =
+        HttpServerHolder.peerEvents
+            .filterIsInstance<HttpEvent.PeerAnnounce>()
+            .filter { !it.open && it.id == peerId }
+            .map { announcedPeer(it) }
+
+    private fun announcedPeer(ev: HttpEvent.PeerAnnounce): PeerInfo = PeerInfo(
+        id = ev.id,
+        name = ev.name,
+        host = ev.clientIp.substringBefore('%'),
+        port = ev.port,
+        version = "",
+        readOnly = false,
+        source = PeerSource.ANNOUNCE,
+        lastSeenMs = System.currentTimeMillis(),
+        platform = ev.os,
+    )
+
+    private fun hotspotMessage(info: HotspotInfo, tok: String) = HotspotLinkMessage.Hotspot(
+        ssid = info.ssid,
+        pass = info.pass,
+        sec = if (info.sec == "open") "wpa2" else info.sec,
+        ip = info.hostIp,
+        port = info.httpPort,
+        tok = tok,
+    )
+
+    /** Waits up to [timeoutMs] for the hotspot gateway IP (slow OEM DHCP start); `null` when it never appeared. */
+    private suspend fun awaitHotspotHostIp(timeoutMs: Long): HotspotInfo? = withTimeoutOrNull(timeoutMs) {
+        (hotspotManager.state.first { (it as? HotspotState.Active)?.info?.hostIp?.isNotEmpty() == true } as HotspotState.Active).info
+    }
+
+    /**
+     * lohs-s: wait for `/api/peer/announce` (HTTP, survives BLE loss) or EVT `ready` (BLE). When the hotspot IP was
+     * still unknown at credential time, the `hotspot` message is re-sent as soon as it is discovered.
+     */
+    private suspend fun awaitAnnounceOrReady(
+        c: GattClient,
+        info: HotspotInfo,
+        tok: String,
+        announced: Deferred<HttpEvent.PeerAnnounce>,
+    ): PeerInfo? =
         withTimeoutOrNull(ANNOUNCE_WAIT_MS) {
             coroutineScope {
-                val announce = CompletableDeferred<PeerInfo?>()
+                val result = CompletableDeferred<PeerInfo?>()
                 val annJob = launch {
-                    val ev = HttpServerHolder.peerEvents.first { it is HttpEvent.PeerAnnounce && !it.open } as HttpEvent.PeerAnnounce
-                    announce.complete(
-                        PeerInfo(
-                            id = ev.id,
-                            name = ev.name,
-                            host = ev.clientIp.substringBefore('%'),
-                            port = ev.port,
-                            version = "",
-                            readOnly = false,
-                            source = PeerSource.ANNOUNCE,
-                            lastSeenMs = System.currentTimeMillis(),
-                            platform = ev.os,
-                        ),
-                    )
+                    result.complete(announcedPeer(announced.await()))
                 }
                 val readyJob = launch {
                     val r = c.awaitMessage(ANNOUNCE_WAIT_MS) { it is HotspotLinkMessage.Ready } as? HotspotLinkMessage.Ready
@@ -1707,11 +1790,22 @@ class BlePeerCoordinator(
                     if (r.port !in 1..65535) return@launch
                     if (info.hostIp.isNotEmpty() && !HostDecision.inSubnet(r.ip, info.hostIp, info.prefixLength)) return@launch
                     val probed = probeWithRetries(listOf(r.ip), r.port, 5)
-                    if (probed != null) announce.complete(probed)
+                    if (probed != null) result.complete(probed)
                 }
-                val res = announce.await()
+                val refineJob = if (info.hostIp.isEmpty()) {
+                    launch {
+                        val refined = awaitHotspotHostIp(ANNOUNCE_WAIT_MS) ?: return@launch
+                        c.writeMessage(hotspotMessage(refined, tok))
+                        val cur = _linkUi.value
+                        if (cur != null && cur.role == BleLinkRole.SENDER && cur.showQr) _linkUi.value = cur.copy(hotspot = refined)
+                    }
+                } else {
+                    null
+                }
+                val res = result.await()
                 annJob.cancel()
                 readyJob.cancel()
+                refineJob?.cancel()
                 res
             }
         }
@@ -1997,6 +2091,9 @@ class BlePeerCoordinator(
         const val NEGOTIATION_TIMEOUT_MS = 240_000L
         const val HOTSPOT_WAIT_MS = 30_000L
         const val ANNOUNCE_WAIT_MS = 180_000L
+
+        /** `lohs-s`: how long to wait for the hotspot gateway IP before sending the BLE `hotspot` credentials. */
+        const val HOST_IP_WAIT_MS = 10_000L
         private const val SEEN_TTL_MS = 10_000L
         private const val RECENT_DEVICE_TTL_MS = 120_000L
         private const val L2CAP_CONNECT_TIMEOUT_MS = 8_000L

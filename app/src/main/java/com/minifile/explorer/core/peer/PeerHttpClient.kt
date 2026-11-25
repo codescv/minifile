@@ -37,6 +37,91 @@ class PreContinueIOException(
 ) : IOException(message, cause)
 
 /**
+ * Thrown when a request body write made no progress for [stallMs] — the receiver stopped reading (e.g. an iPhone app
+ * suspended in the background leaves a zero TCP window). `Socket.soTimeout` only bounds reads, so without this a
+ * blocked `write()` would hang forever.
+ */
+class WriteStallException(
+    val stallMs: Long,
+    cause: Throwable? = null,
+) : IOException("Receiver stopped reading (no progress for ${stallMs / 1000} s)", cause)
+
+/**
+ * Watches blocking writes: a write / flush that stays inside the kernel for longer than [timeoutMs] invokes [onStall]
+ * (which closes the socket, unblocking the writer with an exception). Time spent between writes (e.g. reading the
+ * local source file) never counts. Pure JVM; one shared daemon scheduler.
+ */
+internal class WriteStallGuard(
+    private val timeoutMs: Long,
+    private val onStall: () -> Unit,
+    private val nowNanos: () -> Long = System::nanoTime,
+) : Closeable {
+    @Volatile
+    private var writeStartedNanos: Long = 0L
+
+    @Volatile
+    var stalled: Boolean = false
+        private set
+
+    private val task: java.util.concurrent.ScheduledFuture<*>? = if (timeoutMs > 0) {
+        val period = (timeoutMs / 4).coerceIn(50L, 1_000L)
+        SCHEDULER.scheduleWithFixedDelay({ check() }, period, period, java.util.concurrent.TimeUnit.MILLISECONDS)
+    } else {
+        null
+    }
+
+    fun enter() {
+        writeStartedNanos = nowNanos().let { if (it == 0L) 1L else it }
+    }
+
+    fun exit() {
+        writeStartedNanos = 0L
+    }
+
+    /** Visible for tests: evaluates the stall condition once. */
+    fun check() {
+        val started = writeStartedNanos
+        if (started == 0L || stalled) return
+        if ((nowNanos() - started) / 1_000_000L >= timeoutMs) {
+            stalled = true
+            runCatching { onStall() }
+        }
+    }
+
+    override fun close() {
+        task?.cancel(false)
+        writeStartedNanos = 0L
+    }
+
+    /** Wraps [out] so each `write` / `flush` is timed by this guard. */
+    fun wrap(out: OutputStream): OutputStream = object : OutputStream() {
+        override fun write(b: Int) = guarded { out.write(b) }
+        override fun write(b: ByteArray, off: Int, len: Int) = guarded { out.write(b, off, len) }
+        override fun flush() = guarded { out.flush() }
+        override fun close() = Unit // the pooled connection owns the socket stream
+    }
+
+    private inline fun guarded(block: () -> Unit) {
+        enter()
+        try {
+            block()
+        } catch (e: IOException) {
+            if (stalled) throw WriteStallException(timeoutMs, e)
+            throw e
+        } finally {
+            exit()
+        }
+    }
+
+    companion object {
+        private val SCHEDULER: java.util.concurrent.ScheduledExecutorService =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+                Thread(r, "minifile-write-stall-guard").apply { isDaemon = true }
+            }
+    }
+}
+
+/**
  * Minimal pure-JVM HTTP/1.1 client over raw [Socket]s (`zero android.* imports`).
  *
  * Features:
@@ -54,6 +139,8 @@ class PeerHttpClient(
     private val connectTimeoutMs: Int = DEFAULT_CONNECT_TIMEOUT_MS,
     private val soTimeoutMs: Int = DEFAULT_SO_TIMEOUT_MS,
     private val socketBinder: (Socket, InetAddress) -> Unit = { _, _ -> },
+    /** A body write blocked longer than this (receiver stopped reading) closes the socket; `<= 0` disables. */
+    private val writeStallTimeoutMs: Long = DEFAULT_WRITE_STALL_TIMEOUT_MS,
 ) : Closeable {
 
     private class PooledConn(
@@ -231,11 +318,19 @@ class PeerHttpClient(
                 throw PreContinueIOException(e.message ?: "Connection failed before 100 Continue", e)
             }
 
-            // 100 Continue received (or not requested): stream body bytes now.
+            // 100 Continue received (or not requested): stream body bytes now. A write that blocks past
+            // [writeStallTimeoutMs] (zero TCP window: the receiver app was suspended) closes the socket instead of
+            // hanging forever — `soTimeout` only bounds reads.
+            val guard = WriteStallGuard(writeStallTimeoutMs, onStall = { conn.closeQuietly() })
             try {
-                writeBody(conn.output)
-                conn.output.flush()
+                val guarded = guard.wrap(conn.output)
+                writeBody(guarded)
+                guarded.flush()
             } catch (writeErr: IOException) {
+                if (guard.stalled) {
+                    conn.closeQuietly()
+                    throw writeErr as? WriteStallException ?: WriteStallException(writeStallTimeoutMs, writeErr)
+                }
                 // Check if the server wrote an early HTTP error response before closing the socket.
                 val earlyResponse = tryReadEarlyResponse(conn)
                 conn.closeQuietly()
@@ -243,6 +338,8 @@ class PeerHttpClient(
                     return earlyResponse
                 }
                 throw writeErr
+            } finally {
+                guard.close()
             }
 
             val finalResp = readFinalResponse(conn)
@@ -449,6 +546,7 @@ class PeerHttpClient(
     companion object {
         const val DEFAULT_CONNECT_TIMEOUT_MS = 5_000
         const val DEFAULT_SO_TIMEOUT_MS = 30_000
+        const val DEFAULT_WRITE_STALL_TIMEOUT_MS = 30_000L
         private const val IO_BUFFER_BYTES = 64 * 1024
         private const val MAX_HEADER_LINE_BYTES = 8 * 1024
         private const val MAX_HEADERS_COUNT = 96

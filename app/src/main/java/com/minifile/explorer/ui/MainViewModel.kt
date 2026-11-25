@@ -45,6 +45,7 @@ import com.minifile.explorer.core.peer.PeerSendFallback
 import com.minifile.explorer.core.peer.PeerSendResult
 import com.minifile.explorer.core.peer.PeerTransferEngine
 import com.minifile.explorer.core.peer.PeerTransferException
+import com.minifile.explorer.core.peer.ReannounceRetry
 import com.minifile.explorer.core.share.ShareImportEngine
 import com.minifile.explorer.core.share.ShareImportProgress
 import com.minifile.explorer.core.vfs.FileSystem
@@ -192,6 +193,12 @@ internal class MainViewModelDependencies(
     /** Negotiates a BLE link to a peer (`lanHttpBlocked` = LAN HTTP was just intercepted / unreachable). */
     val negotiateBleLink: suspend (peer: PeerInfo, files: Int, bytes: Long, lanHttpBlocked: Boolean) -> LinkResult =
         { _, _, _, _ -> throw PeerTransferException(null, "Bluetooth is unavailable") },
+    /** Registers (`null` clears) the abort hook the link dialog's Cancel uses while an HTTP send runs over a link. */
+    val setLinkSendAbort: ((() -> Unit)?) -> Unit = {},
+    /** Wraps a sink so HTTP byte progress over a negotiated link is mirrored into the link dialog. */
+    val linkProgressSink: (ProgressSink) -> ProgressSink = { it },
+    /** Updates the sender link dialog's status line. */
+    val linkPhase: (String) -> Unit = {},
     /** `true` when a VPN (`TRANSPORT_VPN`) is active — words interception errors. */
     val isVpnActive: () -> Boolean = { false },
     val primaryStoragePathProvider: () -> String = {
@@ -238,6 +245,9 @@ internal class MainViewModelDependencies(
                 negotiateBleLink = { peer, files, bytes, lanHttpBlocked ->
                     container.blePeerCoordinator.negotiate(peer, files, bytes, lanHttpBlocked)
                 },
+                setLinkSendAbort = { container.blePeerCoordinator.setActiveSendAbort(it) },
+                linkProgressSink = { container.blePeerCoordinator.linkProgressSink(it) },
+                linkPhase = { container.blePeerCoordinator.updateSenderPhase(it) },
                 isVpnActive = { container.peerDiscoveryHolder.isVpnActive() },
                 shareImportEngine = container.shareImportEngine,
             )
@@ -1877,6 +1887,8 @@ class MainViewModel internal constructor(
         client: PeerHttpClient,
         sink: ProgressSink,
         bleFallbackActive: java.util.concurrent.atomic.AtomicBoolean? = null,
+        /** Link dialog Cancel during the HTTP phase (cancels the whole operation). */
+        onLinkCancel: () -> Unit = { client.close() },
     ): PeerSendResult {
         val engine = PeerTransferEngine(
             client = client,
@@ -1901,7 +1913,7 @@ class MainViewModel internal constructor(
                         deps.beginBleSendAction(PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host })
                     },
                     bleSend = { lanHttpBlocked ->
-                        sendOverNegotiatedLink(peer, sendItems, engine, sink, files, bytes, lanHttpBlocked)
+                        sendOverNegotiatedLink(peer, sendItems, engine, client, sink, files, bytes, lanHttpBlocked, onLinkCancel)
                     },
                 )
                 ok = !res.cancelled && !sink.isCancelled() && res.errors.isEmpty()
@@ -1910,28 +1922,57 @@ class MainViewModel internal constructor(
                 releaseJoinedNetworkIfTarget(peer, immediate = !ok)
             }
         }
-        return sendOverNegotiatedLink(peer, sendItems, engine, sink, files, bytes, lanHttpBlocked = false)
+        return sendOverNegotiatedLink(peer, sendItems, engine, client, sink, files, bytes, lanHttpBlocked = false, onLinkCancel)
     }
 
-    /** Negotiates a BLE link (L2CAP / hotspot / LAN) to [peer] and sends over it (spec §3.7). */
+    /**
+     * Negotiates a BLE link (L2CAP / hotspot / LAN) to [peer] and sends over it (spec §3.7). HTTP sends mirror their
+     * progress into the link dialog, can be aborted from its Cancel button, and (for `lohs-s`) retry `begin` on the
+     * endpoint an iPhone re-announces after iOS suspended / restarted its listener.
+     */
     private suspend fun sendOverNegotiatedLink(
         peer: PeerInfo,
         sendItems: List<PeerSendItem>,
         engine: PeerTransferEngine,
+        client: PeerHttpClient,
         sink: ProgressSink,
         files: Int,
         bytes: Long,
         lanHttpBlocked: Boolean,
+        onLinkCancel: () -> Unit,
     ): PeerSendResult {
         val link = deps.negotiateBleLink(peer, files, bytes, lanHttpBlocked)
         var ok = false
+        deps.setLinkSendAbort(onLinkCancel)
         try {
             // L2CAP links stream over the open Bluetooth channel; hotspot / LAN links use HTTP.
-            val res = link.directSend?.invoke(sendItems, sink)
-                ?: engine.send(peer = link.peer, items = sendItems, sink = sink, conflict = settings.value.peerConflictPolicy)
+            val direct = link.directSend
+            val res = if (direct != null) {
+                direct(sendItems, sink)
+            } else {
+                val uiSink = deps.linkProgressSink(sink)
+                val name = PeerPathPolicy.sanitizeDisplayName(link.peer.name, 64).ifEmpty { "the iPhone" }
+                ReannounceRetry.run(
+                    initial = link.peer,
+                    reannounces = link.reannounces,
+                    abortActive = { client.cancelActive() },
+                    isCancelled = { sink.isCancelled() },
+                    onWaiting = { deps.linkPhase("Waiting for $name — open Files on $name") },
+                    onRetry = { deps.linkPhase("Sending to $name…") },
+                ) { target, onSessionStarted ->
+                    engine.send(
+                        peer = target,
+                        items = sendItems,
+                        sink = uiSink,
+                        conflict = settings.value.peerConflictPolicy,
+                        onSessionStarted = { onSessionStarted() },
+                    )
+                }
+            }
             ok = !res.cancelled && !sink.isCancelled() && res.errors.isEmpty()
             return res
         } finally {
+            deps.setLinkSendAbort(null)
             link.teardown(ok)
         }
     }
@@ -2018,7 +2059,7 @@ class MainViewModel internal constructor(
                     releaseJoinedNetworkIfTarget(peer, immediate = true)
                 }
             },
-        ) { _, sink ->
+        ) { opId, sink ->
             var enteredRunPeerSend = false
             var preparingError: String? = null
             try {
@@ -2037,7 +2078,7 @@ class MainViewModel internal constructor(
                             return@use OperationRunOutcome(message = "Nothing to send to $peerName")
                         }
                         enteredRunPeerSend = true
-                        val res = runPeerSend(peer, sendItems, client, sink, bleFallback)
+                        val res = runPeerSend(peer, sendItems, client, sink, bleFallback) { deps.operationRegistry.cancel(opId) }
                         formatPeerSendOutcome(peerName, res, sink.isCancelled())
                     } catch (e: PeerTransferException) {
                         if (sink.isCancelled()) {
@@ -2103,7 +2144,7 @@ class MainViewModel internal constructor(
                     releaseJoinedNetworkIfTarget(peer, immediate = true)
                 }
             },
-        ) { _, sink ->
+        ) { opId, sink ->
             var enteredRunPeerSend = false
             var preparingError: String? = null
             try {
@@ -2118,7 +2159,7 @@ class MainViewModel internal constructor(
                             return@use OperationRunOutcome(message = "Nothing to send to $peerName")
                         }
                         enteredRunPeerSend = true
-                        val res = runPeerSend(peer, sendItems, client, sink, bleFallback)
+                        val res = runPeerSend(peer, sendItems, client, sink, bleFallback) { deps.operationRegistry.cancel(opId) }
                         formatPeerSendOutcome(peerName, res, sink.isCancelled())
                     } catch (e: PeerTransferException) {
                         if (sink.isCancelled()) {

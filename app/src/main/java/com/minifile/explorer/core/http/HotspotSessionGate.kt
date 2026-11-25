@@ -45,6 +45,15 @@ class HotspotSessionGate(
     private var announceToken: String? = null
     private var announceExpiresAt: Long = 0L
 
+    /**
+     * After the announce token was consumed by peer [reannounceId], the same token from the same id stays valid until
+     * [reannounceExpiresAt] so the receiver can re-announce (e.g. an iPhone that restarted its HTTP listener on a new
+     * port after being suspended while the user was in the Camera app). Any other id is still rejected.
+     */
+    private var reannounceToken: String? = null
+    private var reannounceId: String? = null
+    private var reannounceExpiresAt: Long = 0L
+
     val isHosting: Boolean
         get() = hotspotBindIp != null
 
@@ -64,6 +73,7 @@ class HotspotSessionGate(
         get() = synchronized(lock) {
             when {
                 activeAnnounceTokenLocked() != null -> AnnounceMode.TOKEN
+                activeReannounceTokenLocked() != null -> AnnounceMode.TOKEN
                 openAnnounce -> AnnounceMode.OPEN
                 else -> AnnounceMode.CLOSED
             }
@@ -86,6 +96,7 @@ class HotspotSessionGate(
     fun armAnnounceToken(token: String, ttlMs: Long = TOKEN_TTL_MS) = synchronized(lock) {
         announceToken = token
         announceExpiresAt = nowMs() + ttlMs
+        clearReannounceLocked()
     }
 
     fun clearSessionToken() = synchronized(lock) {
@@ -96,6 +107,7 @@ class HotspotSessionGate(
     fun clearAnnounceToken() = synchronized(lock) {
         announceToken = null
         announceExpiresAt = 0L
+        clearReannounceLocked()
     }
 
     /** Clears every token and the hotspot binding (host stop / cancel / BLE `error`). */
@@ -105,6 +117,7 @@ class HotspotSessionGate(
             sessionExpiresAt = 0L
             announceToken = null
             announceExpiresAt = 0L
+            clearReannounceLocked()
             openAnnounce = false
             openAcceptTimes.clear()
             openAnnounceIds.clear()
@@ -123,13 +136,30 @@ class HotspotSessionGate(
         if (tok != null && HotspotLinkCodec.constantTimeEquals(expected, tok)) BeginGate.MATCHED else BeginGate.REJECTED
     }
 
-    /** Single-use announce consumption: `true` exactly once for the armed, non-expired token. */
-    fun consumeAnnounceToken(tok: String?): Boolean = synchronized(lock) {
-        val expected = activeAnnounceTokenLocked() ?: return false
-        if (tok == null || !HotspotLinkCodec.constantTimeEquals(expected, tok)) return false
-        announceToken = null
-        announceExpiresAt = 0L
-        true
+    /**
+     * Announce token check. Without [id] it is strictly single-use (`true` exactly once for the armed, non-expired
+     * token). With [id] the first match binds the token to that peer: later announces with the same token **and the
+     * same id** are accepted again until the original TTL ends (idempotent re-announce, e.g. after the receiver
+     * restarted its HTTP listener on a new port); any other id is rejected.
+     */
+    fun consumeAnnounceToken(tok: String?, id: String? = null): Boolean = synchronized(lock) {
+        if (tok == null) return false
+        val expected = activeAnnounceTokenLocked()
+        if (expected != null) {
+            if (!HotspotLinkCodec.constantTimeEquals(expected, tok)) return false
+            val expiresAt = announceExpiresAt
+            announceToken = null
+            announceExpiresAt = 0L
+            if (!id.isNullOrEmpty()) {
+                reannounceToken = expected
+                reannounceId = id
+                reannounceExpiresAt = expiresAt
+            }
+            return true
+        }
+        val again = activeReannounceTokenLocked() ?: return false
+        if (id.isNullOrEmpty() || id != reannounceId) return false
+        HotspotLinkCodec.constantTimeEquals(again, tok)
     }
 
     /**
@@ -139,7 +169,9 @@ class HotspotSessionGate(
      */
     fun admitOpenAnnounce(localAddress: InetAddress?, clientAddress: InetAddress?, id: String): OpenAnnounce =
         synchronized(lock) {
-            if (!openAnnounce || activeAnnounceTokenLocked() != null) return OpenAnnounce.CLOSED
+            if (!openAnnounce || activeAnnounceTokenLocked() != null || activeReannounceTokenLocked() != null) {
+                return OpenAnnounce.CLOSED
+            }
             val bind = hotspotBindIp as? Inet4Address ?: return OpenAnnounce.WRONG_NETWORK
             if (localAddress == null || localAddress != bind) return OpenAnnounce.WRONG_NETWORK
             val client = clientAddress as? Inet4Address ?: return OpenAnnounce.WRONG_NETWORK
@@ -192,6 +224,21 @@ class HotspotSessionGate(
             return null
         }
         return t
+    }
+
+    private fun activeReannounceTokenLocked(): String? {
+        val t = reannounceToken ?: return null
+        if (nowMs() >= reannounceExpiresAt) {
+            clearReannounceLocked()
+            return null
+        }
+        return t
+    }
+
+    private fun clearReannounceLocked() {
+        reannounceToken = null
+        reannounceId = null
+        reannounceExpiresAt = 0L
     }
 
     enum class BeginGate { OPEN, MATCHED, REJECTED }

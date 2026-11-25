@@ -415,12 +415,16 @@ private fun MiniFileRoot(
         container.updateManager.checkOnStartupIfDue()
     }
 
-    // Auto-present ActiveOperationsSheet if an operation runs > 500 ms (DESIGN.md §2.5)
+    // Auto-present ActiveOperationsSheet if an operation runs > 500 ms (DESIGN.md §2.5) — but never on top of the
+    // Bluetooth / hotspot link dialog, whose QR code and status the user needs while a peer send negotiates.
     val primaryOpId = activeOps.firstOrNull()?.id
-    LaunchedEffect(primaryOpId, activeOps.isEmpty()) {
+    val linkDialogShown = bleLinkUi != null
+    LaunchedEffect(primaryOpId, activeOps.isEmpty(), linkDialogShown) {
         if (activeOps.isEmpty()) {
             showActiveOpsSheet = false
             dismissedOpIds = emptySet()
+        } else if (linkDialogShown) {
+            showActiveOpsSheet = false
         } else if (primaryOpId != null && primaryOpId !in dismissedOpIds) {
             delay(500L)
             if (container.operationRegistry.active.value.any { it.id == primaryOpId } &&

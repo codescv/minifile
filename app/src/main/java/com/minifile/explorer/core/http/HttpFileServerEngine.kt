@@ -1432,7 +1432,8 @@ class HttpFileServerEngine(
         val id = query["id"]?.trim()?.take(128).orEmpty().ifEmpty { "$clientIp:$port" }
         val open = when (mode) {
             HotspotSessionGate.AnnounceMode.TOKEN -> {
-                if (!hotspotGate.consumeAnnounceToken(query["tok"]?.trim())) {
+                // Bound to `id` on first use: the same peer may re-announce (new port after a listener restart).
+                if (!hotspotGate.consumeAnnounceToken(query["tok"]?.trim(), id)) {
                     throw HttpStatusException(403, "Forbidden", "Invalid or expired session token", code = "token")
                 }
                 false
