@@ -46,6 +46,25 @@ object ReannounceRetry {
 
     fun sameEndpoint(a: PeerInfo, b: PeerInfo): Boolean = a.host == b.host && a.port == b.port
 
+    /** Poll slice while waiting for a re-announce, so a user Cancel (sink flag only) is honoured promptly. */
+    const val CANCEL_POLL_MS = 200L
+
+    /** Waits up to [waitMs] for a re-announce; `null` on timeout or as soon as [isCancelled] turns `true`. */
+    private suspend fun awaitReannounce(
+        latest: Channel<PeerInfo>,
+        waitMs: Long,
+        isCancelled: () -> Boolean,
+    ): PeerInfo? {
+        var remaining = waitMs
+        while (remaining > 0) {
+            if (isCancelled()) return null
+            val slice = minOf(CANCEL_POLL_MS, remaining)
+            withTimeoutOrNull(slice) { latest.receive() }?.let { return it }
+            remaining -= slice
+        }
+        return null
+    }
+
     suspend fun <T> run(
         initial: PeerInfo,
         reannounces: Flow<PeerInfo>?,
@@ -92,7 +111,7 @@ object ReannounceRetry {
                         attemptRunning.set(false)
                         if (isCancelled() || retries >= maxRetries || !isRetryable(e, sessionStarted.get())) throw e
                         onWaiting(target)
-                        val next = withTimeoutOrNull(waitMs) { latest.receive() } ?: throw e
+                        val next = awaitReannounce(latest, waitMs, isCancelled) ?: throw e
                         if (isCancelled()) throw e
                         retries++
                         target = retarget(target, next)

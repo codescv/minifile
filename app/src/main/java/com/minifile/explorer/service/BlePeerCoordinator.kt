@@ -2092,8 +2092,11 @@ class BlePeerCoordinator(
         const val HOTSPOT_WAIT_MS = 30_000L
         const val ANNOUNCE_WAIT_MS = 180_000L
 
-        /** `lohs-s`: how long to wait for the hotspot gateway IP before sending the BLE `hotspot` credentials. */
-        const val HOST_IP_WAIT_MS = 10_000L
+        /**
+         * `lohs-s`: extra wait for the hotspot gateway IP before sending the BLE `hotspot` credentials (on top of
+         * `LocalOnlyHotspotManager`'s own 5 s poll). Kept short: a later-resolved IP is re-sent during the announce wait.
+         */
+        const val HOST_IP_WAIT_MS = 3_000L
         private const val SEEN_TTL_MS = 10_000L
         private const val RECENT_DEVICE_TTL_MS = 120_000L
         private const val L2CAP_CONNECT_TIMEOUT_MS = 8_000L

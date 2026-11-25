@@ -196,6 +196,29 @@ class ReannounceRetryTest {
     }
 
     @Test
+    fun userCancelWhileWaitingForReannounce_returnsPromptly() = runBlocking {
+        val events = Channel<PeerInfo>(Channel.UNLIMITED)
+        val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val start = System.currentTimeMillis()
+        val result = async {
+            runCatching {
+                ReannounceRetry.run<Unit>(
+                    peer,
+                    events.receiveAsFlow(),
+                    abortActive = {},
+                    isCancelled = { cancelled.get() },
+                    waitMs = 30_000L,
+                ) { _, _ -> throw refused() }
+            }
+        }
+        delay(300)
+        cancelled.set(true) // OperationRegistry.cancel only flips the sink flag; the job itself keeps running
+        val outcome = withTimeout(5_000) { result.await() }
+        assertTrue(outcome.exceptionOrNull() is PeerTransferException)
+        assertTrue("cancel must not wait for the 30 s re-announce window", System.currentTimeMillis() - start < 2_000)
+    }
+
+    @Test
     fun cancelledOrBudgetExhausted_stopsRetrying() = runBlocking {
         val events = Channel<PeerInfo>(Channel.UNLIMITED)
         var calls = 0
