@@ -25,6 +25,12 @@ object DiagnosticLogRedactor {
         "(?:[A-Za-z0-9]+[_-])*(?:pass|password|passwd|pwd|passphrase|psk|secret|client_secret|" +
             "access_token|refresh_token|id_token|api_key|apikey|pin)"
 
+    /**
+     * Unquoted value: stops at whitespace / `&;,"'()}]` and at an escaped newline (`\n`, as produced by
+     * [DiagnosticLogger.formatLine]) while still covering other backslashes inside a password.
+     */
+    private const val VALUE = """(?:(?!\\n)[^\s&;,"'()}\]])+"""
+
     /** Key names whose values are truncated to a short prefix. Not preceded by `_` (so not `access_token`). */
     private const val TOKEN_KEY = "(?:tok|token)"
 
@@ -39,7 +45,7 @@ object DiagnosticLogRedactor {
     )
 
     private val kvSecret = Regex(
-        """(?<![A-Za-z0-9_])($SECRET_KEY)(\s*[=:]\s*)(?!$REDACTED_LITERAL)[^\s&;,"'()}\]]+""",
+        """(?<![A-Za-z0-9_])($SECRET_KEY)(\s*[=:]\s*)(?!$REDACTED_LITERAL)$VALUE""",
         RegexOption.IGNORE_CASE,
     )
 
@@ -54,7 +60,7 @@ object DiagnosticLogRedactor {
     )
 
     private val kvToken = Regex(
-        """(?<![A-Za-z0-9_\-])($TOKEN_KEY)(\s*=\s*)([^\s&;,"'()}\]\\]+)""",
+        """(?<![A-Za-z0-9_\-])($TOKEN_KEY)(\s*=\s*)($VALUE)""",
         RegexOption.IGNORE_CASE,
     )
 

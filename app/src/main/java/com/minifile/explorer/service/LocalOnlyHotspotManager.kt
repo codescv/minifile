@@ -151,7 +151,7 @@ class LocalOnlyHotspotManager(
             }
             reservation = res
             val cfg = extractConfig(res)
-            Diag.log(Diag.HOTSPOT) { "reservation started ssid=${cfg.ssid} sec=${cfg.sec} pass=${cfg.pass} preIps=$before" }
+            Diag.log(Diag.HOTSPOT) { "reservation started ssid=${cfg.ssid} sec=${cfg.sec} passLen=${cfg.pass.length} preIps=$before" }
             val endpoint = awaitHotspotEndpoint(before)
             Diag.log(Diag.HOTSPOT) {
                 if (endpoint != null) {

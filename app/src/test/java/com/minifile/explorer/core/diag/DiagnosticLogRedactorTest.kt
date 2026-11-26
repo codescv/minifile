@@ -29,6 +29,9 @@ class DiagnosticLogRedactorTest {
         assertEquals("ftp_password=<redacted>&user=a", r("ftp_password=xyz&user=a"))
         assertEquals("password: <redacted>", r("password: hunter2"))
         assertEquals("pin=<redacted> pinned=true", r("pin=4321 pinned=true"))
+        // An escaped newline ends the secret value; other backslashes inside a password stay covered.
+        assertEquals("pass=<redacted>\\nnext line", r("pass=abc\\nnext line"))
+        assertEquals("pass=<redacted> x", r("pass=a\\b\\c x"))
         // Not a secret key: `bypass=` / `passive=` must stay untouched.
         assertEquals("bypass=1 passive=true sec=wpa3", r("bypass=1 passive=true sec=wpa3"))
     }

@@ -10,7 +10,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.ExecutorService
+import java.util.concurrent.Future
 import java.util.concurrent.RejectedExecutionHandler
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -57,24 +57,31 @@ class DiagnosticLogger(
     private val _stats = MutableStateFlow(DiagnosticLogStats())
     val stats: StateFlow<DiagnosticLogStats> = _stats.asStateFlow()
 
-    // Writer-thread-only state.
+    // Writer state, guarded by [ioLock] (held by the writer thread per line and by clear / readAll callers).
+    internal val ioLock = Any()
     private var stream: FileOutputStream? = null
     private var currentBytes = 0L
     private var rolledBytes = 0L
     private var droppedReported = 0L
 
-    private val executor: ExecutorService = ThreadPoolExecutor(
+    private val executor: ThreadPoolExecutor = ThreadPoolExecutor(
         1, 1, 0L, TimeUnit.MILLISECONDS,
         ArrayBlockingQueue(maxPendingLines.coerceAtLeast(16)),
         { r -> Thread(r, "minifile-diag-log").apply { isDaemon = true } },
-        RejectedExecutionHandler { _, _ -> dropped.incrementAndGet() },
+        // Queue full: drop the line (counted, reported later). A rejected control task (flush / read) is a Future:
+        // cancel it so its caller's get() returns at once instead of waiting for a task that will never run.
+        RejectedExecutionHandler { r, _ ->
+            if (r is Future<*>) r.cancel(false) else dropped.incrementAndGet()
+        },
     )
 
     init {
         submit {
-            currentBytes = currentFile.lengthOrZero()
-            rolledBytes = rolledFile.lengthOrZero()
-            publishStats()
+            synchronized(ioLock) {
+                currentBytes = currentFile.lengthOrZero()
+                rolledBytes = rolledFile.lengthOrZero()
+                publishStats()
+            }
         }
     }
 
@@ -99,44 +106,49 @@ class DiagnosticLogger(
     fun log(tag: String, message: String) {
         if (!enabled) return
         val line = formatLine(clock(), zone(), tag, message)
-        submit { appendLine(line) }
+        submit { synchronized(ioLock) { appendLine(line) } }
     }
 
     /** Blocks until every line queued before this call has been written (tests / before export). */
     fun flush(timeoutMs: Long = 5_000L) {
         val f = runCatching { executor.submit { } }.getOrNull() ?: return
-        runCatching { f.get(timeoutMs, TimeUnit.MILLISECONDS) }
+        val done = runCatching { f.get(timeoutMs, TimeUnit.MILLISECONDS) }.isSuccess
+        if (!done) {
+            // Rejected (queue full): wait for the backlog to drain instead, then for the in-flight write.
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (executor.queue.isNotEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(2)
+            synchronized(ioLock) { }
+        }
     }
 
-    /** Deletes both log files and resets the size summary. Lines queued before the call are discarded too. */
+    /**
+     * Deletes both log files and resets the size summary. Lines still queued are discarded too. Runs on the caller
+     * thread (never queued), so it works even when the writer queue is full.
+     */
     fun clear() {
-        val done = runCatching {
-            executor.submit {
-                closeStream()
-                currentFile.delete()
-                rolledFile.delete()
-                currentBytes = 0L
-                rolledBytes = 0L
-                dropped.set(0L)
-                droppedReported = 0L
-                publishStats()
-            }
-        }.getOrNull()
-        runCatching { done?.get(5_000L, TimeUnit.MILLISECONDS) }
+        executor.queue.clear()
+        synchronized(ioLock) {
+            closeStream()
+            currentFile.delete()
+            rolledFile.delete()
+            currentBytes = 0L
+            rolledBytes = 0L
+            dropped.set(0L)
+            droppedReported = 0L
+            publishStats()
+        }
     }
 
     /** Chronological log body: `diagnostic.log.1` followed by `diagnostic.log` (re-redacted defensively). */
     fun readAll(): String {
-        val task = runCatching {
-            executor.submit<String> {
-                val sb = StringBuilder()
-                for (f in listOf(rolledFile, currentFile)) {
-                    if (f.isFile) runCatching { sb.append(f.readText(Charsets.UTF_8)) }
-                }
-                sb.toString()
+        flush()
+        val raw = synchronized(ioLock) {
+            val sb = StringBuilder()
+            for (f in listOf(rolledFile, currentFile)) {
+                if (f.isFile) runCatching { sb.append(f.readText(Charsets.UTF_8)) }
             }
-        }.getOrNull() ?: return ""
-        val raw = runCatching { task.get(10_000L, TimeUnit.MILLISECONDS) }.getOrDefault("")
+            sb.toString()
+        }
         return raw.lineSequence().joinToString("\n") { DiagnosticLogRedactor.redact(it) }
     }
 
@@ -229,14 +241,19 @@ class DiagnosticLogger(
         fun formatLine(epochMs: Long, zone: ZoneId, tag: String, message: String): String {
             val cleanTag = tag.trim().uppercase().filter { it.isLetterOrDigit() || it == '_' || it == '-' }
                 .ifEmpty { "LOG" }
-            var msg = message
-                .replace("\r\n", "\\n")
-                .replace("\n", "\\n")
-                .replace("\r", "\\n")
+            // Redact BEFORE truncating: a cut through a quoted secret would otherwise defeat the JSON rules.
+            var msg = DiagnosticLogRedactor.redact(
+                message
+                    .replace("\r\n", "\\n")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\n"),
+            )
             if (msg.length > MAX_MESSAGE_CHARS) {
-                msg = msg.take(MAX_MESSAGE_CHARS) + "${DiagnosticLogRedactor.ELLIPSIS}(+${msg.length - MAX_MESSAGE_CHARS} chars)"
+                var cut = MAX_MESSAGE_CHARS
+                if (Character.isHighSurrogate(msg[cut - 1])) cut--
+                msg = msg.take(cut) + "${DiagnosticLogRedactor.ELLIPSIS}(+${msg.length - cut} chars)"
             }
-            return "${formatTimestamp(epochMs, zone)} [$cleanTag] ${DiagnosticLogRedactor.redact(msg)}"
+            return "${formatTimestamp(epochMs, zone)} [$cleanTag] $msg"
         }
     }
 }

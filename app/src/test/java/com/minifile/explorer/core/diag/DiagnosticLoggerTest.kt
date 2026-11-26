@@ -61,6 +61,47 @@ class DiagnosticLoggerTest {
     }
 
     @Test
+    fun secretStraddlingTheLengthCapIsStillRedacted() {
+        val msg = "x".repeat(DiagnosticLogger.MAX_MESSAGE_CHARS - 12) + "{\"pass\":\"TopSecretValue99\",\"tok\":\"0123456789\"}"
+        val line = DiagnosticLogger.formatLine(fixedMs, ZoneOffset.UTC, "BLE", msg)
+        assertFalse(line.contains("TopSecret"))
+        assertFalse(line.contains("0123456789"))
+        val kv = "y".repeat(DiagnosticLogger.MAX_MESSAGE_CHARS - 8) + " pass=TopSecretValue99 tail"
+        assertFalse(DiagnosticLogger.formatLine(fixedMs, ZoneOffset.UTC, "BLE", kv).contains("TopSecret"))
+    }
+
+    @Test
+    fun fullQueueNeverHangsFlushReadOrClear() {
+        val l = DiagnosticLogger(dir, clock = { fixedMs }, zone = { ZoneOffset.UTC }, maxPendingLines = 16).also { loggers += it }
+        l.flush()
+        l.setEnabled(true)
+        synchronized(l.ioLock) {
+            // Writer is blocked on the lock: 16 lines queue up, the rest are dropped.
+            repeat(100) { i -> l.log(Diag.NET, "burst $i") }
+            val t0 = System.nanoTime()
+            l.flush(timeoutMs = 300)
+            assertTrue("flush must not hang on a rejected task", (System.nanoTime() - t0) / 1_000_000 < 2_000)
+        }
+        l.flush()
+        val text = l.readAll()
+        assertTrue(text.contains("[DIAG] dropped "))
+        val written = text.lines().count { it.contains("[NET] burst") }
+        assertTrue("written=$written", written in 16..17)
+
+        // clear() runs on the caller even while the queue is full.
+        synchronized(l.ioLock) {
+            repeat(100) { i -> l.log(Diag.NET, "burst2 $i") }
+            val t0 = System.nanoTime()
+            l.clear()
+            assertTrue((System.nanoTime() - t0) / 1_000_000 < 2_000)
+            assertFalse(File(dir, DiagnosticLogger.FILE_NAME).exists())
+        }
+        l.flush()
+        // At most the single line the writer had already dequeued survives the clear.
+        assertTrue(l.readAll().lines().count { it.contains("burst2") } <= 1)
+    }
+
+    @Test
     fun offByDefaultWritesNothingAndSkipsMessageConstruction() {
         val l = newLogger()
         Diag.install(l)
