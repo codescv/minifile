@@ -8,6 +8,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import com.minifile.explorer.BuildConfig
+import com.minifile.explorer.core.diag.Diag
 import com.minifile.explorer.core.net.GatewayCandidates
 import com.minifile.explorer.core.net.LocalIfaceSubnet
 import com.minifile.explorer.core.net.LocalSubnetRouter
@@ -165,6 +166,7 @@ class PeerDiscoveryHolder(
             val cm = connectivityManager()
             val caps = runCatching { cm?.getNetworkCapabilities(network) }.getOrNull()
             val lp = runCatching { cm?.getLinkProperties(network) }.getOrNull()
+            Diag.log(Diag.NET) { "network available handle=${network.networkHandle} iface=${lp?.interfaceName} ipv4=${ipv4Signature(lp)}" }
             synchronized(lock) {
                 val t = trackedNets.remove(network) ?: TrackedNet(network)
                 if (lp != null) t.linkProperties = lp
@@ -186,10 +188,14 @@ class PeerDiscoveryHolder(
                 changed = ipv4Signature(t.linkProperties) != ipv4Signature(linkProperties)
                 t.linkProperties = linkProperties
             }
-            if (changed) onTrackedNetworksChanged(network, linkOnly = true)
+            if (changed) {
+                Diag.log(Diag.NET) { "network link changed handle=${network.networkHandle} ipv4=${ipv4Signature(linkProperties)}" }
+                onTrackedNetworksChanged(network, linkOnly = true)
+            }
         }
 
         override fun onLost(network: Network) {
+            Diag.log(Diag.NET) { "network lost handle=${network.networkHandle}" }
             synchronized(lock) { trackedNets.remove(network) }
             if (httpStartedForNetwork == network) stopAutoStartedHttp()
             onTrackedNetworksChanged(null)
@@ -210,12 +216,14 @@ class PeerDiscoveryHolder(
 
     fun setPinnedNetwork(network: Network?) {
         if (pinnedNetwork == network) return
+        Diag.log(Diag.NET) { "pinned network=${network?.networkHandle ?: "none"}" }
         pinnedNetwork = network
         engine.rebindSocket()
     }
 
     fun setLocalHotspot(binding: LocalHotspotBinding?) {
         if (localHotspot == binding) return
+        Diag.log(Diag.NET) { "local hotspot binding=${binding?.let { "${it.interfaceName} ${it.ip.hostAddress}/${it.prefixLength}" } ?: "none"}" }
         localHotspot = binding
         invalidateIfaceCache()
         engine.rebindSocket()
@@ -263,6 +271,7 @@ class PeerDiscoveryHolder(
             fallbackActiveWifiHandle = activeHandle,
             activeWifiSubnets = tracked.filter { it.handleId == activeHandle },
         )
+        Diag.log(Diag.NET) { "route tcp ${target.hostAddress} -> $decision (pinned=${pinned != null} hotspot=${localHotspot?.ip?.hostAddress})" }
         when (decision) {
             TcpBindDecision.UsePinnedNetwork -> pinned?.let { net -> runCatching { net.bindSocket(socket) } }
             is TcpBindDecision.BindTrackedNetwork -> {
@@ -372,6 +381,7 @@ class PeerDiscoveryHolder(
 
     /** Called from `MainActivity.onStart` / `onStop`. */
     fun setForeground(isForeground: Boolean) {
+        Diag.log(Diag.APP) { if (isForeground) "foreground (onStart)" else "background (onStop)" }
         foreground = isForeground
     }
 
@@ -438,6 +448,7 @@ class PeerDiscoveryHolder(
             if (attempt > 0) delay(GATEWAY_RETRY_MS)
             found = probeFirstGateway(hosts, ports)
         }
+        Diag.log(Diag.NET) { "gateway probe hosts=$hosts ports=$ports -> ${found?.endpoint ?: "none"}" }
         val host = found ?: return false
         HttpServerHolder.logInfo("discovery", "Found ${host.name} on Wi-Fi gateway ${host.endpoint}")
         return announceTo(host, snap)
@@ -481,6 +492,7 @@ class PeerDiscoveryHolder(
                     }.status in 200..299
                 }
             }.getOrDefault(false)
+            Diag.log(Diag.PEER) { "announce -> ${host.endpoint} attempt=${attempt + 1}/$ANNOUNCE_ATTEMPTS myPort=$myPort ok=$ok" }
             if (ok) {
                 HttpServerHolder.logInfo("discovery", "Announced to ${host.name} (${host.endpoint})")
                 return true

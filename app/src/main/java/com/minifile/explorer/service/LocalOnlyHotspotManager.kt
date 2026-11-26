@@ -1,6 +1,7 @@
 package com.minifile.explorer.service
 
 import android.annotation.SuppressLint
+import com.minifile.explorer.core.diag.Diag
 import android.content.Context
 import android.net.wifi.SoftApConfiguration
 import android.net.wifi.WifiManager
@@ -127,6 +128,7 @@ class LocalOnlyHotspotManager(
             throw HotspotException("Location must be on for Android ≤12 to start a hotspot")
         }
         autoStopJob?.cancel()
+        Diag.log(Diag.HOTSPOT) { "start purpose=$purpose tok=${token.orEmpty()} existing=${activeInfo != null && reservation != null}" }
 
         val port = ensureHttpRunning()
 
@@ -142,13 +144,22 @@ class LocalOnlyHotspotManager(
             val res = try {
                 startReservation(wm)
             } catch (e: HotspotException) {
+                Diag.log(Diag.HOTSPOT) { "reservation failed: ${e.message.orEmpty()}" }
                 _state.value = HotspotState.Failed(e.message ?: "Hotspot failed")
                 rollbackHttpIfNeeded()
                 throw e
             }
             reservation = res
             val cfg = extractConfig(res)
+            Diag.log(Diag.HOTSPOT) { "reservation started ssid=${cfg.ssid} sec=${cfg.sec} pass=${cfg.pass} preIps=$before" }
             val endpoint = awaitHotspotEndpoint(before)
+            Diag.log(Diag.HOTSPOT) {
+                if (endpoint != null) {
+                    "endpoint ${endpoint.interfaceName} ${endpoint.ipv4}/${endpoint.prefixLength}"
+                } else {
+                    "endpoint not found within ${ENDPOINT_POLL_MS}ms -> background refine"
+                }
+            }
             HotspotInfo(
                 ssid = cfg.ssid,
                 pass = cfg.pass,
@@ -172,6 +183,10 @@ class LocalOnlyHotspotManager(
         )
         applyGate(info)
         _state.value = HotspotState.Active(info)
+        Diag.log(Diag.HOTSPOT) {
+            "active purpose=$purpose hostIp=${info.hostIp.ifEmpty { "?" }} iface=${info.ifaceName} " +
+                "http=$port httpForHotspot=$httpStartedForHotspot"
+        }
         scheduleIdleStopIfDirect(info)
         if (info.hostIp.isEmpty()) refineEndpointInBackground()
         info
@@ -185,6 +200,7 @@ class LocalOnlyHotspotManager(
 
     /** Stops the hotspot [delayMs] from now (BLE sessions: 15 s grace after the transfer). */
     fun scheduleStop(delayMs: Long = SESSION_GRACE_MS) {
+        Diag.log(Diag.HOTSPOT) { "schedule stop in ${delayMs}ms" }
         autoStopJob?.cancel()
         autoStopJob = scope.launch {
             delay(delayMs)
@@ -199,6 +215,9 @@ class LocalOnlyHotspotManager(
     fun stop(fromService: Boolean = false) {
         if (stopping) return
         stopping = true
+        Diag.log(Diag.HOTSPOT) {
+            "stop fromService=$fromService hadReservation=${reservation != null} stopHttp=$httpStartedForHotspot state=${_state.value::class.simpleName}"
+        }
         try {
             autoStopJob?.cancel()
             autoStopJob = null
@@ -322,6 +341,7 @@ class LocalOnlyHotspotManager(
                     val latest = activeInfo ?: return@launch
                     if (latest.hostIp.isNotEmpty()) return@launch
                     val updated = latest.copy(hostIp = ep.ipv4, prefixLength = ep.prefixLength, ifaceName = ep.interfaceName)
+                    Diag.log(Diag.HOTSPOT) { "endpoint refined after ${waited}ms: ${ep.interfaceName} ${ep.ipv4}/${ep.prefixLength}" }
                     applyGate(updated)
                     _state.value = HotspotState.Active(updated)
                 }
@@ -345,6 +365,7 @@ class LocalOnlyHotspotManager(
             delay(100)
         }
         rollbackHttpIfNeeded()
+        Diag.log(Diag.HOTSPOT) { "HTTP server did not start for hotspot: ${HttpServerHolder.state.value.lastError.orEmpty()}" }
         throw HotspotException(HttpServerHolder.state.value.lastError ?: "Could not start the transfer server")
     }
 
@@ -374,6 +395,7 @@ class LocalOnlyHotspotManager(
                         }
 
                         override fun onFailed(reason: Int) {
+                            Diag.log(Diag.HOTSPOT) { "LocalOnlyHotspot onFailed reason=$reason (${mapFailure(reason)})" }
                             if (cont.isActive) cont.resume(Result.failure(HotspotException(mapFailure(reason))))
                         }
                     }
@@ -392,6 +414,7 @@ class LocalOnlyHotspotManager(
         }
 
     private fun onSystemStopped() {
+        Diag.log(Diag.HOTSPOT) { "system stopped the hotspot (onStopped)" }
         scope.launch {
             if (reservation != null || _state.value is HotspotState.Active) {
                 stop()

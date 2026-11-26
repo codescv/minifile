@@ -310,6 +310,8 @@ data class AppSettings(
         com.minifile.explorer.core.peer.PeerConflictPolicy.RENAME,
     /** Transfer ▸ Transfer Settings ▸ Require Approval: show the consent dialog for incoming peer offers. */
     val peerConfirmReceive: Boolean = true,
+    /** Settings ▸ Diagnostics ▸ Diagnostic Logging: record transfer / network diagnostics to a rolling on-disk log. */
+    val diagnosticLoggingEnabled: Boolean = false,
     val updateAutoCheck: Boolean = true,
     val updateIncludePre: Boolean = false,
     val updateLastCheckMs: Long = 0L,

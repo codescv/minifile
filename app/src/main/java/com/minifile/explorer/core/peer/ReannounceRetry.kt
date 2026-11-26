@@ -1,5 +1,6 @@
 package com.minifile.explorer.core.peer
 
+import com.minifile.explorer.core.diag.Diag
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.channels.Channel
@@ -90,6 +91,10 @@ object ReannounceRetry {
                     if (attemptRunning.get() && !sessionStarted.get()) {
                         val changed = !sameEndpoint(announced, current.get())
                         if (changed || nowMs() - attemptStartedAt.get() >= SAME_ENDPOINT_ABORT_AFTER_MS) {
+                            Diag.log(Diag.PEER) {
+                                "re-announce ${announced.host}:${announced.port} while attempt to " +
+                                    "${current.get().host}:${current.get().port} waits for begin -> abort (changed=$changed)"
+                            }
                             runCatching { abortActive() }
                         }
                     }
@@ -109,12 +114,30 @@ object ReannounceRetry {
                         throw e
                     } catch (e: Throwable) {
                         attemptRunning.set(false)
-                        if (isCancelled() || retries >= maxRetries || !isRetryable(e, sessionStarted.get())) throw e
+                        val retryable = isRetryable(e, sessionStarted.get())
+                        if (isCancelled() || retries >= maxRetries || !retryable) {
+                            Diag.log(Diag.PEER) {
+                                "reannounce-retry give up: ${e.javaClass.simpleName}: ${e.message.orEmpty()} " +
+                                    "cancelled=${isCancelled()} retries=$retries/$maxRetries retryable=$retryable " +
+                                    "sessionStarted=${sessionStarted.get()}"
+                            }
+                            throw e
+                        }
+                        Diag.log(Diag.PEER) {
+                            "reannounce-retry wait up to ${waitMs}ms for re-announce after ${e.javaClass.simpleName}: " +
+                                "${e.message.orEmpty()} (target ${target.host}:${target.port}, retry ${retries + 1}/$maxRetries)"
+                        }
                         onWaiting(target)
-                        val next = awaitReannounce(latest, waitMs, isCancelled) ?: throw e
-                        if (isCancelled()) throw e
+                        val next = awaitReannounce(latest, waitMs, isCancelled)
+                        if (next == null || isCancelled()) {
+                            Diag.log(Diag.PEER) {
+                                "reannounce-retry ${if (isCancelled()) "cancelled" else "timed out"} waiting for re-announce"
+                            }
+                            throw e
+                        }
                         retries++
                         target = retarget(target, next)
+                        Diag.log(Diag.PEER) { "reannounce-retry -> ${target.host}:${target.port} (retry $retries/$maxRetries)" }
                         onRetry(target)
                     }
                 }

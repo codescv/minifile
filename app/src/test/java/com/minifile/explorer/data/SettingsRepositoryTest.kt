@@ -140,4 +140,22 @@ class SettingsRepositoryTest {
         store.putString(SettingsRepository.KEY_PEER_CONFLICT_POLICY, "bogus")
         assertEquals(PeerConflictPolicy.RENAME, SettingsRepository(store).settings.value.peerConflictPolicy)
     }
+
+    @Test
+    fun diagnosticLoggingDefaultsOffAndPersistsAcrossReload() {
+        val store = InMemoryKeyValueStore()
+        val repo1 = SettingsRepository(store)
+        assertFalse(repo1.settings.value.diagnosticLoggingEnabled)
+
+        repo1.setDiagnosticLoggingEnabled(true)
+        assertTrue(repo1.settings.value.diagnosticLoggingEnabled)
+        assertTrue(store.getBoolean(SettingsRepository.KEY_DIAGNOSTIC_LOGGING, false))
+        assertTrue(SettingsRepository(store).settings.value.diagnosticLoggingEnabled)
+
+        // Unrelated updates keep the toggle; turning it off persists too.
+        repo1.setPeerDiscoverable(false)
+        assertTrue(SettingsRepository(store).settings.value.diagnosticLoggingEnabled)
+        repo1.setDiagnosticLoggingEnabled(false)
+        assertFalse(SettingsRepository(store).settings.value.diagnosticLoggingEnabled)
+    }
 }

@@ -1,5 +1,6 @@
 package com.minifile.explorer.core.http
 
+import com.minifile.explorer.core.diag.Diag
 import com.minifile.explorer.core.peer.HostDecision
 import com.minifile.explorer.core.peer.HotspotLinkCodec
 import java.net.Inet4Address
@@ -82,6 +83,7 @@ class HotspotSessionGate(
     /** Enables / disables open (token-less) announces; any change resets the rate-limit and id budget. */
     fun setOpenAnnounce(enabled: Boolean) = synchronized(lock) {
         if (openAnnounce != enabled) {
+            Diag.log(Diag.PEER) { "gate openAnnounce=$enabled bind=${hotspotBindIp?.hostAddress}" }
             openAcceptTimes.clear()
             openAnnounceIds.clear()
         }
@@ -89,11 +91,13 @@ class HotspotSessionGate(
     }
 
     fun armSessionToken(token: String, ttlMs: Long = TOKEN_TTL_MS) = synchronized(lock) {
+        Diag.log(Diag.PEER) { "gate arm session tok=$token ttlMs=$ttlMs" }
         sessionToken = token
         sessionExpiresAt = nowMs() + ttlMs
     }
 
     fun armAnnounceToken(token: String, ttlMs: Long = TOKEN_TTL_MS) = synchronized(lock) {
+        Diag.log(Diag.PEER) { "gate arm announce tok=$token ttlMs=$ttlMs bind=${hotspotBindIp?.hostAddress}" }
         announceToken = token
         announceExpiresAt = nowMs() + ttlMs
         clearReannounceLocked()
@@ -112,6 +116,7 @@ class HotspotSessionGate(
 
     /** Clears every token and the hotspot binding (host stop / cancel / BLE `error`). */
     fun reset() {
+        Diag.log(Diag.PEER) { "gate reset (bind=${hotspotBindIp?.hostAddress})" }
         synchronized(lock) {
             sessionToken = null
             sessionExpiresAt = 0L
@@ -142,7 +147,12 @@ class HotspotSessionGate(
      * same id** are accepted again until the original TTL ends (idempotent re-announce, e.g. after the receiver
      * restarted its HTTP listener on a new port); any other id is rejected.
      */
-    fun consumeAnnounceToken(tok: String?, id: String? = null): Boolean = synchronized(lock) {
+    fun consumeAnnounceToken(tok: String?, id: String? = null): Boolean =
+        consumeAnnounceTokenLocked(tok, id).also { ok ->
+            Diag.log(Diag.PEER) { "gate announce tok=${tok.orEmpty()} id=${id.orEmpty()} -> ${if (ok) "accepted" else "rejected"}" }
+        }
+
+    private fun consumeAnnounceTokenLocked(tok: String?, id: String?): Boolean = synchronized(lock) {
         if (tok == null) return false
         val expected = activeAnnounceTokenLocked()
         if (expected != null) {

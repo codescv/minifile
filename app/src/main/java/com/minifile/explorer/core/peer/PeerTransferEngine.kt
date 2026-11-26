@@ -1,5 +1,6 @@
 package com.minifile.explorer.core.peer
 
+import com.minifile.explorer.core.diag.Diag
 import com.minifile.explorer.core.ftp.FtpAccessDeniedException
 import com.minifile.explorer.core.model.JsonValue
 import com.minifile.explorer.core.model.MiniJson
@@ -103,11 +104,19 @@ class PeerTransferEngine(
             val tok = peer.linkToken?.trim().orEmpty()
             if (tok.isNotEmpty()) append("&tok=").append(encodeQueryValue(tok))
         }
+        Diag.log(Diag.PEER) {
+            "send begin -> ${peer.host}:${peer.port} files=$fileCount bytes=$totalBytes os=${peer.platform} " +
+                "tok=${peer.linkToken.orEmpty()} timeoutMs=${beginTimeoutMs(peer)}"
+        }
         val beginResp = try {
             // D2: iOS `begin` blocks up to 60 s on its consent sheet — wait well past it. A BLE-negotiated session
             // (`linkToken`) is normally pre-approved, so a silent receiver is detected sooner.
             client.postEmpty(beginUrl, timeoutMs = beginTimeoutMs(peer))
         } catch (e: Exception) {
+            Diag.log(Diag.PEER) {
+                "send begin -> ${peer.host}:${peer.port} failed ${e.javaClass.simpleName}: ${e.message.orEmpty()} " +
+                    "cancelled=${sink.isCancelled()}"
+            }
             if (sink.isCancelled()) {
                 client.cancelActive()
                 return@withContext PeerSendResult(0, 0L, 0, emptyList(), cancelled = true)
@@ -115,6 +124,7 @@ class PeerTransferEngine(
             throw mapTransportError(peer, e, beforeSession = true)
         }
 
+        Diag.log(Diag.PEER) { "send begin <- ${peer.host}:${peer.port} status=${beginResp.status} body=${beginResp.bodyText.take(200)}" }
         if (beginResp.status !in 200..299) {
             throw mapHttpError(peer, beginResp, beforeSession = true)
         }
@@ -132,6 +142,7 @@ class PeerTransferEngine(
 
         for (item in items) {
             if (sink.isCancelled()) {
+                Diag.log(Diag.PEER) { "send cancelled by user session=$sessionId before '${item.relPath}'" }
                 client.cancelActive()
                 sendEndBestEffort(baseUrl, sessionId, ok = false)
                 return@withContext PeerSendResult(
@@ -197,6 +208,7 @@ class PeerTransferEngine(
             var fileResp: PeerHttpResponse? = null
             while (true) {
                 attempt++
+                Diag.log(Diag.PEER) { "send file '${item.relPath}' bytes=$expectedSize session=$sessionId attempt=$attempt" }
                 try {
                     fileResp = client.postStream(
                         url = sendUrl,
@@ -235,6 +247,7 @@ class PeerTransferEngine(
                     }
                     break
                 } catch (_: LocalCancelledException) {
+                    Diag.log(Diag.PEER) { "send cancelled by user mid-file '${item.relPath}' session=$sessionId" }
                     client.cancelActive()
                     sendEndBestEffort(baseUrl, sessionId, ok = false)
                     return@withContext PeerSendResult(
@@ -246,6 +259,9 @@ class PeerTransferEngine(
                         cancelled = true,
                     )
                 } catch (preErr: PreContinueIOException) {
+                    Diag.log(Diag.PEER) {
+                        "send file '${item.relPath}' pre-100-continue error attempt=$attempt: ${preErr.message.orEmpty()}"
+                    }
                     if (sink.isCancelled()) {
                         client.cancelActive()
                         sendEndBestEffort(baseUrl, sessionId, ok = false)
@@ -265,6 +281,10 @@ class PeerTransferEngine(
                     sendEndAndThrowIfRejected(peer, baseUrl, sessionId, preErr)
                     throw mapTransportError(peer, preErr)
                 } catch (postErr: Exception) {
+                    Diag.log(Diag.PEER) {
+                        "send file '${item.relPath}' failed ${postErr.javaClass.simpleName}: ${postErr.message.orEmpty()} " +
+                            "stall=${hasCause<WriteStallException>(postErr)}"
+                    }
                     if (sink.isCancelled()) {
                         client.cancelActive()
                         sendEndBestEffort(baseUrl, sessionId, ok = false)
@@ -284,6 +304,7 @@ class PeerTransferEngine(
             }
 
             val resp = fileResp!!
+            Diag.log(Diag.PEER) { "send file '${item.relPath}' <- status=${resp.status} ${resp.bodyText.take(160)}" }
             if (resp.status !in 200..299) {
                 if (resp.status != 410) {
                     sendEndBestEffort(baseUrl, sessionId, ok = false)
@@ -310,6 +331,10 @@ class PeerTransferEngine(
         // 3. End session
         val endUrl = "$baseUrl/api/peer/end?session=${encodeQueryValue(sessionId)}&ok=1"
         val endResp = runCatching { client.postEmpty(endUrl) }.getOrNull()
+        Diag.log(Diag.PEER) {
+            "send end session=$sessionId status=${endResp?.status ?: "no-response"} files=$sentFiles bytes=$sentBytes " +
+                "skipped=$skippedFiles dirs=$sentDirs"
+        }
         if (endResp != null && endResp.status == 410) {
             throw PeerTransferException(410, "Rejected by $peerName")
         }

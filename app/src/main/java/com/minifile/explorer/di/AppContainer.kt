@@ -16,6 +16,7 @@ import com.minifile.explorer.core.share.ShareImportEngine
 import com.minifile.explorer.core.vfs.FileSystemRepository
 import com.minifile.explorer.core.vfs.LocalFileSystem
 import com.minifile.explorer.data.AndroidMediaScanNotifier
+import com.minifile.explorer.data.DiagnosticsController
 import com.minifile.explorer.data.AndroidVolumeProvider
 import com.minifile.explorer.data.DefaultFavoritesRepository
 import com.minifile.explorer.data.DefaultFtpServersRepository
@@ -47,6 +48,9 @@ class AppContainer(context: Context) {
         store = keyValueStore,
         defaultDeviceNameProvider = { Build.MODEL?.takeIf { it.isNotBlank() } ?: "Android" },
     )
+
+    /** Settings ▸ Diagnostics: installs the process-wide diagnostic logger and syncs it with the persisted toggle. */
+    val diagnostics = DiagnosticsController(appContext, settingsRepository).also { it.start() }
     val persistedTreeStore = PersistedTreeStore(appContext, keyValueStore)
     val ftpServersRepository: FtpServersRepository = DefaultFtpServersRepository(
         store = keyValueStore,

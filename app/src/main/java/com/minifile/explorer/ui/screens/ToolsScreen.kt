@@ -2,6 +2,7 @@ package com.minifile.explorer.ui.screens
 
 import android.content.ActivityNotFoundException
 import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -53,6 +54,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -76,6 +78,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.minifile.explorer.BuildConfig
+import com.minifile.explorer.core.diag.DiagnosticExport
 import com.minifile.explorer.core.feedback.AgentFeedbackBuilder
 import com.minifile.explorer.core.feedback.BuiltAgentFeedback
 import com.minifile.explorer.core.feedback.FeedbackEmailTargetResolver
@@ -135,6 +138,9 @@ fun ToolsScreen(
     }
 
     val hasAllFiles = AndroidVolumeProvider.hasAllFilesAccess(context)
+    val diagnostics = viewModel.container.diagnostics
+    val diagStats by diagnostics.stats.collectAsState()
+    var diagBusy by remember { mutableStateOf(false) }
 
     // v1.0.16: one tap on "Download & Install" downloads, verifies (SHA-256 + signature) and launches the
     // system installer directly; "Install update" stays available to re-trigger if the installer is dismissed.
@@ -250,7 +256,111 @@ fun ToolsScreen(
                 }
             }
 
-            // 4. About (with integrated Update check & install)
+            // 4. Diagnostics (toggleable rolling transfer / network log with copy, export and clear)
+            item(key = "diagnostics") {
+                SectionLabel("Diagnostics")
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        val logBytes = diagStats.totalBytes
+                        ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            headlineContent = { Text("Diagnostic Logging") },
+                            supportingContent = {
+                                Text(
+                                    DiagnosticExport.statusLine(settings.diagnosticLoggingEnabled, logBytes),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            trailingContent = {
+                                Switch(
+                                    checked = settings.diagnosticLoggingEnabled,
+                                    onCheckedChange = { on -> diagnostics.setEnabled(on) },
+                                )
+                            },
+                            modifier = Modifier.clickable { diagnostics.setEnabled(!settings.diagnosticLoggingEnabled) },
+                        )
+                        val canExport = !diagBusy && (logBytes > 0L || settings.diagnosticLoggingEnabled)
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                        ) {
+                            OutlinedButton(
+                                enabled = canExport,
+                                onClick = {
+                                    diagBusy = true
+                                    scope.launch {
+                                        try {
+                                            val text = diagnostics.clipboardText()
+                                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                            val copied = cm != null && runCatching {
+                                                cm.setPrimaryClip(ClipData.newPlainText("MiniFile diagnostic logs", text))
+                                            }.isSuccess
+                                            viewModel.emitSimpleMessage(
+                                                if (copied) "Diagnostic logs copied" else "Could not copy diagnostic logs",
+                                            )
+                                        } finally {
+                                            diagBusy = false
+                                        }
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            ) {
+                                Text("Copy Logs", maxLines = 1, softWrap = false)
+                            }
+                            OutlinedButton(
+                                enabled = canExport,
+                                onClick = {
+                                    diagBusy = true
+                                    scope.launch {
+                                        try {
+                                            val file = diagnostics.writeExportFile()
+                                            val chooser = diagnostics.shareIntent(file)
+                                            if (!context.tryStartActivity(chooser)) {
+                                                viewModel.emitSimpleMessage("No app available to share diagnostic logs")
+                                            }
+                                        } catch (e: IOException) {
+                                            viewModel.emitSimpleMessage("Could not export diagnostic logs: ${e.message}")
+                                        } catch (e: IllegalArgumentException) {
+                                            viewModel.emitSimpleMessage("Could not export diagnostic logs: ${e.message}")
+                                        } finally {
+                                            diagBusy = false
+                                        }
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            ) {
+                                Text("Export Logs", maxLines = 1, softWrap = false)
+                            }
+                            TextButton(
+                                enabled = !diagBusy && logBytes > 0L,
+                                onClick = {
+                                    diagBusy = true
+                                    scope.launch {
+                                        try {
+                                            diagnostics.clear()
+                                            viewModel.emitSimpleMessage("Diagnostic logs cleared")
+                                        } finally {
+                                            diagBusy = false
+                                        }
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                            ) {
+                                Text("Clear", maxLines = 1, softWrap = false)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 5. About (with integrated Update check & install)
             item(key = "about") {
                 SectionLabel("About")
                 Card(

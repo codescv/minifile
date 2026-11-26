@@ -1,6 +1,8 @@
 package com.minifile.explorer.service
 
 import android.annotation.SuppressLint
+import com.minifile.explorer.core.diag.Diag
+import com.minifile.explorer.core.diag.DiagnosticDescribe
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
@@ -369,6 +371,10 @@ class BlePeerCoordinator(
         synchronized(radioLock) {
             val (presence, scan) = refs()
             refreshAvailability()
+            Diag.log(Diag.BLE) {
+                "radios presence=$presence scan=$scan availability=${_availability.value} discoverable=${isDiscoverable()} " +
+                    "incoming=${incomingSession != null}"
+            }
             if (!presence && !scan) return
             registerStateReceiver()
             if (_availability.value != BleAvailability.READY) {
@@ -465,6 +471,7 @@ class BlePeerCoordinator(
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) = Unit
         override fun onStartFailure(errorCode: Int) {
+            Diag.log(Diag.BLE) { "advertise start failed errorCode=$errorCode" }
             synchronized(lock) {
                 advertising = false
                 advertisedPayload = null
@@ -510,6 +517,7 @@ class BlePeerCoordinator(
             .setIncludeTxPowerLevel(false)
             .build()
         val ok = runCatching { adv.startAdvertising(settings, data, scanResponse, advertiseCallback) }.isSuccess
+        Diag.log(Diag.BLE) { "advertise start requested ok=$ok flags=${currentFlags()}" }
         synchronized(lock) {
             advertising = ok
             advertisedPayload = if (ok) payload else null
@@ -523,6 +531,7 @@ class BlePeerCoordinator(
             advertising = false
             advertisedPayload = null
         }
+        Diag.log(Diag.BLE) { "advertise stop" }
         runCatching { adv?.stopAdvertising(advertiseCallback) }
     }
 
@@ -549,6 +558,7 @@ class BlePeerCoordinator(
         }
 
         override fun onScanFailed(errorCode: Int) {
+            Diag.log(Diag.BLE) { "scan failed errorCode=$errorCode" }
             synchronized(lock) { scanning = false }
         }
     }
@@ -563,6 +573,7 @@ class BlePeerCoordinator(
         val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(HotspotLinkUuids.SERVICE_UUID)).build())
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         val ok = runCatching { scanner.startScan(filters, settings, scanCallback) }.isSuccess
+        Diag.log(Diag.BLE) { "scan start ok=$ok" }
         if (!ok) synchronized(lock) { scanning = false }
     }
 
@@ -572,6 +583,7 @@ class BlePeerCoordinator(
             if (!scanning) return
             scanning = false
         }
+        Diag.log(Diag.BLE) { "scan stop" }
         runCatching { scanner?.stopScan(scanCallback) }
     }
 
@@ -726,6 +738,7 @@ class BlePeerCoordinator(
 
     private val serverCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+            Diag.log(Diag.BLE) { "gatt-server ${device.address} state=$newState status=$status" }
             if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 serverMtu.remove(device.address)
                 serverReassemblers.remove(device.address)
@@ -738,6 +751,7 @@ class BlePeerCoordinator(
         }
 
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
+            Diag.log(Diag.BLE) { "gatt-server ${device.address} mtu=$mtu" }
             serverMtu[device.address] = mtu
         }
 
@@ -822,7 +836,12 @@ class BlePeerCoordinator(
     }
 
     /** EVT notify, strictly one frame at a time, waiting for `onNotificationSent` (spec §2.2). */
-    private suspend fun notifyMessage(device: BluetoothDevice, msg: HotspotLinkMessage): Boolean {
+    private suspend fun notifyMessage(device: BluetoothDevice, msg: HotspotLinkMessage): Boolean =
+        notifyMessageInner(device, msg).also { ok ->
+            Diag.log(Diag.BLE) { "evt -> ${device.address} ${DiagnosticDescribe.linkMessage(msg)} ok=$ok" }
+        }
+
+    private suspend fun notifyMessageInner(device: BluetoothDevice, msg: HotspotLinkMessage): Boolean {
         val server = gattServer ?: return false
         val evt = server.getService(HotspotLinkUuids.SERVICE_UUID)?.getCharacteristic(HotspotLinkUuids.EVT_UUID)
             ?: return false
@@ -867,6 +886,7 @@ class BlePeerCoordinator(
     }
 
     private suspend fun handleCtrl(device: BluetoothDevice, msg: HotspotLinkMessage) {
+        Diag.log(Diag.BLE) { "ctrl <- ${device.address} ${DiagnosticDescribe.linkMessage(msg)}" }
         when (msg) {
             is HotspotLinkMessage.Hello -> onHello(device, msg)
             is HotspotLinkMessage.Link -> onLink(device, msg.mode)
@@ -931,6 +951,7 @@ class BlePeerCoordinator(
         }
 
         val accepted = withTimeoutOrNull(CONSENT_TIMEOUT_MS) { sess.decision.await() }
+        Diag.log(Diag.BLE) { "incoming offer from ${hello.name} decision=${accepted ?: "timeout"} autoAccept=${!s.peerConfirmReceive}" }
         _pendingIncoming.value = null
         if (incomingSession !== sess) return
         when (accepted) {
@@ -947,9 +968,11 @@ class BlePeerCoordinator(
                 updateReceiverUi(sess, "Preparing…")
                 // Zero-QR, zero-password direct channel: listen for one L2CAP connection and advertise its PSM.
                 val psm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) openL2capServer(sess) else 0
+                Diag.log(Diag.BLE) { "l2cap server psm=$psm" }
                 val port = try {
                     ensureHttpForReceive(sess)
                 } catch (e: Exception) {
+                    Diag.log(Diag.BLE) { "receiver HTTP start failed: ${e.message.orEmpty()} (psm=$psm)" }
                     if (psm in 1..65535) {
                         0 // HTTP could not start: Bluetooth (L2CAP) can still deliver the files.
                     } else {
@@ -1020,6 +1043,7 @@ class BlePeerCoordinator(
                     if (sess.httpStartedHere) hotspotManager.adoptEphemeralHttp()
                     hotspotManager.start(HotspotPurpose.BLE_RECEIVER, sess.hello.tok)
                 } catch (e: Exception) {
+                    Diag.log(Diag.BLE) { "receiver lohs-r hotspot failed: ${e.message.orEmpty()}" }
                     notifyMessage(device, HotspotLinkMessage.Error(HotspotLinkMessage.ERR_LOHS_FAILED))
                     endIncomingSession(error = e.message ?: "Hotspot failed")
                     return
@@ -1082,6 +1106,7 @@ class BlePeerCoordinator(
 
     private suspend fun finishIncoming(sess: IncomingSession, ok: Boolean, message: String) {
         if (incomingSession !== sess) return
+        Diag.log(Diag.BLE) { "incoming session finished ok=$ok '$message'" }
         closeL2capServer(sess)
         _linkUi.value = _linkUi.value?.copy(phase = message, finished = true, showQr = false, qrFallback = false)
             ?: BleLinkUiState(BleLinkRole.RECEIVER, sess.hello.name, message, finished = true)
@@ -1103,6 +1128,7 @@ class BlePeerCoordinator(
 
     private fun endIncomingSession(error: String?) {
         val sess = incomingSession ?: return
+        Diag.log(Diag.BLE) { "incoming session end error=${error ?: "-"} accepted=${sess.accepted} hosted=${sess.hostedHotspot}" }
         incomingSession = null
         _pendingIncoming.value = null
         sess.decision.complete(false)
@@ -1140,6 +1166,10 @@ class BlePeerCoordinator(
 
     /** Cancel button on the link dialog (either role). */
     fun cancelLink() {
+        Diag.log(Diag.BLE) {
+            "cancelLink negotiating=${negotiationJob?.isActive == true} l2capSock=${activeSenderSocket != null} " +
+                "sendAbort=${activeSendAbort.get() != null} incoming=${incomingSession != null}"
+        }
         negotiationJob?.cancel(CancellationException("Cancelled"))
         activeSenderSocket?.let { sock -> runCatching { sock.close() } }
         // HTTP phase of a hotspot / LAN link: `negotiationJob` already completed, so abort the send itself.
@@ -1448,8 +1478,10 @@ class BlePeerCoordinator(
             phase("Connecting to $peerName…")
             val c = GattClient(target.device)
             client = c
+            Diag.log(Diag.BLE) { "negotiate -> $peerName (${target.device.address}) files=$files bytes=$bytes lanHttpBlocked=$lanHttpBlocked" }
             if (!c.connect()) throw PeerTransferException(null, "Could not connect to $peerName over Bluetooth")
             c.requestMtu(517)
+            Diag.log(Diag.BLE) { "gatt-client mtu=${c.mtu}" }
             if (!c.discover()) {
                 throw PeerTransferException(
                     null,
@@ -1499,6 +1531,7 @@ class BlePeerCoordinator(
             if (!lanHttpBlocked && HostDecision.sharesSlash24(myIps, ack.lan) && ack.port in 1..65535) {
                 phase("Checking shared Wi-Fi…")
                 val lanPeer = probeFirst(ack.lan.filter { HostDecision.sharesSlash24(myIps, listOf(it)) }, ack.port)
+                Diag.log(Diag.BLE) { "LAN short-circuit probe ${ack.lan}:${ack.port} -> ${lanPeer?.host ?: "unreachable"}" }
                 if (lanPeer != null) {
                     c.writeMessage(HotspotLinkMessage.Link(LinkMode.LAN))
                     phase("Sending over Wi-Fi…")
@@ -1522,12 +1555,17 @@ class BlePeerCoordinator(
                 bytes = bytes,
                 lanHttpBlocked = lanHttpBlocked,
             )
+            Diag.log(Diag.BLE) {
+                "plan mode=${plan.mode?.wire} blocker=${plan.blocker} receiverOs=$receiverOs caps=${ack.caps} psm=${ack.psm} " +
+                    "senderCanHost=${canHostHotspot()} myIps=$myIps ackLan=${ack.lan}"
+            }
             plan.blocker?.let { blocker ->
                 if (blocker != LinkBlocker.IOS_PAIR) c.writeMessage(HotspotLinkMessage.Error(HotspotLinkMessage.ERR_PERM))
                 throw PeerTransferException(null, HostDecision.blockerMessage(blocker, ackName))
             }
 
             suspend fun runLohsR(): LinkResult {
+                Diag.log(Diag.BLE) { "runLohsR: asking $ackName to host" }
                 c.writeMessage(HotspotLinkMessage.Link(LinkMode.LOHS_R))
                 phase("$ackName is starting a hotspot…")
                 val hs = c.awaitMessage(HOTSPOT_WAIT_MS) {
@@ -1556,7 +1594,11 @@ class BlePeerCoordinator(
                 phase("Finding $ackName…")
                 val hostIp = hotspot.ip.ifEmpty { joined.gateway.orEmpty() }
                 val linked = probeWithRetries(listOfNotNull(hostIp, joined.gateway).distinct(), hotspot.port, 10)
-                    ?: throw PeerTransferException(null, "$ackName not reachable on its hotspot")
+                Diag.log(Diag.BLE) {
+                    "runLohsR joined ownIp=${joined.ownIp} gateway=${joined.gateway} hostIp=$hostIp:${hotspot.port} " +
+                        "probe=${linked?.let { "${it.host}:${it.port}" } ?: "unreachable"}"
+                }
+                if (linked == null) throw PeerTransferException(null, "$ackName not reachable on its hotspot")
                 c.writeMessage(HotspotLinkMessage.Joined(joined.ownIp.orEmpty()))
                 phase("Sending to $ackName…")
                 success = true
@@ -1570,9 +1612,11 @@ class BlePeerCoordinator(
 
             suspend fun runLohsS(): LinkResult {
                 phase("Starting hotspot…")
+                Diag.log(Diag.BLE) { "runLohsS: hosting for $ackName tok=$tok" }
                 var info = try {
                     hotspotManager.start(HotspotPurpose.BLE_SENDER, tok)
                 } catch (e: Exception) {
+                    Diag.log(Diag.BLE) { "runLohsS hotspot failed: ${e.message.orEmpty()}" }
                     c.writeMessage(HotspotLinkMessage.Error(HotspotLinkMessage.ERR_LOHS_FAILED))
                     throw PeerTransferException(null, e.message ?: "Could not start a hotspot")
                 }
@@ -1582,9 +1626,14 @@ class BlePeerCoordinator(
                 val announced = startAnnounceWaiter(this@coroutineScope)
                 try {
                     // The iPhone needs the gateway IP to announce (older iOS builds drop a `hotspot` without `ip`).
-                    if (info.hostIp.isEmpty()) info = awaitHotspotHostIp(HOST_IP_WAIT_MS) ?: info
+                    if (info.hostIp.isEmpty()) {
+                        Diag.log(Diag.BLE) { "runLohsS hostIp unknown -> wait up to ${HOST_IP_WAIT_MS}ms" }
+                        info = awaitHotspotHostIp(HOST_IP_WAIT_MS) ?: info
+                        Diag.log(Diag.BLE) { "runLohsS hostIp after wait=${info.hostIp.ifEmpty { "?" }}" }
+                    }
                     val credsSent = c.writeMessage(HotspotLinkMessage.Link(LinkMode.LOHS_S)) &&
                         c.writeMessage(hotspotMessage(info, tok))
+                    Diag.log(Diag.BLE) { "runLohsS creds sent over BLE=$credsSent hostIp=${info.hostIp.ifEmpty { "?" }}:${info.httpPort}; QR shown" }
                     phase(
                         if (credsSent) {
                             "Scan this QR with the iPhone Camera to join, then return to Files on the iPhone"
@@ -1595,7 +1644,10 @@ class BlePeerCoordinator(
                         showQr = true,
                     )
                     val target2 = awaitAnnounceOrReady(c, info, tok, announced)
-                        ?: throw PeerTransferException(null, "$ackName did not join the hotspot in time")
+                    Diag.log(Diag.BLE) {
+                        "runLohsS announce/ready -> ${target2?.let { "${it.host}:${it.port} id=${it.id.take(8)}" } ?: "timed out after ${ANNOUNCE_WAIT_MS}ms"}"
+                    }
+                    if (target2 == null) throw PeerTransferException(null, "$ackName did not join the hotspot in time")
                     phase("Sending to $ackName…", info, showQr = false)
                     success = true
                     val cc = c
@@ -1617,6 +1669,7 @@ class BlePeerCoordinator(
                     } else {
                         null
                     }
+                    Diag.log(Diag.BLE) { "l2cap sender psm=${ack.psm} -> ${if (direct != null) "connected" else "failed, falling back"}" }
                     if (direct != null) {
                         success = true
                         direct
@@ -1642,10 +1695,12 @@ class BlePeerCoordinator(
         } catch (e: CancellationException) {
             throw e
         } catch (e: PeerTransferException) {
+            Diag.log(Diag.BLE) { "negotiate failed: ${e.userMessage}" }
             phaseError(peerName, e.userMessage)
             throw e
         } catch (e: Exception) {
             val msg = e.message ?: "Direct link to $peerName failed"
+            Diag.log(Diag.BLE) { "negotiate failed ${e.javaClass.simpleName}: $msg" }
             phaseError(peerName, msg)
             throw PeerTransferException(null, msg, e)
         } finally {
@@ -1710,6 +1765,7 @@ class BlePeerCoordinator(
     }
 
     private suspend fun senderTeardown(c: GattClient, ok: Boolean, joined: Boolean, hosted: Boolean) {
+        Diag.log(Diag.BLE) { "sender teardown ok=$ok joined=$joined hosted=$hosted" }
         withContext(kotlinx.coroutines.NonCancellable) {
             runCatching { withTimeoutOrNull(2_000) { c.writeMessage(HotspotLinkMessage.Done(ok)) } }
             c.close()
@@ -1787,6 +1843,7 @@ class BlePeerCoordinator(
                 val readyJob = launch {
                     val r = c.awaitMessage(ANNOUNCE_WAIT_MS) { it is HotspotLinkMessage.Ready } as? HotspotLinkMessage.Ready
                         ?: return@launch
+                    Diag.log(Diag.BLE) { "ready via BLE ip=${r.ip} port=${r.port} (hostIp=${info.hostIp.ifEmpty { "?" }})" }
                     if (r.port !in 1..65535) return@launch
                     if (info.hostIp.isNotEmpty() && !HostDecision.inSubnet(r.ip, info.hostIp, info.prefixLength)) return@launch
                     val probed = probeWithRetries(listOf(r.ip), r.port, 5)
@@ -1795,7 +1852,8 @@ class BlePeerCoordinator(
                 val refineJob = if (info.hostIp.isEmpty()) {
                     launch {
                         val refined = awaitHotspotHostIp(ANNOUNCE_WAIT_MS) ?: return@launch
-                        c.writeMessage(hotspotMessage(refined, tok))
+                        val resent = c.writeMessage(hotspotMessage(refined, tok))
+                        Diag.log(Diag.BLE) { "hostIp refined=${refined.hostIp} -> hotspot re-sent ok=$resent" }
                         val cur = _linkUi.value
                         if (cur != null && cur.role == BleLinkRole.SENDER && cur.showQr) _linkUi.value = cur.copy(hotspot = refined)
                     }
@@ -1864,6 +1922,7 @@ class BlePeerCoordinator(
 
         private val cb = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+                Diag.log(Diag.BLE) { "gatt-client ${device.address} state=$newState status=$status" }
                 if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                     connectResult?.complete(status)
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -1876,6 +1935,7 @@ class BlePeerCoordinator(
 
             override fun onMtuChanged(g: BluetoothGatt, newMtu: Int, status: Int) {
                 // iOS starts its own ATT MTU exchange on connect: this may arrive while discovery is pending.
+                Diag.log(Diag.BLE) { "gatt-client ${device.address} mtu=$newMtu status=$status" }
                 ops.onEvent(GattEvent.MtuChanged(newMtu, status))
             }
 
@@ -1930,6 +1990,7 @@ class BlePeerCoordinator(
             if (!isEvt) return
             val bytes = synchronized(reassembler) { reassembler.feed(value) } ?: return
             val msg = HotspotLinkCodec.decodeMessage(bytes) ?: return
+            Diag.log(Diag.BLE) { "evt <- ${device.address} ${DiagnosticDescribe.linkMessage(msg)}" }
             messages.trySend(msg)
         }
 
@@ -2010,7 +2071,12 @@ class BlePeerCoordinator(
             return st == BluetoothGatt.GATT_SUCCESS
         }
 
-        suspend fun writeMessage(msg: HotspotLinkMessage): Boolean {
+        suspend fun writeMessage(msg: HotspotLinkMessage): Boolean =
+            writeMessageInner(msg).also { ok ->
+                Diag.log(Diag.BLE) { "ctrl -> ${device.address} ${DiagnosticDescribe.linkMessage(msg)} ok=$ok" }
+            }
+
+        private suspend fun writeMessageInner(msg: HotspotLinkMessage): Boolean {
             val g = gatt ?: return false
             val ctrl = g.getService(HotspotLinkUuids.SERVICE_UUID)?.getCharacteristic(HotspotLinkUuids.CTRL_UUID)
                 ?: return false

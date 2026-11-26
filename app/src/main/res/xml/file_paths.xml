@@ -5,5 +5,6 @@
     <cache-path name="ftp_cache" path="ftp_cache/" />
     <cache-path name="gdrive_cache" path="gdrive_cache/" />
     <cache-path name="feedback_cache" path="feedback_cache/" />
+    <cache-path name="diag_export" path="diag_export/" />
     <root-path name="root" path="." />
 </paths>

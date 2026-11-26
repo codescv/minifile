@@ -64,6 +64,7 @@ class SettingsRepository(
         const val KEY_GDRIVE_LAST_CLIENT_ID = "gdrive_last_client_id"
         const val KEY_GDRIVE_LAST_CLIENT_SECRET = "gdrive_last_client_secret"
         const val KEY_AGENT_FEEDBACK_EMAIL = "agent_feedback_email"
+        const val KEY_DIAGNOSTIC_LOGGING = "diagnostic_logging_enabled"
     }
 
     private data class DebugFtpOverrides(
@@ -147,6 +148,7 @@ class SettingsRepository(
             peerConflictPolicy = store.getString(KEY_PEER_CONFLICT_POLICY, null)
                 ?.let { PeerConflictPolicy.fromWire(it) } ?: PeerConflictPolicy.RENAME,
             peerConfirmReceive = store.getBoolean(KEY_PEER_CONFIRM_RECEIVE, true),
+            diagnosticLoggingEnabled = store.getBoolean(KEY_DIAGNOSTIC_LOGGING, false),
             updateAutoCheck = store.getBoolean(KEY_UPDATE_AUTO_CHECK, true),
             updateIncludePre = store.getBoolean(KEY_UPDATE_INCLUDE_PRE, false),
             updateLastCheckMs = store.getLong(KEY_UPDATE_LAST_CHECK_MS, 0L),
@@ -238,6 +240,10 @@ class SettingsRepository(
         return true
     }
 
+    fun setDiagnosticLoggingEnabled(on: Boolean) {
+        update { it.copy(diagnosticLoggingEnabled = on) }
+    }
+
     fun setAgentFeedbackEmail(raw: String) {
         val normalized = AgentFeedbackBuilder.normalizeEmail(raw)
         update { it.copy(agentFeedbackEmail = normalized) }
@@ -284,6 +290,7 @@ class SettingsRepository(
         store.putBoolean(KEY_PEER_DISCOVERABLE, s.peerDiscoverable)
         store.putString(KEY_PEER_CONFLICT_POLICY, s.peerConflictPolicy.wireValue)
         store.putBoolean(KEY_PEER_CONFIRM_RECEIVE, s.peerConfirmReceive)
+        store.putBoolean(KEY_DIAGNOSTIC_LOGGING, s.diagnosticLoggingEnabled)
 
         store.putBoolean(KEY_UPDATE_AUTO_CHECK, s.updateAutoCheck)
         store.putBoolean(KEY_UPDATE_INCLUDE_PRE, s.updateIncludePre)

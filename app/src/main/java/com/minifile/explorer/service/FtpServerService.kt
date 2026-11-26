@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import com.minifile.explorer.core.diag.Diag
 import com.minifile.explorer.ui.util.NearbyPermissions
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -122,6 +123,10 @@ class FtpServerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Diag.log(Diag.APP) {
+            "FtpServerService command=${intent?.action?.substringAfterLast('.') ?: "null"} " +
+                "http=${HttpServerHolder.state.value.isRunning} ftp=${FtpServerHolder.state.value.isRunning}"
+        }
         when (intent?.action) {
             ACTION_STOP_ALL -> {
                 shutdownAll(errorMessage = null, removeNotification = true)
@@ -189,6 +194,7 @@ class FtpServerService : Service() {
     }
 
     private fun handleSystemTimeout() {
+        Diag.log(Diag.APP) { "FtpServerService foreground-service timeout -> shutting down" }
         shutdownAll(
             errorMessage = "Stopped by Android foreground service timeout",
             removeNotification = true,
@@ -200,6 +206,7 @@ class FtpServerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        Diag.log(Diag.APP) { "FtpServerService destroyed" }
         shutdownAll(errorMessage = null, removeNotification = true)
         scope.cancel()
         super.onDestroy()

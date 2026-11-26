@@ -1,5 +1,6 @@
 package com.minifile.explorer.core.http
 
+import com.minifile.explorer.core.diag.Diag
 import com.minifile.explorer.core.ftp.FtpAccessDeniedException
 import com.minifile.explorer.core.ftp.FtpPathResolver
 import com.minifile.explorer.core.ftp.FtpServerEngine
@@ -259,6 +260,7 @@ class HttpFileServerEngine(
             Thread(runnable, "minifile-http-worker").apply { isDaemon = true }
         }
         executor = pool
+        Diag.log(Diag.HTTP) { "engine listening port=$boundPort bind=${config.bindAddress.ifBlank { "0.0.0.0" }} readOnly=${config.readOnly}" }
         _events.tryEmit(HttpEvent.Started(boundPort))
 
         pool.execute {
@@ -451,6 +453,7 @@ class HttpFileServerEngine(
     @Synchronized
     fun stop() {
         if (!running.compareAndSet(true, false)) return
+        Diag.log(Diag.HTTP) { "engine stopping port=$boundPort livePeerSessions=${synchronized(peerSessionLock) { livePeerSessions.size }}" }
         runCatching { serverSocket?.close() }
         serverSocket = null
 
@@ -651,6 +654,10 @@ class HttpFileServerEngine(
                 }
 
                 rawUriPath == "/api/peer/send" && method == "POST" -> {
+                    Diag.log(Diag.PEER) {
+                        "recv /api/peer/send <- $clientIp session=${query["session"].orEmpty()} " +
+                            "path=${query["path"].orEmpty()} length=${headers["content-length"].orEmpty()}"
+                    }
                     handlePeerSend(socket, clientIp, rawTarget, rawQuery, query, headers, input, output, requestWantsClose)
                 }
 
@@ -690,16 +697,23 @@ class HttpFileServerEngine(
                 }
             }
         } catch (e: FtpAccessDeniedException) {
+            Diag.log(Diag.HTTP) { "$method $rawUriPath <- $clientIp -> 403 ${e.message.orEmpty()}" }
             drainSmallUnreadIfNoExpectContinue(socket, headers, input)
             _events.tryEmit(HttpEvent.Request(clientIp, method, rawTarget, 403))
             writeJsonError(output, 403, "Forbidden", e.message ?: "Access denied", headOnly, close = true)
             return false
         } catch (e: HttpStatusException) {
+            Diag.log(if (rawUriPath.startsWith("/api/peer/")) Diag.PEER else Diag.HTTP) {
+                "$method $rawUriPath <- $clientIp -> ${e.status} code=${e.code ?: "-"} ${e.message.orEmpty()}"
+            }
             drainSmallUnreadIfNoExpectContinue(socket, headers, input)
             _events.tryEmit(HttpEvent.Request(clientIp, method, rawTarget, e.status))
             writeJsonError(output, e.status, e.reason, e.message ?: e.reason, headOnly, close = true, code = e.code)
             return false
         } catch (e: Exception) {
+            Diag.log(if (rawUriPath.startsWith("/api/peer/")) Diag.PEER else Diag.HTTP) {
+                "$method $rawUriPath <- $clientIp failed ${e.javaClass.simpleName}: ${e.message.orEmpty()}"
+            }
             _events.tryEmit(HttpEvent.Error("${method} ${rawTarget}: ${e.message ?: "internal error"}"))
             runCatching {
                 writeJsonError(output, 500, "Internal Server Error", e.message ?: "Internal server error", headOnly, close = true)
@@ -1321,6 +1335,10 @@ class HttpFileServerEngine(
 
         // Spec §2.4 token gate: while a BLE / Files-QR hotspot session is armed, `tok` must match (constant-time).
         val gate = hotspotGate.checkBeginToken(query["tok"]?.trim())
+        Diag.log(Diag.PEER) {
+            "recv /api/peer/begin <- $clientIp device=${query["device"].orEmpty()} files=${query["files"].orEmpty()} " +
+                "bytes=${query["bytes"].orEmpty()} tok=${query["tok"].orEmpty()} gate=$gate"
+        }
         if (gate == HotspotSessionGate.BeginGate.REJECTED) {
             throw HttpStatusException(403, "Forbidden", "Session token required", code = "token")
         }
@@ -1336,9 +1354,11 @@ class HttpFileServerEngine(
             }
             val approver = peerBeginApprover
             if (approver != null) {
+                Diag.log(Diag.PEER) { "begin from $clientIp needs approval prompt (no pre-approved token match)" }
                 val approved = runCatching {
                     approver(PeerBeginOffer(clientIp, senderDevice, expectedFiles, expectedBytes))
                 }.getOrDefault(false)
+                Diag.log(Diag.PEER) { "begin approval from $clientIp -> ${if (approved) "accepted" else "declined"}" }
                 if (!approved) {
                     throw HttpStatusException(403, "Forbidden", "Transfer declined", code = "declined")
                 }
@@ -1363,6 +1383,7 @@ class HttpFileServerEngine(
             }
             livePeerSessions[sessionId] = session
         }
+        Diag.log(Diag.PEER) { "begin accepted session=$sessionId from $clientIp tokenGated=${session.tokenGated}" }
 
         _events.tryEmit(HttpEvent.Request(clientIp, "POST", rawTarget, 200))
         _events.tryEmit(
@@ -1417,6 +1438,11 @@ class HttpFileServerEngine(
         drainSmallBodyIfBounded(bodyInfo)
 
         val mode = hotspotGate.announceMode
+        Diag.log(Diag.PEER) {
+            "recv /api/peer/announce <- $clientIp local=${socket.localAddress?.hostAddress} mode=$mode " +
+                "hosting=${hotspotGate.isHosting} onHotspotIface=${hotspotGate.isOnHotspotInterface(socket.localAddress)} " +
+                "port=${query["port"].orEmpty()} id=${query["id"].orEmpty()} os=${query["os"].orEmpty()} tok=${query["tok"].orEmpty()}"
+        }
         if (mode == HotspotSessionGate.AnnounceMode.CLOSED) {
             throw HttpStatusException(403, "Forbidden", "No hotspot session is waiting for an announce", code = "token")
         }
@@ -1455,6 +1481,7 @@ class HttpFileServerEngine(
         val os = query["os"]?.trim()?.lowercase(Locale.ROOT)?.takeIf { it == "android" || it == "ios" }
 
         _events.tryEmit(HttpEvent.Request(clientIp, "POST", rawTarget, 200))
+        Diag.log(Diag.PEER) { "announce accepted from $clientIp:$port id=$id open=$open" }
         _events.tryEmit(HttpEvent.PeerAnnounce(clientIp = clientIp, port = port, id = id, name = name, os = os, open = open))
 
         val respBytes = MiniJson.stringify(
@@ -1894,6 +1921,7 @@ class HttpFileServerEngine(
         }
 
         val okFlag = query["ok"] != "0" && !query["ok"].equals("false", ignoreCase = true)
+        Diag.log(Diag.PEER) { "recv /api/peer/end <- $clientIp session=$sessionId ok=$okFlag" }
         var endedSession: PeerReceiveSession? = null
         val tempsToDelete = ArrayList<VfsPath>()
         synchronized(peerSessionLock) {

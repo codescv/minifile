@@ -1,5 +1,6 @@
 package com.minifile.explorer.service
 
+import com.minifile.explorer.core.diag.Diag
 import com.minifile.explorer.core.http.HotspotSessionGate
 import com.minifile.explorer.core.http.HttpEvent
 import com.minifile.explorer.core.http.HttpTransferDirection
@@ -61,6 +62,7 @@ object HttpServerHolder {
     val peerEvents: SharedFlow<HttpEvent> = _peerEvents.asSharedFlow()
 
     fun markStarting() = synchronized(lock) {
+        Diag.log(Diag.HTTP) { "server starting" }
         _state.value = _state.value.copy(isStarting = true, lastError = null)
     }
 
@@ -81,6 +83,7 @@ object HttpServerHolder {
             downloadsCount = 0,
             lastError = null,
         )
+        Diag.log(Diag.HTTP) { "server started port=$port lanIps=$lanIps" }
         appendLogLocked("server", "HTTP server started on port $port")
     }
 
@@ -100,6 +103,7 @@ object HttpServerHolder {
     }
 
     fun markStopped(errorMessage: String? = null) = synchronized(lock) {
+        Diag.log(Diag.HTTP) { "server stopped wasRunning=${_state.value.isRunning} error=${errorMessage ?: "-"}" }
         if (_state.value.isRunning) {
             appendLogLocked("server", errorMessage ?: "HTTP server stopped")
         }
@@ -119,6 +123,7 @@ object HttpServerHolder {
     }
 
     fun onEvent(event: HttpEvent) = synchronized(lock) {
+        logDiagEvent(event)
         if (event is HttpEvent.PeerAnnounce || event is HttpEvent.PeerSessionStart || event is HttpEvent.PeerSessionEnd) {
             _peerEvents.tryEmit(event)
         }
@@ -211,7 +216,30 @@ object HttpServerHolder {
         _state.value = _state.value.copy(log = emptyList())
     }
 
+    /** Mirrors raw HTTP/peer events into the diagnostic log (progress ticks and plain 2xx file browsing are skipped). */
+    private fun logDiagEvent(event: HttpEvent) {
+        if (!Diag.isEnabled) return
+        when (event) {
+            is HttpEvent.PeerProgress -> Unit
+            is HttpEvent.Request -> if (event.target.startsWith("/api/peer/") || event.status !in 200..399) {
+                Diag.log(if (event.target.startsWith("/api/peer/")) Diag.PEER else Diag.HTTP) {
+                    "${event.method} ${event.target} <- ${event.clientIp} -> ${event.status}"
+                }
+            }
+            is HttpEvent.Transfer -> Diag.log(if (event.peerSessionId != null) Diag.PEER else Diag.HTTP) {
+                "transfer ${event.direction} ${event.path} bytes=${event.bytes} ms=${event.durationMs} " +
+                    "client=${event.clientIp} session=${event.peerSessionId ?: "-"}"
+            }
+            is HttpEvent.PeerSessionStart, is HttpEvent.PeerSessionEnd, is HttpEvent.PeerAnnounce ->
+                Diag.log(Diag.PEER) { "event $event" }
+            is HttpEvent.Error -> Diag.log(Diag.HTTP) { "error ${event.message}" }
+            is HttpEvent.Started -> Diag.log(Diag.HTTP) { "event started port=${event.port}" }
+            HttpEvent.Stopped -> Diag.log(Diag.HTTP) { "event stopped" }
+        }
+    }
+
     private fun appendLogLocked(clientIp: String, summary: String): Long {
+        Diag.log(Diag.ACTIVITY) { "$clientIp  $summary" }
         val now = System.currentTimeMillis()
         val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(now))
         val id = nextId++

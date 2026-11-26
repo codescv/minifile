@@ -11,6 +11,7 @@ import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import androidx.annotation.RequiresApi
+import com.minifile.explorer.core.diag.Diag
 import com.minifile.explorer.core.peer.HostDecision
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -121,6 +122,7 @@ class WifiSpecifierConnector internal constructor(
      */
     override suspend fun join(ssid: String, pass: String, sec: String, expectedHostIp: String?): JoinedNetwork {
         release()
+        Diag.log(Diag.NET) { "wifi join ssid=$ssid sec=$sec expectedHost=${expectedHostIp ?: "-"} sdk=${ops.sdkInt}" }
         return try {
             val net = if (ops.sdkInt >= Build.VERSION_CODES.Q) {
                 joinWithSpecifier(ssid, pass, sec)
@@ -128,8 +130,10 @@ class WifiSpecifierConnector internal constructor(
                 joinLegacy(ssid, pass, expectedHostIp)
             }
             synchronized(lock) { joined = net }
+            Diag.log(Diag.NET) { "wifi joined ssid=$ssid ownIp=${net.ownIp}/${net.prefixLength} gateway=${net.gateway}" }
             net
         } catch (t: Throwable) {
+            Diag.log(Diag.NET) { "wifi join failed ssid=$ssid ${t.javaClass.simpleName}: ${t.message.orEmpty()}" }
             // Spec §3.3 [v2]: guarantees release even if cancelled during post-onAvailable DHCP wait or legacy poll.
             release()
             throw t
@@ -149,6 +153,10 @@ class WifiSpecifierConnector internal constructor(
 
     /** Idempotent: cancels any pending [releaseAfter], unregisters specifier / removes legacy network. */
     override fun release() {
+        if (Diag.isEnabled) {
+            val had = synchronized(lock) { joined != null || activeRegistration != null || legacyNetworkId >= 0 }
+            if (had) Diag.log(Diag.NET) { "wifi release joined network" }
+        }
         val reg: Any?
         val legacyId: Int
         val pendingJob: Job?
@@ -199,8 +207,10 @@ class WifiSpecifierConnector internal constructor(
             val isLast = index == attempts.lastIndex
             val timeoutMs = if (isLast) JOIN_TIMEOUT_MS else FIRST_ATTEMPT_TIMEOUT_MS
             try {
+                Diag.log(Diag.NET) { "wifi specifier attempt ${index + 1}/${attempts.size} mode=$mode timeoutMs=$timeoutMs" }
                 return joinWithSpecifierOnce(ssid, pass, mode, timeoutMs)
             } catch (e: JoinException) {
+                Diag.log(Diag.NET) { "wifi specifier mode=$mode failed: ${e.message.orEmpty()}" }
                 lastError = e
                 if (isLast) throw e
             }
