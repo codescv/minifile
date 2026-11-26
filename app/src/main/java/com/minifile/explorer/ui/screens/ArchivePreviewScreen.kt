@@ -51,6 +51,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.ops.EncryptedZipException
 import com.minifile.explorer.core.ops.ZipArchiver
 import com.minifile.explorer.core.ops.ZipEntryInfo
@@ -58,6 +59,7 @@ import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.components.ExtractZipDialog
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -71,6 +73,7 @@ fun ArchivePreviewScreen(
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val favorites by viewModel.favorites.collectAsState()
     val browser by viewModel.browser.collectAsState()
 
@@ -97,9 +100,9 @@ fun ArchivePreviewScreen(
             parentDir = loadedParent
             entries = loadedEntries
         } catch (e: EncryptedZipException) {
-            errorMessage = "Password-protected ZIP archives are not supported in v1."
+            errorMessage = s[Str.ZIP_ENCRYPTED_ERROR]
         } catch (e: Exception) {
-            errorMessage = e.message ?: "Failed to read archive"
+            errorMessage = e.message ?: s[Str.FAILED_READ_ARCHIVE]
         } finally {
             loading = false
         }
@@ -123,7 +126,7 @@ fun ArchivePreviewScreen(
             TopAppBar(
                 navigationIcon = {
                     IconButton(onClick = onClose) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s[Str.BACK])
                     }
                 },
                 title = {
@@ -136,7 +139,7 @@ fun ArchivePreviewScreen(
                         )
                         if (!loading && errorMessage == null) {
                             Text(
-                                text = "${entries.size} entries · ${UiFormatters.formatSize(context, totalUncompressed)}",
+                                text = s.format(Str.ENTRIES_SUMMARY, entries.size, UiFormatters.formatSize(context, totalUncompressed)),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -146,7 +149,7 @@ fun ArchivePreviewScreen(
                 actions = {
                     if (selectedNames.isNotEmpty()) {
                         TextButton(onClick = { selectedNames = emptySet() }) {
-                            Text("Clear (${selectedNames.size})")
+                            Text(s.format(Str.CLEAR_COUNT, selectedNames.size))
                         }
                     }
                 },
@@ -178,7 +181,7 @@ fun ArchivePreviewScreen(
                             ) {
                                 Icon(Icons.Filled.Unarchive, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
-                                Text("Extract selected (${selectedNames.size})")
+                                Text(s.format(Str.EXTRACT_SELECTED, selectedNames.size))
                             }
                         } else {
                             OutlinedButton(
@@ -193,7 +196,7 @@ fun ArchivePreviewScreen(
                                 },
                                 modifier = Modifier.weight(1f),
                             ) {
-                                Text("Extract here")
+                                Text(s[Str.EXTRACT_HERE])
                             }
                             Button(
                                 onClick = {
@@ -207,10 +210,10 @@ fun ArchivePreviewScreen(
                                 },
                                 modifier = Modifier.weight(1.3f),
                             ) {
-                                Text("Extract to new folder")
+                                Text(s[Str.EXTRACT_TO_NEW_FOLDER])
                             }
                             TextButton(onClick = { showExtractDialog = true }) {
-                                Text("More…")
+                                Text(s[Str.MORE_ELLIPSIS])
                             }
                         }
                     }
@@ -240,7 +243,7 @@ fun ArchivePreviewScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "$unsafeCount unsafe path entr${if (unsafeCount == 1) "y" else "ies"} detected (zip-slip guard will skip automatically).",
+                            text = if (unsafeCount == 1) s[Str.UNSAFE_ENTRY_SINGLE] else s.format(Str.UNSAFE_ENTRY_PLURAL, unsafeCount),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onErrorContainer,
                         )
@@ -311,17 +314,17 @@ fun ArchivePreviewScreen(
                                 },
                                 supportingContent = {
                                     val sizeLabel = if (entry.isDirectory) {
-                                        "Directory"
+                                        s[Str.DIRECTORY]
                                     } else {
                                         val rawSz = UiFormatters.formatSize(context, entry.size)
                                         val cmpSz = if (entry.compressedSize >= 0) {
-                                            " (${UiFormatters.formatSize(context, entry.compressedSize)} compressed)"
+                                            s.format(Str.COMPRESSED_SIZE_FMT, UiFormatters.formatSize(context, entry.compressedSize))
                                         } else {
                                             ""
                                         }
                                         "$rawSz$cmpSz"
                                     }
-                                    val warn = if (!isSafe) " · Unsafe path (skipped)" else ""
+                                    val warn = if (!isSafe) s[Str.UNSAFE_PATH_SKIPPED] else ""
                                     Text("$sizeLabel · ${UiFormatters.formatShortDate(entry.lastModified)}$warn")
                                 },
                                 modifier = Modifier
@@ -372,8 +375,8 @@ fun ArchivePreviewScreen(
     bombWarningPending?.let { (dst, sub) ->
         AlertDialog(
             onDismissRequest = { bombWarningPending = null },
-            title = { Text("Large archive warning") },
-            text = { Text("This archive exceeds normal entry/expansion thresholds. Extract anyway?") },
+            title = { Text(s[Str.LARGE_ARCHIVE_WARNING]) },
+            text = { Text(s[Str.LARGE_ARCHIVE_WARNING_DESC]) },
             confirmButton = {
                 Button(
                     onClick = {
@@ -388,11 +391,11 @@ fun ArchivePreviewScreen(
                         onClose()
                     },
                 ) {
-                    Text("Extract anyway")
+                    Text(s[Str.EXTRACT_ANYWAY])
                 }
             },
             dismissButton = {
-                TextButton(onClick = { bombWarningPending = null }) { Text("Cancel") }
+                TextButton(onClick = { bombWarningPending = null }) { Text(s[Str.CANCEL]) }
             },
         )
     }

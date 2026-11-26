@@ -1,6 +1,7 @@
 package com.minifile.explorer.data
 
 import com.minifile.explorer.core.feedback.AgentFeedbackBuilder
+import com.minifile.explorer.core.i18n.AppLanguage
 import com.minifile.explorer.core.model.AppSettings
 import com.minifile.explorer.core.model.JsonValue
 import com.minifile.explorer.core.model.KeyValueStore
@@ -18,6 +19,7 @@ import java.util.UUID
 class SettingsRepository(
     private val store: KeyValueStore,
     private val defaultDeviceNameProvider: () -> String = { "Files" },
+    private val onLanguageChanged: ((AppLanguage) -> Unit)? = null,
 ) {
     companion object {
         const val KEY_SHOW_HIDDEN = "show_hidden"
@@ -65,6 +67,7 @@ class SettingsRepository(
         const val KEY_GDRIVE_LAST_CLIENT_SECRET = "gdrive_last_client_secret"
         const val KEY_AGENT_FEEDBACK_EMAIL = "agent_feedback_email"
         const val KEY_DIAGNOSTIC_LOGGING = "diagnostic_logging_enabled"
+        const val KEY_APP_LANGUAGE = "app_language"
     }
 
     private data class DebugFtpOverrides(
@@ -156,6 +159,7 @@ class SettingsRepository(
             gdriveLastClientId = store.getString(KEY_GDRIVE_LAST_CLIENT_ID, "") ?: "",
             gdriveLastClientSecret = store.getString(KEY_GDRIVE_LAST_CLIENT_SECRET, "") ?: "",
             agentFeedbackEmail = AgentFeedbackBuilder.normalizeEmail(store.getString(KEY_AGENT_FEEDBACK_EMAIL, "")),
+            appLanguage = AppLanguage.fromStorage(store.getString(KEY_APP_LANGUAGE, null)),
         )
     }
 
@@ -198,6 +202,9 @@ class SettingsRepository(
             debugOverrides = debugOverrides.copy(pasvStart = null, pasvEnd = null)
         }
         _settings.value = applyOverrides(next)
+        if (next.appLanguage != prevPersisted.appLanguage) {
+            onLanguageChanged?.invoke(next.appLanguage)
+        }
     }
 
     fun setTransferRoot(serialized: String?) {
@@ -247,6 +254,10 @@ class SettingsRepository(
     fun setAgentFeedbackEmail(raw: String) {
         val normalized = AgentFeedbackBuilder.normalizeEmail(raw)
         update { it.copy(agentFeedbackEmail = normalized) }
+    }
+
+    fun setAppLanguage(language: AppLanguage) {
+        update { it.copy(appLanguage = language) }
     }
 
     private fun persist(s: AppSettings) {
@@ -300,5 +311,6 @@ class SettingsRepository(
         store.putString(KEY_GDRIVE_LAST_CLIENT_ID, s.gdriveLastClientId)
         store.putString(KEY_GDRIVE_LAST_CLIENT_SECRET, s.gdriveLastClientSecret)
         store.putString(KEY_AGENT_FEEDBACK_EMAIL, AgentFeedbackBuilder.normalizeEmail(s.agentFeedbackEmail))
+        store.putString(KEY_APP_LANGUAGE, s.appLanguage.storageValue)
     }
 }

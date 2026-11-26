@@ -11,6 +11,8 @@ import com.minifile.explorer.core.diag.DiagnosticEnvironment
 import com.minifile.explorer.core.diag.DiagnosticExport
 import com.minifile.explorer.core.diag.DiagnosticLogStats
 import com.minifile.explorer.core.diag.DiagnosticLogger
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.service.FtpServerHolder
 import com.minifile.explorer.service.HttpServerHolder
 import kotlinx.coroutines.CoroutineScope
@@ -105,7 +107,7 @@ class DiagnosticsController(
             clipData = ClipData.newUri(appContext.contentResolver, file.name, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        return Intent.createChooser(send, "Export diagnostic logs").apply {
+        return Intent.createChooser(send, AppI18n.current()[Str.DIAG_SHARE_CHOOSER]).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
     }

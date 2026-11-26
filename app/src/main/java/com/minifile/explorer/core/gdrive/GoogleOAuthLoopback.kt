@@ -1,5 +1,7 @@
 package com.minifile.explorer.core.gdrive
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.Clock
 import com.minifile.explorer.core.model.JsonValue
 import com.minifile.explorer.core.model.MiniJson
@@ -54,15 +56,15 @@ class GoogleOAuthLoopback(
         private const val MAX_REQUEST_BYTES = 8192
         private const val SOCKET_READ_TIMEOUT_MS = 5_000
 
-        private const val SUCCESS_HTML =
-            "<!doctype html><html><head><meta charset=\"utf-8\"><title>Signed in</title></head>" +
+        internal fun resultHtml(success: Boolean): String {
+            val lang = AppI18n.currentLanguage.value
+            val str = AppI18n.stringsFor(lang)
+            val title = str[if (success) Str.OAUTH_PAGE_SIGNED_IN_TITLE else Str.OAUTH_PAGE_DENIED_TITLE]
+            val heading = str[if (success) Str.OAUTH_PAGE_SIGNED_IN_HEADING else Str.OAUTH_PAGE_DENIED_HEADING]
+            return "<!doctype html><html lang=\"${lang.htmlLang}\"><head><meta charset=\"utf-8\"><title>$title</title></head>" +
                 "<body style=\"font-family:sans-serif;padding:2rem;text-align:center;\">" +
-                "<h2>Signed in.</h2><p>You can return to the Files app.</p></body></html>"
-
-        private const val DENIED_HTML =
-            "<!doctype html><html><head><meta charset=\"utf-8\"><title>Sign-in denied</title></head>" +
-                "<body style=\"font-family:sans-serif;padding:2rem;text-align:center;\">" +
-                "<h2>Google sign-in was denied.</h2><p>You can return to the Files app.</p></body></html>"
+                "<h2>$heading</h2><p>${str[Str.OAUTH_PAGE_RETURN_TO_APP]}</p></body></html>"
+        }
 
         internal fun generateCodeVerifier(random: SecureRandom): String {
             val bytes = ByteArray(32)
@@ -213,8 +215,8 @@ class GoogleOAuthLoopback(
                     }
 
                     if (!params["error"].isNullOrEmpty()) {
-                        writeFixedResponse(client, 200, "OK", "text/html; charset=utf-8", DENIED_HTML)
-                        throw GDriveAuthException("Google sign-in was denied", needsInteraction = true)
+                        writeFixedResponse(client, 200, "OK", "text/html; charset=utf-8", resultHtml(success = false))
+                        throw GDriveAuthException(AppI18n.current()[Str.GDRIVE_SIGNIN_DENIED], needsInteraction = true)
                     }
 
                     val code = params["code"]?.takeIf { it.isNotEmpty() }
@@ -223,7 +225,7 @@ class GoogleOAuthLoopback(
                         return@use
                     }
 
-                    writeFixedResponse(client, 200, "OK", "text/html; charset=utf-8", SUCCESS_HTML)
+                    writeFixedResponse(client, 200, "OK", "text/html; charset=utf-8", resultHtml(success = true))
                     return code
                 }
             } catch (authErr: GDriveAuthException) {

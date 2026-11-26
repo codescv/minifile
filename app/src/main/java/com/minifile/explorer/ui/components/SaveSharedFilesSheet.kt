@@ -80,6 +80,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.minifile.explorer.core.gdrive.GDriveAuthException
+import com.minifile.explorer.core.i18n.AppStrings
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.Favorite
 import com.minifile.explorer.core.model.FtpServerBookmark
 import com.minifile.explorer.core.model.GDriveServerBookmark
@@ -96,6 +98,7 @@ import com.minifile.explorer.data.share.IncomingSharedFile
 import com.minifile.explorer.ui.SaveSharedUiState
 import com.minifile.explorer.ui.ShareDestinationKind
 import com.minifile.explorer.ui.ShareQuickDestination
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -121,6 +124,7 @@ fun SaveSharedFilesSheet(
     onCancelOrDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val scope = rememberCoroutineScope()
     val isSavingLatest by rememberUpdatedState(state.isSaving)
     val sheetState = rememberModalBottomSheetState(
@@ -162,7 +166,7 @@ fun SaveSharedFilesSheet(
         } catch (e: Exception) {
             browseSubfolders = emptyList()
             browseLoading = false
-            browseError = e.message ?: "Unable to open folder"
+            browseError = e.message ?: s[Str.UNABLE_OPEN_FOLDER]
             browseReauthServerId = if (dir is VfsPath.GDrive && e is GDriveAuthException && e.needsInteraction) {
                 dir.serverId
             } else {
@@ -203,7 +207,7 @@ fun SaveSharedFilesSheet(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    text = if (browsingFolders) "Choose destination" else "Save to Files",
+                    text = if (browsingFolders) s[Str.CHOOSE_DESTINATION] else s[Str.SAVE_TO_FILES],
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
@@ -217,7 +221,7 @@ fun SaveSharedFilesSheet(
                         }
                     },
                 ) {
-                    Icon(Icons.Filled.Close, contentDescription = "Close")
+                    Icon(Icons.Filled.Close, contentDescription = s[Str.CLOSE])
                 }
             }
 
@@ -269,7 +273,7 @@ fun SaveSharedFilesSheet(
                         }
                     },
                     onSelectCurrent = { dir ->
-                        val friendlyLabel = formatFolderLabel(dir, browseRootLabel, ftpServers, gdriveServers)
+                        val friendlyLabel = formatFolderLabel(dir, browseRootLabel, ftpServers, gdriveServers, s)
                         onSelectDestination(dir, friendlyLabel)
                         browsingFolders = false
                     },
@@ -297,7 +301,7 @@ fun SaveSharedFilesSheet(
 
                     // Destination selector
                     Text(
-                        text = "Destination",
+                        text = s[Str.DESTINATION],
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -329,7 +333,7 @@ fun SaveSharedFilesSheet(
                                 FilterChip(
                                     selected = selected,
                                     enabled = !state.isSaving,
-                                    onClick = { onSelectDestination(q.path, q.label.removePrefix("Current (").removeSuffix(")").takeIf { q.kind == ShareDestinationKind.CURRENT } ?: q.label) },
+                                    onClick = { onSelectDestination(q.path, if (q.kind == ShareDestinationKind.CURRENT) null else q.label) },
                                     label = {
                                         Text(
                                             text = q.label,
@@ -353,15 +357,15 @@ fun SaveSharedFilesSheet(
 
                     // Conflict policy row
                     Text(
-                        text = "If a file with the same name exists",
+                        text = s[Str.CONFLICT_POLICY_PROMPT],
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(6.dp))
                     val policies = listOf(
-                        PeerConflictPolicy.RENAME to "Rename",
-                        PeerConflictPolicy.OVERWRITE to "Overwrite",
-                        PeerConflictPolicy.SKIP to "Skip",
+                        PeerConflictPolicy.RENAME to s[Str.RENAME],
+                        PeerConflictPolicy.OVERWRITE to s[Str.OVERWRITE],
+                        PeerConflictPolicy.SKIP to s[Str.SKIP],
                     )
                     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                         policies.forEachIndexed { idx, (policy, label) ->
@@ -396,19 +400,19 @@ fun SaveSharedFilesSheet(
                                     )
                                     Spacer(Modifier.width(8.dp))
                                     Text(
-                                        text = "Storage permission required",
+                                        text = s[Str.STORAGE_PERM_REQUIRED],
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.SemiBold,
                                     )
                                 }
                                 Spacer(Modifier.height(4.dp))
                                 Text(
-                                    text = "Grant file access to save to local storage, or choose Google Drive, FTP, or a mounted folder above.",
+                                    text = s[Str.STORAGE_PERM_SAVE_HINT],
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Button(onClick = onGrantAllFilesAccess) {
-                                    Text("Grant access")
+                                    Text(s[Str.GRANT_ACCESS])
                                 }
                             }
                         }
@@ -434,7 +438,7 @@ fun SaveSharedFilesSheet(
                                 if (reauthId != null) {
                                     Spacer(Modifier.height(8.dp))
                                     Button(onClick = { onReauthGDrive(reauthId) }) {
-                                        Text("Sign in")
+                                        Text(s[Str.SIGN_IN])
                                     }
                                 }
                             }
@@ -457,7 +461,7 @@ fun SaveSharedFilesSheet(
                         Spacer(Modifier.height(6.dp))
                         val statusText = buildString {
                             val current = prog?.currentItemName?.takeIf { it.isNotBlank() }
-                            append(if (current != null) "Saving $current…" else "Saving…")
+                            append(if (current != null) s.format(Str.SAVING_ITEM, current) else s[Str.SAVING])
                             if (prog != null) {
                                 if (prog.totalItems > 1) {
                                     append(" (${prog.processedItems}/${prog.totalItems})")
@@ -492,7 +496,7 @@ fun SaveSharedFilesSheet(
                             onClick = onCancelOrDismiss,
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text("Cancel")
+                            Text(s[Str.CANCEL])
                         }
                         val canSave = !state.isSaving &&
                             !needsStoragePermission &&
@@ -502,7 +506,7 @@ fun SaveSharedFilesSheet(
                             enabled = canSave,
                             modifier = Modifier.weight(1f),
                         ) {
-                            Text(if (state.isSaving) "Saving…" else "Save")
+                            Text(if (state.isSaving) s[Str.SAVING] else s[Str.SAVE])
                         }
                     }
                 }
@@ -539,6 +543,7 @@ private fun IncomingPayloadSummary(
     onEditFileName: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     when (payload) {
         is IncomingSharePayload.Text -> {
             Surface(
@@ -559,7 +564,7 @@ private fun IncomingPayloadSummary(
                     Spacer(Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Shared text · ${UiFormatters.formatSize(context, payload.byteCount)}",
+                            text = s.format(Str.SHARED_TEXT_FMT, UiFormatters.formatSize(context, payload.byteCount)),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -612,7 +617,7 @@ private fun IncomingPayloadSummary(
                                 overflow = TextOverflow.Ellipsis,
                             )
                             Text(
-                                text = formatFileSubtitle(context, item),
+                                text = formatFileSubtitle(context, item, s),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -637,9 +642,9 @@ private fun IncomingPayloadSummary(
                     else -> null
                 }
                 val header = if (sizeSummary != null) {
-                    "${payload.items.size} files · $sizeSummary"
+                    s.format(Str.FILES_COUNT_WITH_SIZE, payload.items.size, sizeSummary)
                 } else {
-                    "${payload.items.size} files"
+                    s.filesCount(payload.items.size)
                 }
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -697,7 +702,11 @@ private fun IncomingPayloadSummary(
             if (payload.skippedBlockedCount > 0) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "${payload.skippedBlockedCount} unsafe item${if (payload.skippedBlockedCount == 1) "" else "s"} skipped",
+                    text = if (payload.skippedBlockedCount == 1) {
+                        s[Str.UNSAFE_ITEM_SKIPPED_SINGLE]
+                    } else {
+                        s.format(Str.UNSAFE_ITEM_SKIPPED_PLURAL, payload.skippedBlockedCount)
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
@@ -713,11 +722,12 @@ private fun EditableFileNameField(
     enabled: Boolean,
     onValueChange: (String) -> Unit,
 ) {
+    val s = LocalAppStrings.current
     val errorText = (validation as? NameValidation.Invalid)?.reason
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        label = { Text("File name") },
+        label = { Text(s[Str.FILE_NAME]) },
         singleLine = true,
         enabled = enabled,
         isError = errorText != null,
@@ -737,6 +747,7 @@ private fun SelectedDestinationCard(
     enabled: Boolean,
     onBrowse: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -776,7 +787,7 @@ private fun SelectedDestinationCard(
                 onClick = onBrowse,
                 enabled = enabled,
             ) {
-                Text("Browse")
+                Text(s[Str.TAB_BROWSE])
             }
         }
     }
@@ -805,18 +816,19 @@ private fun FolderBrowserSection(
     onGrantAllFilesAccess: () -> Unit,
     onReauthGDrive: (String) -> Unit,
 ) {
+    val s = LocalAppStrings.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth(),
     ) {
         IconButton(onClick = onNavigateUp) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s[Str.BACK])
         }
         Column(modifier = Modifier.weight(1f)) {
             val title = if (browseDir == null) {
-                "Locations"
+                s[Str.LOCATIONS]
             } else {
-                formatFolderLabel(browseDir, browseRootLabel, ftpServers, gdriveServers)
+                formatFolderLabel(browseDir, browseRootLabel, ftpServers, gdriveServers, s)
             }
             Text(
                 text = title,
@@ -840,14 +852,14 @@ private fun FolderBrowserSection(
                 onClick = onCreateSubfolder,
                 enabled = !loading && error == null,
             ) {
-                Icon(Icons.Filled.CreateNewFolder, contentDescription = "New folder")
+                Icon(Icons.Filled.CreateNewFolder, contentDescription = s[Str.NEW_FOLDER])
             }
             Spacer(Modifier.width(4.dp))
             Button(
                 onClick = { onSelectCurrent(browseDir) },
                 enabled = !loading,
             ) {
-                Text("Select")
+                Text(s[Str.SELECT])
             }
         }
     }
@@ -864,10 +876,11 @@ private fun FolderBrowserSection(
         ) {
             if (readyVolumes.isNotEmpty()) {
                 item(key = "sec_storage") {
-                    PickerSectionHeader("Storage")
+                    PickerSectionHeader(s[Str.STORAGE])
                 }
                 items(readyVolumes, key = { "vol_${it.id}" }) { vol ->
                     val root = vol.root ?: return@items
+                    val volLabel = if (vol.kind == VolumeKind.PRIMARY) s[Str.INTERNAL_STORAGE] else vol.name
                     ListItem(
                         leadingContent = {
                             Icon(
@@ -879,20 +892,20 @@ private fun FolderBrowserSection(
                                 contentDescription = null,
                             )
                         },
-                        headlineContent = { Text(vol.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        headlineContent = { Text(volLabel, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         supportingContent = vol.subtitle?.let {
                             { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onEnterRoot(root, vol.name) },
+                            .clickable { onEnterRoot(root, volLabel) },
                     )
                 }
             }
 
             if (gdriveServers.isNotEmpty() || ftpServers.isNotEmpty()) {
                 item(key = "sec_servers") {
-                    PickerSectionHeader("Servers")
+                    PickerSectionHeader(s[Str.SERVERS])
                 }
                 items(gdriveServers, key = { "gd_${it.id}" }) { server ->
                     ListItem(
@@ -917,7 +930,7 @@ private fun FolderBrowserSection(
                         leadingContent = {
                             Icon(
                                 imageVector = Icons.Filled.Dns,
-                                contentDescription = "FTP server",
+                                contentDescription = s[Str.FTP_SERVER_DESC],
                                 tint = MaterialTheme.colorScheme.primary,
                             )
                         },
@@ -934,7 +947,7 @@ private fun FolderBrowserSection(
 
             if (folderFavorites.isNotEmpty()) {
                 item(key = "sec_favorites") {
-                    PickerSectionHeader("Favorites")
+                    PickerSectionHeader(s[Str.FAVORITES])
                 }
                 items(folderFavorites, key = { "fav_${it.id}" }) { fav ->
                     ListItem(
@@ -990,15 +1003,15 @@ private fun FolderBrowserSection(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (browseDir is VfsPath.Local && !hasAllFilesAccess) {
                             Button(onClick = onGrantAllFilesAccess) {
-                                Text("Grant access")
+                                Text(s[Str.GRANT_ACCESS])
                             }
                         } else if (reauthServerId != null) {
                             Button(onClick = { onReauthGDrive(reauthServerId) }) {
-                                Text("Sign in")
+                                Text(s[Str.SIGN_IN])
                             }
                         }
                         OutlinedButton(onClick = onRetry) {
-                            Text("Retry")
+                            Text(s[Str.RETRY])
                         }
                     }
                 }
@@ -1012,7 +1025,7 @@ private fun FolderBrowserSection(
                         .height(140.dp),
                 ) {
                     Text(
-                        text = "No subfolders — tap Select to save here",
+                        text = s[Str.NO_SUBFOLDERS_SELECT],
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1052,9 +1065,10 @@ private fun CreateSubfolderInlineDialog(
     onCreated: (VfsPath) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     val scope = rememberCoroutineScope()
-    val initial = remember(existingNames) {
-        PathUtils.uniqueName("New folder", existingNames, isDirectory = true)
+    val initial = remember(existingNames, s) {
+        PathUtils.uniqueName(s[Str.NEW_FOLDER], existingNames, isDirectory = true)
     }
     var name by remember { mutableStateOf(initial) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -1062,7 +1076,7 @@ private fun CreateSubfolderInlineDialog(
 
     AlertDialog(
         onDismissRequest = { if (!creating) onDismiss() },
-        title = { Text("New folder") },
+        title = { Text(s[Str.NEW_FOLDER]) },
         text = {
             Column {
                 OutlinedTextField(
@@ -1071,7 +1085,7 @@ private fun CreateSubfolderInlineDialog(
                         name = it
                         error = null
                     },
-                    label = { Text("Folder name") },
+                    label = { Text(s[Str.FOLDER_NAME]) },
                     singleLine = true,
                     enabled = !creating,
                     isError = error != null,
@@ -1106,12 +1120,12 @@ private fun CreateSubfolderInlineDialog(
                             onCreated(created)
                         } catch (e: Exception) {
                             creating = false
-                            error = e.message ?: "Failed to create folder"
+                            error = e.message ?: s[Str.FAILED_CREATE_FOLDER]
                         }
                     }
                 },
             ) {
-                Text(if (creating) "Creating…" else "Create")
+                Text(if (creating) s[Str.CREATING] else s[Str.CREATE])
             }
         },
         dismissButton = {
@@ -1119,7 +1133,7 @@ private fun CreateSubfolderInlineDialog(
                 enabled = !creating,
                 onClick = onDismiss,
             ) {
-                Text("Cancel")
+                Text(s[Str.CANCEL])
             }
         },
     )
@@ -1164,8 +1178,8 @@ private fun iconForSharedFile(item: IncomingSharedFile): ImageVector {
     }
 }
 
-private fun formatFileSubtitle(context: android.content.Context, item: IncomingSharedFile): String {
-    val sizeText = if (item.sizeBytes >= 0L) UiFormatters.formatSize(context, item.sizeBytes) else "Unknown size"
+private fun formatFileSubtitle(context: android.content.Context, item: IncomingSharedFile, s: AppStrings): String {
+    val sizeText = if (item.sizeBytes >= 0L) UiFormatters.formatSize(context, item.sizeBytes) else s[Str.UNKNOWN_SIZE]
     val mime = item.mimeType?.substringBefore(';')?.trim()?.takeIf { it.isNotEmpty() && it != "*/*" }
     return if (mime != null) "$sizeText · $mime" else sizeText
 }
@@ -1175,6 +1189,7 @@ private fun formatFolderLabel(
     rootLabel: String?,
     ftpServers: List<FtpServerBookmark>,
     gdriveServers: List<GDriveServerBookmark>,
+    s: AppStrings,
 ): String = when (path) {
     is VfsPath.Ftp -> {
         val name = ftpServers.firstOrNull { it.id == path.serverId }?.name ?: rootLabel ?: "FTP"
@@ -1186,7 +1201,7 @@ private fun formatFolderLabel(
         if (path.normalizedRemotePath == "/") name else "$name / ${path.displayName}"
     }
 
-    is VfsPath.Local, is VfsPath.Saf -> path.displayName.ifEmpty { rootLabel ?: "Folder" }
+    is VfsPath.Local, is VfsPath.Saf -> path.displayName.ifEmpty { rootLabel ?: s[Str.FOLDER] }
 }
 
 private fun formatDestinationSubtitle(

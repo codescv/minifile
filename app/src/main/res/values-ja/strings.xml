@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Files</string>
+    <string name="save_to_files">Files に保存</string>
+    <string name="notif_channel_transfer_name">ワイヤレスファイル転送</string>
+    <string name="notif_channel_transfer_desc">実行中の HTTP および FTP ワイヤレスファイル共有</string>
+    <string name="notif_channel_ops_name">ファイル操作</string>
+    <string name="notif_channel_ops_desc">実行中のコピー、移動、削除、ZIP、および近くの転送操作</string>
+    <string name="notif_action_stop">停止</string>
+    <string name="notif_action_cancel">キャンセル</string>
+    <string name="notif_stopped_by_system_title">ファイル転送が停止しました</string>
+    <string name="notif_stopped_by_system_text">システムの時間制限により、Android がバックグラウンド転送を停止しました。Files を開いて再起動してください。</string>
+    <string name="notif_ops_finishing">ファイル操作を完了しています…</string>
+    <string name="notif_ops_working">処理中…</string>
+</resources>

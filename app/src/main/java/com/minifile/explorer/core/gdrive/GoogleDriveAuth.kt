@@ -1,5 +1,7 @@
 package com.minifile.explorer.core.gdrive
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.Clock
 import com.minifile.explorer.core.model.JsonValue
 import com.minifile.explorer.core.model.Logger
@@ -129,7 +131,7 @@ class OAuthTokenProvider(
         val cid = clientId.trim()
         if (rt.isEmpty() || cid.isEmpty()) {
             throw GDriveAuthException(
-                message = "Google sign-in expired — sign in again",
+                message = AppI18n.current()[Str.GOOGLE_SIGNIN_EXPIRED_AGAIN],
                 needsInteraction = true,
             )
         }
@@ -166,7 +168,7 @@ class OAuthTokenProvider(
                 if (status == 400 || status == 401) {
                     if (errCode == "invalid_grant" || errCode == "unauthorized_client" || errCode == "invalid_client") {
                         throw GDriveAuthException(
-                            message = "Google sign-in expired — sign in again",
+                            message = AppI18n.current()[Str.GOOGLE_SIGNIN_EXPIRED_AGAIN],
                             needsInteraction = true,
                         )
                     }
@@ -223,7 +225,7 @@ fun fetchDriveUserEmail(
         val status = conn.responseCode
         val raw = readHttpBody(conn, status)
         if (status == 401) {
-            throw GDriveAuthException("Google Drive token is invalid or expired", needsInteraction = true)
+            throw GDriveAuthException(AppI18n.current()[Str.GDRIVE_TOKEN_INVALID], needsInteraction = true)
         }
         if (status !in 200..299) {
             val errObj = runCatching { (MiniJson.parse(raw) as? JsonValue.Obj)?.obj("error") }.getOrNull()

@@ -1,5 +1,8 @@
 package com.minifile.explorer.core.peer
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
+
 /**
  * Pure-JVM automatic Bluetooth fallback for LAN / hotspot sends (`zero android.* imports`).
  *
@@ -48,7 +51,7 @@ object PeerSendFallback {
         if (!error.isInterceptedRedirect) return error.userMessage
         val status = error.httpStatus ?: 302
         return if (vpnActive) {
-            "Connection to $peerName was intercepted by a VPN (HTTP $status) — turn off the VPN (or enable LAN bypass) and try again"
+            AppI18n.current().format(Str.PEER_ERR_INTERCEPTED_VPN_FMT, peerName, status)
         } else {
             PeerTransferException.interceptedMessage(peerName, status)
         }

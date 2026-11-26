@@ -1,5 +1,7 @@
 package com.minifile.explorer.data.gdrive
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import android.accounts.Account
 import android.accounts.AccountManager
 import android.accounts.AuthenticatorException
@@ -104,13 +106,13 @@ class AndroidAccountTokenProvider(
             ).result
             if (bundle == null || bundle.containsKey(AccountManager.KEY_INTENT)) {
                 throw GDriveAuthException(
-                    message = "Google Drive sign-in expired — sign in again",
+                    message = AppI18n.current()[Str.GDRIVE_SIGNIN_EXPIRED_AGAIN],
                     needsInteraction = true,
                 )
             }
             val fresh = bundle.getString(AccountManager.KEY_AUTHTOKEN)?.takeIf { it.isNotBlank() }
                 ?: throw GDriveAuthException(
-                    message = "Google Drive sign-in expired — sign in again",
+                    message = AppI18n.current()[Str.GDRIVE_SIGNIN_EXPIRED_AGAIN],
                     needsInteraction = true,
                 )
             TokenState(token = fresh, expiresAtMs = clock.nowMs() + GMS_TOKEN_TTL_MS)
@@ -118,13 +120,13 @@ class AndroidAccountTokenProvider(
             throw e
         } catch (e: AuthenticatorException) {
             throw GDriveAuthException(
-                message = "Google Drive sign-in expired — sign in again",
+                message = AppI18n.current()[Str.GDRIVE_SIGNIN_EXPIRED_AGAIN],
                 needsInteraction = true,
                 cause = e,
             )
         } catch (e: OperationCanceledException) {
             throw GDriveAuthException(
-                message = "Google Drive sign-in cancelled",
+                message = AppI18n.current()[Str.GDRIVE_SIGNIN_CANCELLED],
                 needsInteraction = true,
                 cause = e,
             )

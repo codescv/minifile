@@ -89,12 +89,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.AppStrings
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.peer.PeerConflictPolicy
 import com.minifile.explorer.core.peer.PeerInfo
 import com.minifile.explorer.core.peer.PeerPathPolicy
 import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsPath
+import com.minifile.explorer.core.vfs.VolumeKind
 import com.minifile.explorer.service.FtpServerHolder
 import com.minifile.explorer.service.FtpServerService
 import com.minifile.explorer.service.HttpServerHolder
@@ -103,6 +107,7 @@ import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.components.JoinHotspotDialog
 import com.minifile.explorer.ui.components.NearbyAccessRow
 import com.minifile.explorer.ui.components.PeerDeviceRow
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.NearbyStatusCopy
 import com.minifile.explorer.ui.util.QrCodeGenerator
 import java.io.File
@@ -120,10 +125,13 @@ private data class TransferLogRow(
 /** Max activity rows rendered when the log is expanded (iOS `services.log.prefix(100)`). */
 private const val ACTIVITY_LOG_LIMIT = 100
 
-internal fun conflictPolicyLabel(policy: PeerConflictPolicy): String = when (policy) {
-    PeerConflictPolicy.RENAME -> "Rename"
-    PeerConflictPolicy.OVERWRITE -> "Overwrite"
-    PeerConflictPolicy.SKIP -> "Skip"
+internal fun conflictPolicyLabel(
+    policy: PeerConflictPolicy,
+    strings: AppStrings = AppI18n.current(),
+): String = when (policy) {
+    PeerConflictPolicy.RENAME -> strings[Str.RENAME]
+    PeerConflictPolicy.OVERWRITE -> strings[Str.OVERWRITE]
+    PeerConflictPolicy.SKIP -> strings[Str.SKIP]
 }
 
 /**
@@ -140,6 +148,7 @@ fun WirelessScreen(
     viewModel: MainViewModel,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
 
     val settings by viewModel.settings.collectAsState()
     val volumes by viewModel.volumes.collectAsState()
@@ -214,7 +223,7 @@ fun WirelessScreen(
     fun copyToClipboard(text: String) {
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         cm?.setPrimaryClip(ClipData.newPlainText("URL", text))
-        viewModel.emitSimpleMessage("Copied")
+        viewModel.emitSimpleMessage(s[Str.COPIED])
     }
 
     fun addManualPeer() {
@@ -241,10 +250,12 @@ fun WirelessScreen(
     val fileSharingStarting = (httpState.isStarting || ftpState.isStarting) && !fileSharingRunning
     val isDiscoverable = settings.peerDiscoverable
 
-    val sharedRootDisplayLabel = remember(sharedRootRaw, volumes, favorites) {
-        val raw = sharedRootRaw ?: return@remember "Internal"
-        val parsed = runCatching { VfsPath.parse(raw) }.getOrNull() ?: return@remember "Internal"
-        volumes.firstOrNull { it.root == parsed }?.name
+    val sharedRootDisplayLabel = remember(sharedRootRaw, volumes, favorites, s) {
+        val raw = sharedRootRaw ?: return@remember s[Str.INTERNAL]
+        val parsed = runCatching { VfsPath.parse(raw) }.getOrNull() ?: return@remember s[Str.INTERNAL]
+        volumes.firstOrNull { it.root == parsed }?.let { vol ->
+            if (vol.kind == VolumeKind.PRIMARY) s[Str.INTERNAL_STORAGE] else vol.name
+        }
             ?: favorites.firstOrNull { it.path == parsed }?.let { "★ ${it.name}" }
             ?: parsed.displayName
     }
@@ -268,7 +279,7 @@ fun WirelessScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Transfer", fontWeight = FontWeight.SemiBold) },
+                title = { Text(s[Str.TAB_TRANSFER], fontWeight = FontWeight.SemiBold) },
             )
         },
     ) { innerPadding ->
@@ -284,10 +295,10 @@ fun WirelessScreen(
         ) {
             // 1. Nearby Devices
             item(key = "nearby-devices") {
-                TransferSectionTitle("Nearby Devices")
+                TransferSectionTitle(s[Str.NEARBY_DEVICES])
                 TransferCard {
                     SwitchRow(
-                        title = NearbyStatusCopy.DISCOVERABLE_LABEL,
+                        title = s[Str.DISCOVERABLE_LABEL],
                         checked = isDiscoverable,
                         onCheckedChange = { viewModel.setDiscoverable(it) },
                         leading = {
@@ -305,7 +316,7 @@ fun WirelessScreen(
                     HorizontalDivider()
                     if (peers.isEmpty()) {
                         Text(
-                            text = NearbyStatusCopy.transferEmptyState(isDiscoverable),
+                            text = NearbyStatusCopy.transferEmptyState(isDiscoverable, s),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier
@@ -325,12 +336,12 @@ fun WirelessScreen(
                                     {
                                         val name = PeerPathPolicy.sanitizeDisplayName(peer.name, 64)
                                             .ifEmpty { peer.host }
-                                        viewModel.emitSimpleMessage("$name is read-only")
+                                        viewModel.emitSimpleMessage(s.format(Str.PEER_IS_READ_ONLY, name))
                                     }
                                 } else {
                                     launchSendPicker
                                 },
-                                trailingActionLabel = "Send…",
+                                trailingActionLabel = s[Str.SEND_ELLIPSIS],
                                 onTrailingAction = launchSendPicker,
                             )
                         }
@@ -348,7 +359,7 @@ fun WirelessScreen(
                             onValueChange = { manualPeer = it.take(256) },
                             placeholder = {
                                 Text(
-                                    NearbyStatusCopy.ADD_PEER_PLACEHOLDER,
+                                    s[Str.ADD_PEER_PLACEHOLDER],
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -366,7 +377,7 @@ fun WirelessScreen(
                             if (addingPeer) {
                                 CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
                             } else {
-                                Text("Add")
+                                Text(s[Str.ADD])
                             }
                         }
                     }
@@ -379,18 +390,18 @@ fun WirelessScreen(
                             CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
                             Spacer(Modifier.width(6.dp))
                         }
-                        Text(if (isScanningPeers) "Scanning…" else "Scan this network")
+                        Text(if (isScanningPeers) s[Str.SCANNING] else s[Str.SCAN_THIS_NETWORK])
                     }
                 }
-                SectionFooter(NearbyStatusCopy.NEARBY_FOOTER)
+                SectionFooter(s[Str.NEARBY_FOOTER])
             }
 
             // 2. HTTP & FTP Server
             item(key = "file-server") {
-                TransferSectionTitle(NearbyStatusCopy.FILE_SERVER_TITLE)
+                TransferSectionTitle(s[Str.FILE_SERVER_TITLE])
                 TransferCard {
                     SwitchRow(
-                        title = NearbyStatusCopy.FILE_SERVER_TITLE,
+                        title = s[Str.FILE_SERVER_TITLE],
                         checked = fileSharingRunning || fileSharingStarting,
                         onCheckedChange = { setFileSharing(it) },
                         leading = {
@@ -408,7 +419,7 @@ fun WirelessScreen(
                     )
                     HorizontalDivider()
                     SwitchRow(
-                        title = "Read-only",
+                        title = s[Str.READ_ONLY],
                         checked = sharedReadOnly,
                         enabled = !fileSharingRunning && !fileSharingStarting,
                         onCheckedChange = { repo.setTransferReadOnly(it) },
@@ -430,28 +441,28 @@ fun WirelessScreen(
                     } else if (!fileSharingStarting) {
                         HorizontalDivider()
                         SettingRow(
-                            title = "HTTP Port",
+                            title = s[Str.HTTP_PORT],
                             value = settings.httpPort.toString(),
                             enabled = true,
                             onClick = { portDialog = "http" },
                         )
                         HorizontalDivider()
                         SettingRow(
-                            title = "FTP Port",
+                            title = s[Str.FTP_PORT],
                             value = settings.ftpPort.toString(),
                             enabled = true,
                             onClick = { portDialog = "ftp" },
                         )
                         HorizontalDivider()
                         SwitchRow(
-                            title = "FTP Anonymous Login",
+                            title = s[Str.FTP_ANON_LOGIN],
                             checked = settings.ftpAnonymous,
                             onCheckedChange = { anon -> repo.update { it.copy(ftpAnonymous = anon) } },
                         )
                         if (!settings.ftpAnonymous) {
                             HorizontalDivider()
                             SettingRow(
-                                title = "FTP Username & Password",
+                                title = s[Str.FTP_USER_PASS],
                                 value = settings.ftpUsername,
                                 enabled = true,
                                 onClick = { showFtpAuthDialog = true },
@@ -468,35 +479,35 @@ fun WirelessScreen(
                         }
                     }
                 }
-                SectionFooter(NearbyStatusCopy.FILE_SERVER_FOOTER)
+                SectionFooter(s[Str.FILE_SERVER_FOOTER])
             }
 
             // 3. Transfer Settings
             item(key = "transfer-settings") {
-                TransferSectionTitle("Transfer Settings")
+                TransferSectionTitle(s[Str.TRANSFER_SETTINGS])
                 TransferCard {
                     SettingRow(
-                        title = "Device Name",
+                        title = s[Str.DEVICE_NAME],
                         value = settings.peerDeviceName,
                         enabled = true,
                         onClick = { showDeviceNameDialog = true },
                     )
                     HorizontalDivider()
                     SettingRow(
-                        title = "When File Exists",
-                        value = conflictPolicyLabel(settings.peerConflictPolicy),
+                        title = s[Str.WHEN_FILE_EXISTS],
+                        value = conflictPolicyLabel(settings.peerConflictPolicy, s),
                         enabled = true,
                         onClick = { showConflictDialog = true },
                     )
                     HorizontalDivider()
                     SwitchRow(
-                        title = "Require Approval",
+                        title = s[Str.REQUIRE_APPROVAL],
                         checked = settings.peerConfirmReceive,
                         onCheckedChange = { repo.setPeerConfirmReceive(it) },
                     )
                     HorizontalDivider()
                     SettingRow(
-                        title = "Share Root",
+                        title = s[Str.SHARE_ROOT],
                         value = sharedRootDisplayLabel,
                         enabled = !fileSharingRunning && !fileSharingStarting,
                         onClick = { showRootDialog = true },
@@ -518,14 +529,19 @@ fun WirelessScreen(
                             val frac = (op.processedBytes.toFloat() / op.totalBytes.toFloat()).coerceIn(0f, 1f)
                             LinearProgressIndicator(progress = { frac }, modifier = Modifier.fillMaxWidth())
                             Text(
-                                text = "${op.processedItems}/${op.totalItems} files · " +
-                                    "${PathUtils.formatBytes(op.processedBytes)} of ${PathUtils.formatBytes(op.totalBytes)}",
+                                text = s.format(
+                                    Str.TRANSFER_PROGRESS_FMT,
+                                    op.processedItems,
+                                    op.totalItems,
+                                    PathUtils.formatBytes(op.processedBytes),
+                                    PathUtils.formatBytes(op.totalBytes),
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         } else {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                             Text(
-                                text = op.currentItem.ifBlank { "Connecting…" },
+                                text = op.currentItem.ifBlank { s[Str.CONNECTING] },
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
@@ -533,7 +549,7 @@ fun WirelessScreen(
                             onClick = { OperationRegistry.instance.cancel(op.id) },
                             enabled = !op.cancelled,
                         ) {
-                            Text("Cancel", color = MaterialTheme.colorScheme.error)
+                            Text(s[Str.CANCEL], color = MaterialTheme.colorScheme.error)
                         }
                     }
                 }
@@ -546,7 +562,7 @@ fun WirelessScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    TransferSectionTitle("Activity")
+                    TransferSectionTitle(s[Str.ACTIVITY])
                     if (combinedLog.isNotEmpty()) {
                         TextButton(
                             onClick = {
@@ -554,7 +570,7 @@ fun WirelessScreen(
                                 FtpServerHolder.clearLog()
                             },
                         ) {
-                            Text("Clear", style = MaterialTheme.typography.labelMedium)
+                            Text(s[Str.CLEAR], style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }
@@ -567,13 +583,13 @@ fun WirelessScreen(
                             .padding(horizontal = 16.dp, vertical = 14.dp),
                     ) {
                         Text(
-                            text = "Activity log (${combinedLog.size})",
+                            text = s.format(Str.ACTIVITY_LOG_COUNT, combinedLog.size),
                             style = MaterialTheme.typography.bodyLarge,
                             modifier = Modifier.weight(1f),
                         )
                         Icon(
                             if (showLog) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                            contentDescription = if (showLog) "Collapse" else "Expand",
+                            contentDescription = if (showLog) s[Str.COLLAPSE] else s[Str.EXPAND],
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -602,7 +618,7 @@ fun WirelessScreen(
 
     if (showRootDialog) {
         RootFolderPickerDialog(
-            title = "Share Root",
+            title = s[Str.SHARE_ROOT],
             volumes = volumes,
             favorites = favorites,
             onSelect = { path ->
@@ -616,7 +632,7 @@ fun WirelessScreen(
     if (showConflictDialog) {
         AlertDialog(
             onDismissRequest = { showConflictDialog = false },
-            title = { Text("When File Exists") },
+            title = { Text(s[Str.WHEN_FILE_EXISTS]) },
             text = {
                 Column {
                     for (policy in PeerConflictPolicy.entries) {
@@ -637,12 +653,12 @@ fun WirelessScreen(
                                 },
                             )
                             Spacer(Modifier.width(6.dp))
-                            Text(conflictPolicyLabel(policy))
+                            Text(conflictPolicyLabel(policy, s))
                         }
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { showConflictDialog = false }) { Text("Cancel") } },
+            confirmButton = { TextButton(onClick = { showConflictDialog = false }) { Text(s[Str.CANCEL]) } },
         )
     }
 
@@ -654,11 +670,11 @@ fun WirelessScreen(
         fun save() {
             val port = draft.trim().toIntOrNull()
             val ok = port != null && if (isHttp) repo.setHttpPort(port) else repo.setFtpPort(port)
-            if (ok) portDialog = null else error = "Enter a port between 1024 and 65535"
+            if (ok) portDialog = null else error = s[Str.PORT_RANGE_1024_65535]
         }
         AlertDialog(
             onDismissRequest = { portDialog = null },
-            title = { Text(if (isHttp) "HTTP Port" else "FTP Port") },
+            title = { Text(if (isHttp) s[Str.HTTP_PORT] else s[Str.FTP_PORT]) },
             text = {
                 OutlinedTextField(
                     value = draft,
@@ -674,8 +690,8 @@ fun WirelessScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
             },
-            confirmButton = { Button(onClick = { save() }) { Text("Save") } },
-            dismissButton = { TextButton(onClick = { portDialog = null }) { Text("Cancel") } },
+            confirmButton = { Button(onClick = { save() }) { Text(s[Str.SAVE]) } },
+            dismissButton = { TextButton(onClick = { portDialog = null }) { Text(s[Str.CANCEL]) } },
         )
     }
 
@@ -686,27 +702,27 @@ fun WirelessScreen(
 
         AlertDialog(
             onDismissRequest = { showFtpAuthDialog = false },
-            title = { Text("FTP Username & Password") },
+            title = { Text(s[Str.FTP_USER_PASS]) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = user,
                         onValueChange = { user = it },
-                        label = { Text("FTP Username") },
+                        label = { Text(s[Str.FTP_USERNAME]) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
                         value = pass,
                         onValueChange = { pass = it },
-                        label = { Text("FTP Password") },
+                        label = { Text(s[Str.FTP_PASSWORD]) },
                         singleLine = true,
                         visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {
                             IconButton(onClick = { showPass = !showPass }) {
                                 Icon(
                                     if (showPass) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                    contentDescription = "Toggle password visibility",
+                                    contentDescription = s[Str.TOGGLE_PASSWORD_VISIBILITY],
                                 )
                             }
                         },
@@ -726,9 +742,9 @@ fun WirelessScreen(
                         }
                         showFtpAuthDialog = false
                     },
-                ) { Text("Save") }
+                ) { Text(s[Str.SAVE]) }
             },
-            dismissButton = { TextButton(onClick = { showFtpAuthDialog = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { showFtpAuthDialog = false }) { Text(s[Str.CANCEL]) } },
         )
     }
 
@@ -736,18 +752,18 @@ fun WirelessScreen(
         var nameDraft by remember(settings.peerDeviceName) { mutableStateOf(settings.peerDeviceName) }
         AlertDialog(
             onDismissRequest = { showDeviceNameDialog = false },
-            title = { Text("Device Name") },
+            title = { Text(s[Str.DEVICE_NAME]) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "Shown to nearby phones when sharing or sending files.",
+                        text = s[Str.DEVICE_NAME_HINT],
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     OutlinedTextField(
                         value = nameDraft,
                         onValueChange = { if (it.length <= 64) nameDraft = it },
-                        label = { Text("Device Name") },
+                        label = { Text(s[Str.DEVICE_NAME]) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -759,10 +775,10 @@ fun WirelessScreen(
                         repo.setPeerDeviceName(nameDraft)
                         showDeviceNameDialog = false
                     },
-                ) { Text("Save") }
+                ) { Text(s[Str.SAVE]) }
             },
             dismissButton = {
-                TextButton(onClick = { showDeviceNameDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showDeviceNameDialog = false }) { Text(s[Str.CANCEL]) }
             },
         )
     }
@@ -778,7 +794,7 @@ fun WirelessScreen(
             },
             onCancel = { viewModel.cancelJoin() },
             onClose = { viewModel.dismissJoinDialog() },
-            sendLabel = "Send files…",
+            sendLabel = s[Str.SEND_FILES_ELLIPSIS],
         )
     }
 }
@@ -795,6 +811,7 @@ private fun FileServerRunningContent(
     ftpClients: Int,
     onCopy: (String) -> Unit,
 ) {
+    val s = LocalAppStrings.current
     val activeHttpUrls = remember(httpUrls, httpBoundPort) {
         httpUrls.ifEmpty { listOf("http://127.0.0.1:$httpBoundPort") }.map { "${it.trimEnd('/')}/" }
     }
@@ -820,7 +837,7 @@ private fun FileServerRunningContent(
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                text = NearbyStatusCopy.FILE_SERVER_RUNNING,
+                text = s[Str.FILE_SERVER_RUNNING],
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Medium,
                 color = Color(0xFF2E7D32),
@@ -872,7 +889,7 @@ private fun FileServerRunningContent(
                 OutlinedButton(onClick = { onCopy(selectedUrl) }) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Copy URL")
+                    Text(s[Str.COPY_URL])
                 }
             }
         }
@@ -897,7 +914,7 @@ private fun FileServerRunningContent(
                     Spacer(Modifier.width(6.dp))
                     Icon(
                         Icons.Filled.ContentCopy,
-                        contentDescription = "Copy FTP address",
+                        contentDescription = s[Str.COPY_FTP_ADDRESS],
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(16.dp),
                     )
@@ -1019,6 +1036,7 @@ private fun RootFolderPickerDialog(
     onSelect: (VfsPath) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     val folderFavorites = remember(favorites) { favorites.filter { it.isDirectory } }
     val receivedDir = remember { File(Environment.getExternalStorageDirectory(), "Received") }
     AlertDialog(
@@ -1029,15 +1047,15 @@ private fun RootFolderPickerDialog(
                 val readyVolumes = volumes.filter { it.root != null }
                 items(readyVolumes, key = { it.id }) { vol ->
                     ListItem(
-                        headlineContent = { Text(vol.name) },
+                        headlineContent = { Text(if (vol.kind == VolumeKind.PRIMARY) s[Str.INTERNAL_STORAGE] else vol.name) },
                         supportingContent = vol.subtitle?.let { { Text(it, maxLines = 1) } },
                         modifier = Modifier.clickable { onSelect(vol.root!!) },
                     )
                 }
                 item(key = "received") {
                     ListItem(
-                        headlineContent = { Text("Received") },
-                        supportingContent = { Text("Incoming nearby transfers", maxLines = 1) },
+                        headlineContent = { Text(s[Str.RECEIVED]) },
+                        supportingContent = { Text(s[Str.INCOMING_NEARBY_TRANSFERS], maxLines = 1) },
                         modifier = Modifier.clickable {
                             runCatching { receivedDir.mkdirs() }
                             onSelect(VfsPath.Local(receivedDir.absolutePath))
@@ -1054,7 +1072,7 @@ private fun RootFolderPickerDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(s[Str.CANCEL]) }
         },
     )
 }

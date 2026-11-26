@@ -76,6 +76,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.MiniJson
 import com.minifile.explorer.core.ops.BomKind
 import com.minifile.explorer.core.ops.LineEnding
@@ -83,6 +84,7 @@ import com.minifile.explorer.core.ops.TextFileCodec
 import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.ui.MainViewModel
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -102,6 +104,7 @@ fun TextEditorScreen(
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val scope = rememberCoroutineScope()
     val settings by viewModel.settings.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
@@ -175,7 +178,7 @@ fun TextEditorScreen(
                 redoStack.clear()
                 loading = false
             } catch (e: Exception) {
-                loadError = e.message ?: "Failed to read file"
+                loadError = e.message ?: s[Str.FAILED_READ_FILE]
                 loading = false
             }
         }
@@ -221,12 +224,12 @@ fun TextEditorScreen(
                 }
                 savedText = tfv.text
                 fileSizeBytes = TextFileCodec.encode(tfv.text, charset, eol, bom).size.toLong()
-                viewModel.emitSimpleMessage("Saved ${activePath.displayName}")
+                viewModel.emitSimpleMessage(s.format(Str.SAVED_FILE, activePath.displayName))
                 if (closeAfter) {
                     onClose()
                 }
             } catch (e: Exception) {
-                viewModel.emitSimpleMessage("Save failed: ${e.message}")
+                viewModel.emitSimpleMessage(s.format(Str.SAVE_FAILED, e.message.orEmpty()))
             }
         }
     }
@@ -295,7 +298,7 @@ fun TextEditorScreen(
             TopAppBar(
                 navigationIcon = {
                     IconButton(onClick = { requestExit() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s[Str.BACK])
                     }
                 },
                 title = {
@@ -309,7 +312,7 @@ fun TextEditorScreen(
                 },
                 actions = {
                     IconButton(onClick = { showFindBar = !showFindBar }) {
-                        Icon(Icons.Filled.Search, contentDescription = "Find")
+                        Icon(Icons.Filled.Search, contentDescription = s[Str.FIND])
                     }
                     IconButton(
                         onClick = {
@@ -321,7 +324,7 @@ fun TextEditorScreen(
                         },
                         enabled = undoStack.isNotEmpty() && !readOnlyViewerMode,
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
+                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = s[Str.UNDO])
                     }
                     IconButton(
                         onClick = {
@@ -333,24 +336,24 @@ fun TextEditorScreen(
                         },
                         enabled = redoStack.isNotEmpty() && !readOnlyViewerMode,
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
+                        Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = s[Str.REDO])
                     }
                     IconButton(
                         onClick = { performSave(closeAfter = false) },
                         enabled = !readOnlyViewerMode,
                     ) {
-                        Icon(Icons.Filled.Save, contentDescription = "Save")
+                        Icon(Icons.Filled.Save, contentDescription = s[Str.SAVE])
                     }
                     Box {
                         IconButton(onClick = { overflowExpanded = true }) {
-                            Icon(Icons.Filled.MoreVert, contentDescription = "Editor options")
+                            Icon(Icons.Filled.MoreVert, contentDescription = s[Str.EDITOR_OPTIONS])
                         }
                         DropdownMenu(
                             expanded = overflowExpanded,
                             onDismissRequest = { overflowExpanded = false },
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Save As…") },
+                                text = { Text(s[Str.SAVE_AS_ELLIPSIS]) },
                                 onClick = {
                                     overflowExpanded = false
                                     showSaveAsDialog = true
@@ -358,7 +361,7 @@ fun TextEditorScreen(
                             )
                             DropdownMenuItem(
                                 text = {
-                                    Text(if (settings.editorWrap) "Disable word wrap" else "Enable word wrap")
+                                    Text(if (settings.editorWrap) s[Str.DISABLE_WORD_WRAP] else s[Str.ENABLE_WORD_WRAP])
                                 },
                                 onClick = {
                                     overflowExpanded = false
@@ -369,7 +372,7 @@ fun TextEditorScreen(
                             )
                             DropdownMenuItem(
                                 text = {
-                                    Text(if (settings.editorLineNumbers) "Hide line numbers" else "Show line numbers")
+                                    Text(if (settings.editorLineNumbers) s[Str.HIDE_LINE_NUMBERS] else s[Str.SHOW_LINE_NUMBERS])
                                 },
                                 onClick = {
                                     overflowExpanded = false
@@ -379,7 +382,7 @@ fun TextEditorScreen(
                                 },
                             )
                             DropdownMenuItem(
-                                text = { Text("Font size + (${settings.editorFontSp} sp)") },
+                                text = { Text(s.format(Str.FONT_SIZE_INC, settings.editorFontSp)) },
                                 onClick = {
                                     viewModel.container.settingsRepository.update {
                                         it.copy(editorFontSp = (it.editorFontSp + 2).coerceAtMost(28))
@@ -387,7 +390,7 @@ fun TextEditorScreen(
                                 },
                             )
                             DropdownMenuItem(
-                                text = { Text("Font size − (${settings.editorFontSp} sp)") },
+                                text = { Text(s.format(Str.FONT_SIZE_DEC, settings.editorFontSp)) },
                                 onClick = {
                                     viewModel.container.settingsRepository.update {
                                         it.copy(editorFontSp = (it.editorFontSp - 2).coerceAtLeast(10))
@@ -395,7 +398,7 @@ fun TextEditorScreen(
                                 },
                             )
                             DropdownMenuItem(
-                                text = { Text("Encoding & Line endings…") },
+                                text = { Text(s[Str.ENCODING_AND_EOL_MENU]) },
                                 onClick = {
                                     overflowExpanded = false
                                     showEncodingDialog = true
@@ -404,7 +407,7 @@ fun TextEditorScreen(
                             if (isJsonFile && !readOnlyViewerMode) {
                                 HorizontalDivider()
                                 DropdownMenuItem(
-                                    text = { Text("Pretty-print JSON") },
+                                    text = { Text(s[Str.PRETTY_PRINT_JSON]) },
                                     onClick = {
                                         overflowExpanded = false
                                         runCatching {
@@ -412,7 +415,7 @@ fun TextEditorScreen(
                                             val formatted = MiniJson.stringify(parsed, indent = 2) + "\n"
                                             applyTextEdit(TextFieldValue(formatted, TextRange(formatted.length)))
                                         }.onFailure {
-                                            viewModel.emitSimpleMessage("Invalid JSON: ${it.message}")
+                                            viewModel.emitSimpleMessage(s.format(Str.INVALID_JSON, it.message.orEmpty()))
                                         }
                                     },
                                 )
@@ -439,14 +442,21 @@ fun TextEditorScreen(
                 ) {
                     val charsetLabel = charset.name().uppercase()
                     Text(
-                        text = "$charsetLabel · ${eol.label} · Ln $cursorLine, Col $cursorCol · ${UiFormatters.formatSize(context, fileSizeBytes)}",
+                        text = s.format(
+                            Str.EDITOR_STATUS_LINE,
+                            charsetLabel,
+                            eol.label,
+                            cursorLine,
+                            cursorCol,
+                            UiFormatters.formatSize(context, fileSizeBytes),
+                        ),
                         style = MaterialTheme.typography.labelMedium,
                         fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     if (readOnlyViewerMode) {
                         Text(
-                            text = "READ-ONLY",
+                            text = s[Str.READ_ONLY_BADGE],
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Bold,
@@ -472,14 +482,14 @@ fun TextEditorScreen(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                     ) {
                         Text(
-                            text = if (!canWriteFile) "Opened read-only (use Save As to copy)" else "Large file viewer mode",
+                            text = if (!canWriteFile) s[Str.OPENED_READ_ONLY_BANNER] else s[Str.LARGE_FILE_VIEWER_BANNER],
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                             modifier = Modifier.weight(1f),
                         )
                         if (!hardViewerOnly) {
                             TextButton(onClick = { readOnlyViewerMode = false }) {
-                                Text("Edit anyway")
+                                Text(s[Str.EDIT_ANYWAY])
                             }
                         }
                     }
@@ -503,7 +513,7 @@ fun TextEditorScreen(
                                     findQuery = it
                                     currentMatchIndex = 0
                                 },
-                                placeholder = { Text("Find in text") },
+                                placeholder = { Text(s[Str.FIND_IN_TEXT]) },
                                 singleLine = true,
                                 modifier = Modifier.weight(1f),
                             )
@@ -517,13 +527,13 @@ fun TextEditorScreen(
                                 style = MaterialTheme.typography.labelMedium,
                             )
                             IconButton(onClick = { jumpToMatch(currentMatchIndex - 1) }, enabled = matchRanges.isNotEmpty()) {
-                                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Previous match")
+                                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = s[Str.PREVIOUS_MATCH])
                             }
                             IconButton(onClick = { jumpToMatch(currentMatchIndex + 1) }, enabled = matchRanges.isNotEmpty()) {
-                                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Next match")
+                                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = s[Str.NEXT_MATCH])
                             }
                             IconButton(onClick = { showFindBar = false }) {
-                                Icon(Icons.Filled.Close, contentDescription = "Close find")
+                                Icon(Icons.Filled.Close, contentDescription = s[Str.CLOSE_FIND])
                             }
                         }
                         if (!readOnlyViewerMode) {
@@ -535,7 +545,7 @@ fun TextEditorScreen(
                                 OutlinedTextField(
                                     value = replaceQuery,
                                     onValueChange = { replaceQuery = it },
-                                    placeholder = { Text("Replace with") },
+                                    placeholder = { Text(s[Str.REPLACE_WITH]) },
                                     singleLine = true,
                                     modifier = Modifier.weight(1f),
                                 )
@@ -549,7 +559,7 @@ fun TextEditorScreen(
                                     },
                                     enabled = matchRanges.isNotEmpty(),
                                 ) {
-                                    Text("Replace")
+                                    Text(s[Str.REPLACE])
                                 }
                                 OutlinedButton(
                                     onClick = {
@@ -560,7 +570,7 @@ fun TextEditorScreen(
                                     },
                                     enabled = matchRanges.isNotEmpty(),
                                 ) {
-                                    Text("All")
+                                    Text(s[Str.ALL])
                                 }
                             }
                         }
@@ -644,10 +654,10 @@ fun TextEditorScreen(
     if (showEncodingDialog) {
         AlertDialog(
             onDismissRequest = { showEncodingDialog = false },
-            title = { Text("Encoding & Line Endings") },
+            title = { Text(s[Str.ENCODING_AND_EOL_TITLE]) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Line endings on save", style = MaterialTheme.typography.labelLarge)
+                    Text(s[Str.LINE_ENDINGS_ON_SAVE], style = MaterialTheme.typography.labelLarge)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         for (candidateEol in listOf(LineEnding.LF, LineEnding.CRLF)) {
                             FilterChip(
@@ -658,7 +668,7 @@ fun TextEditorScreen(
                         }
                     }
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                    Text("Character encoding (re-decodes from disk)", style = MaterialTheme.typography.labelLarge)
+                    Text(s[Str.CHAR_ENCODING_REDECODE], style = MaterialTheme.typography.labelLarge)
                     for (csName in TextFileCodec.SUPPORTED_CHARSET_NAMES) {
                         val cs = Charset.forName(csName)
                         Row(
@@ -681,7 +691,7 @@ fun TextEditorScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showEncodingDialog = false }) {
-                    Text("Done")
+                    Text(s[Str.DONE])
                 }
             },
         )
@@ -699,17 +709,17 @@ fun TextEditorScreen(
         }
         AlertDialog(
             onDismissRequest = { showSaveAsDialog = false },
-            title = { Text("Save As") },
+            title = { Text(s[Str.SAVE_AS]) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = newName,
                         onValueChange = { newName = it },
-                        label = { Text("File name") },
+                        label = { Text(s[Str.FILE_NAME]) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Text("Target folder: ${chosenFolder.displayName}", style = MaterialTheme.typography.bodySmall)
+                    Text(s.format(Str.TARGET_FOLDER_FMT, chosenFolder.displayName), style = MaterialTheme.typography.bodySmall)
                     for (fav in folderFavorites.take(4)) {
                         FilterChip(
                             selected = chosenFolder == fav.path,
@@ -741,18 +751,18 @@ fun TextEditorScreen(
                                 readOnlyViewerMode = false
                                 savedText = tfv.text
                                 showSaveAsDialog = false
-                                viewModel.emitSimpleMessage("Saved as ${target.displayName}")
+                                viewModel.emitSimpleMessage(s.format(Str.SAVED_AS_FILE, target.displayName))
                             } catch (e: Exception) {
-                                viewModel.emitSimpleMessage("Save As failed: ${e.message}")
+                                viewModel.emitSimpleMessage(s.format(Str.SAVE_AS_FAILED, e.message.orEmpty()))
                             }
                         }
                     },
                 ) {
-                    Text("Save")
+                    Text(s[Str.SAVE])
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showSaveAsDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showSaveAsDialog = false }) { Text(s[Str.CANCEL]) }
             },
         )
     }
@@ -760,8 +770,8 @@ fun TextEditorScreen(
     if (showUnsavedExitGuard) {
         AlertDialog(
             onDismissRequest = { showUnsavedExitGuard = false },
-            title = { Text("Unsaved changes") },
-            text = { Text("Save changes to '${activePath.displayName}' before closing?") },
+            title = { Text(s[Str.UNSAVED_CHANGES]) },
+            text = { Text(s.format(Str.UNSAVED_CHANGES_DESC, activePath.displayName)) },
             confirmButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(
@@ -770,7 +780,7 @@ fun TextEditorScreen(
                             onClose()
                         },
                     ) {
-                        Text("Discard", color = MaterialTheme.colorScheme.error)
+                        Text(s[Str.DISCARD], color = MaterialTheme.colorScheme.error)
                     }
                     Button(
                         onClick = {
@@ -778,13 +788,13 @@ fun TextEditorScreen(
                             performSave(closeAfter = true)
                         },
                     ) {
-                        Text("Save")
+                        Text(s[Str.SAVE])
                     }
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showUnsavedExitGuard = false }) {
-                    Text("Cancel")
+                    Text(s[Str.CANCEL])
                 }
             },
         )

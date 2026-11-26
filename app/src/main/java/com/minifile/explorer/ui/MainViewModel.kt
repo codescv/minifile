@@ -14,6 +14,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import com.minifile.explorer.core.gdrive.GDriveAuthException
 import com.minifile.explorer.core.gdrive.revokeOAuthTokenBestEffort
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.AppSettings
 import com.minifile.explorer.core.model.Favorite
 import com.minifile.explorer.core.model.FtpServerBookmark
@@ -192,7 +194,7 @@ internal class MainViewModelDependencies(
     val hasBleRouteTo: (PeerInfo) -> Boolean = { false },
     /** Negotiates a BLE link to a peer (`lanHttpBlocked` = LAN HTTP was just intercepted / unreachable). */
     val negotiateBleLink: suspend (peer: PeerInfo, files: Int, bytes: Long, lanHttpBlocked: Boolean) -> LinkResult =
-        { _, _, _, _ -> throw PeerTransferException(null, "Bluetooth is unavailable") },
+        { _, _, _, _ -> throw PeerTransferException(null, AppI18n.current()[Str.BLUETOOTH_UNAVAILABLE]) },
     /** Registers (`null` clears) the abort hook the link dialog's Cancel uses while an HTTP send runs over a link. */
     val setLinkSendAbort: ((() -> Unit)?) -> Unit = {},
     /** Wraps a sink so HTTP byte progress over a negotiated link is mirrored into the link dialog. */
@@ -369,6 +371,7 @@ class MainViewModel internal constructor(
             deps.refreshVolumesAction()
         }
         var lastShowHidden = settings.value.showHidden
+        var lastAppLanguage = settings.value.appLanguage
         vmScope.launch {
             settings.collect { s ->
                 recomputeVisibleEntries(s)
@@ -377,6 +380,10 @@ class MainViewModel internal constructor(
                     if (_browser.value.currentDir != null) {
                         reloadCurrentDirectory(silent = true)
                     }
+                }
+                if (s.appLanguage != lastAppLanguage) {
+                    lastAppLanguage = s.appLanguage
+                    deps.refreshVolumesAction()
                 }
             }
         }
@@ -467,7 +474,7 @@ class MainViewModel internal constructor(
                 }
                 if (!stillExists) {
                     navigateToStorageHome()
-                    emitSimpleMessage("Volume was disconnected")
+                    emitSimpleMessage(AppI18n.current()[Str.VOLUME_DISCONNECTED])
                 }
             }
         }
@@ -485,7 +492,7 @@ class MainViewModel internal constructor(
         savedStateHandle.remove<String>(STATE_ROOT_NAME)
         savedStateHandle.remove<String>(STATE_ROOT_BASE)
         if (hadSelection) {
-            emitSimpleMessage("Selection cleared")
+            emitSimpleMessage(AppI18n.current()[Str.SELECTION_CLEARED])
         }
     }
 
@@ -533,7 +540,7 @@ class MainViewModel internal constructor(
                 password = password,
                 initialPath = initialPath,
             )
-            emitSimpleMessage("Added FTP server '${created.name}'")
+            emitSimpleMessage(AppI18n.current().format(Str.ADDED_FTP_SERVER, created.name))
             if (openAfterAdd) {
                 openFtpServer(created)
             }
@@ -543,7 +550,7 @@ class MainViewModel internal constructor(
     fun updateFtpServer(server: FtpServerBookmark) {
         vmScope.launch {
             deps.ftpServersRepository.update(server)
-            emitSimpleMessage("Updated FTP server '${server.name}'")
+            emitSimpleMessage(AppI18n.current().format(Str.UPDATED_FTP_SERVER, server.name))
             val cur = _browser.value.currentDir
             if (cur is VfsPath.Ftp && cur.serverId == server.id) {
                 val root = server.rootPath
@@ -565,7 +572,7 @@ class MainViewModel internal constructor(
                 navigateToStorageHome()
             }
             if (existing != null) {
-                emitSimpleMessage("Removed FTP server '${existing.name}'")
+                emitSimpleMessage(AppI18n.current().format(Str.REMOVED_FTP_SERVER, existing.name))
             }
         }
     }
@@ -587,7 +594,7 @@ class MainViewModel internal constructor(
         vmScope.launch {
             val created = deps.gdriveServersRepository.add(bookmark)
             deps.invalidateGDriveServer(created.id)
-            emitSimpleMessage("Added Google Drive '${created.name}'")
+            emitSimpleMessage(AppI18n.current().format(Str.ADDED_GDRIVE_MSG, created.name))
             if (openAfterAdd) {
                 openGDriveServer(created)
             }
@@ -598,7 +605,7 @@ class MainViewModel internal constructor(
         vmScope.launch {
             deps.gdriveServersRepository.update(server)
             deps.invalidateGDriveServer(server.id)
-            emitSimpleMessage("Updated Google Drive '${server.name}'")
+            emitSimpleMessage(AppI18n.current().format(Str.UPDATED_GDRIVE, server.name))
             val cur = _browser.value.currentDir
             if (cur is VfsPath.GDrive && cur.serverId == server.id) {
                 val root = server.rootPath
@@ -622,7 +629,7 @@ class MainViewModel internal constructor(
                 navigateToStorageHome()
             }
             if (existing != null) {
-                emitSimpleMessage("Removed Google Drive '${existing.name}'")
+                emitSimpleMessage(AppI18n.current().format(Str.REMOVED_GDRIVE, existing.name))
                 withContext(ioDispatcher) {
                     if (existing.authMode == GDriveAuthMode.SYSTEM_ACCOUNT) {
                         _container?.appContext?.let { ctx ->
@@ -765,7 +772,7 @@ class MainViewModel internal constructor(
                                 fs = deps.fileSystem,
                                 node = node,
                             ).onFailure { err ->
-                                emitSimpleMessage("Cannot open ${node.name}: ${err.message}")
+                                emitSimpleMessage(AppI18n.current().format(Str.CANNOT_OPEN_FILE, node.name, err.message.orEmpty()))
                             }
                         }
                     }
@@ -861,7 +868,7 @@ class MainViewModel internal constructor(
         )
 
         if (hadSelection) {
-            emitSimpleMessage("Selection cleared")
+            emitSimpleMessage(AppI18n.current()[Str.SELECTION_CLEARED])
         }
 
         loadDirectoryInternal(dir, showSpinner = true)
@@ -900,14 +907,15 @@ class MainViewModel internal constructor(
                 )
                 recomputeVisibleEntries(settings.value)
             } catch (e: Exception) {
-                val msg = e.message ?: "Unable to read folder"
+                val str = AppI18n.current()
+                val msg = e.message ?: str[Str.UNABLE_READ_FOLDER]
                 if (e is GDriveAuthException && e.needsInteraction && dir is VfsPath.GDrive) {
                     _snackbarMessages.tryEmit(
                         OperationCompletionEvent(
                             id = "gdrive-auth-${System.currentTimeMillis()}",
                             kind = OperationKind.COPY,
                             title = "Google Drive",
-                            snackbarMessage = "Google Drive sign-in expired",
+                            snackbarMessage = str[Str.GDRIVE_SIGNIN_EXPIRED],
                             reauthGDriveServerId = dir.serverId,
                         ),
                     )
@@ -1018,7 +1026,7 @@ class MainViewModel internal constructor(
     }
 
     private fun inferRootName(path: VfsPath?): String {
-        if (path == null) return "Internal"
+        if (path == null) return AppI18n.current()[Str.INTERNAL]
         if (path is VfsPath.Ftp) {
             return deps.ftpServersRepository.findById(path.serverId)?.name ?: "FTP (${path.serverId})"
         }
@@ -1031,7 +1039,7 @@ class MainViewModel internal constructor(
         }
         val primary = deps.primaryStoragePathProvider()
         if (path is VfsPath.Local && PathUtils.isAncestor(VfsPath.Local(primary), path)) {
-            return "Internal"
+            return AppI18n.current()[Str.INTERNAL]
         }
         return path.displayName
     }
@@ -1309,14 +1317,18 @@ class MainViewModel internal constructor(
     ) {
         if (items.isEmpty()) return
         val opKind = if (mode == TransferMode.COPY) OperationKind.COPY else OperationKind.MOVE
-        val verbPresent = if (mode == TransferMode.COPY) "Copying" else "Moving"
-        val verbPast = if (mode == TransferMode.COPY) "Copied" else "Moved"
-        val countLabel = if (items.size == 1) items.first().displayName else "${items.size} items"
+        val sStart = AppI18n.current()
+        val countLabel = if (items.size == 1) items.first().displayName else sStart.itemsCount(items.size)
+        val opTitle = if (mode == TransferMode.COPY) {
+            sStart.format(Str.COPYING_TO, countLabel, destinationLabel)
+        } else {
+            sStart.format(Str.MOVING_TO, countLabel, destinationLabel)
+        }
 
         deps.operationRegistry.enqueue(
             context = context,
             kind = opKind,
-            title = "$verbPresent $countLabel to $destinationLabel",
+            title = opTitle,
             retryAction = {
                 executeTransfer(context, items, mode, destinationDir, destinationLabel, clearClipboardOnComplete)
             },
@@ -1334,19 +1346,26 @@ class MainViewModel internal constructor(
             }
             val firstFailed = res.failed.firstOrNull()
             val expiredGDriveServerId = when {
-                firstFailed?.second?.contains("sign-in expired", ignoreCase = true) == true -> {
+                (firstFailed != null && AppI18n.isSignInExpiredMessage(firstFailed.second)) -> {
                     (firstFailed.first as? VfsPath.GDrive)?.serverId
                         ?: (destinationDir as? VfsPath.GDrive)?.serverId
                 }
                 else -> null
             }
+            val sEnd = AppI18n.current()
             val summary = if (expiredGDriveServerId != null && res.succeeded == 0) {
-                "Google Drive sign-in expired"
+                sEnd[Str.GDRIVE_SIGNIN_EXPIRED]
             } else {
                 buildString {
-                    append("$verbPast ${res.succeeded} item${if (res.succeeded == 1) "" else "s"} to $destinationLabel")
-                    if (res.skipped > 0) append(" (${res.skipped} skipped)")
-                    if (res.failed.isNotEmpty()) append(" · ${res.failed.size} failed: ${res.failed.first().second}")
+                    append(
+                        sEnd.format(
+                            if (mode == TransferMode.COPY) Str.COPIED_ITEMS_TO else Str.MOVED_ITEMS_TO,
+                            sEnd.itemsCount(res.succeeded),
+                            destinationLabel,
+                        ),
+                    )
+                    if (res.skipped > 0) append(sEnd.format(Str.SKIPPED_SUFFIX, res.skipped))
+                    if (res.failed.isNotEmpty()) append(sEnd.format(Str.FAILED_SUFFIX, res.failed.size, res.failed.first().second))
                 }
             }
             OperationRunOutcome(
@@ -1356,7 +1375,7 @@ class MainViewModel internal constructor(
                 } else {
                     null
                 },
-                openLabel = "Open",
+                openLabel = sEnd[Str.OPEN],
                 errorSummary = firstFailed?.second,
                 reauthGDriveServerId = expiredGDriveServerId,
             )
@@ -1403,7 +1422,7 @@ class MainViewModel internal constructor(
                 }
                 reloadCurrentDirectory(silent = true)
             } catch (e: Exception) {
-                onError(e.message ?: "Failed to create folder")
+                onError(e.message ?: AppI18n.current()[Str.FAILED_CREATE_FOLDER])
             }
         }
     }
@@ -1429,7 +1448,7 @@ class MainViewModel internal constructor(
                     openOverlay(OverlayScreen.TextEditor(created, forceEdit = true))
                 }
             } catch (e: Exception) {
-                onError(e.message ?: "Failed to create file")
+                onError(e.message ?: AppI18n.current()[Str.FAILED_CREATE_FILE])
             }
         }
     }
@@ -1449,7 +1468,7 @@ class MainViewModel internal constructor(
                 reloadCurrentDirectory(silent = true)
                 onSuccess()
             } catch (e: Exception) {
-                onError(e.message ?: "Rename failed")
+                onError(e.message ?: AppI18n.current()[Str.RENAME_FAILED])
             }
         }
     }
@@ -1458,29 +1477,31 @@ class MainViewModel internal constructor(
         if (items.isEmpty()) return
         clearSelection()
         val allGDrive = items.all { it is VfsPath.GDrive }
-        val label = if (items.size == 1) items.first().displayName else "${items.size} items"
+        val sStart = AppI18n.current()
+        val label = if (items.size == 1) items.first().displayName else sStart.itemsCount(items.size)
         deps.operationRegistry.enqueue(
             context = context,
             kind = OperationKind.DELETE,
-            title = if (allGDrive) "Moving $label to trash" else "Deleting $label",
+            title = if (allGDrive) sStart.format(Str.MOVING_TO_TRASH, label) else sStart.format(Str.DELETING_ITEMS, label),
         ) { _, sink ->
             val res = deps.fileOperations.delete(items, sink)
             val firstFailed = res.failed.firstOrNull()
-            val expiredServerId = if (firstFailed?.second?.contains("sign-in expired", ignoreCase = true) == true) {
+            val expiredServerId = if ((firstFailed != null && AppI18n.isSignInExpiredMessage(firstFailed.second))) {
                 (firstFailed.first as? VfsPath.GDrive)?.serverId
             } else {
                 null
             }
+            val sEnd = AppI18n.current()
             val msg = when {
-                expiredServerId != null && res.succeeded == 0 -> "Google Drive sign-in expired"
+                expiredServerId != null && res.succeeded == 0 -> sEnd[Str.GDRIVE_SIGNIN_EXPIRED]
                 allGDrive && res.succeeded > 0 -> buildString {
-                    append("Moved to Google Drive trash")
-                    if (items.size > 1) append(" (${res.succeeded} items)")
-                    if (res.failed.isNotEmpty()) append(" (${res.failed.size} failed)")
+                    append(sEnd[Str.MOVED_GDRIVE_TRASH])
+                    if (items.size > 1) append(sEnd.format(Str.ITEMS_PARENS, sEnd.itemsCount(res.succeeded)))
+                    if (res.failed.isNotEmpty()) append(sEnd.format(Str.FAILED_PARENS, res.failed.size))
                 }
                 else -> buildString {
-                    append("Deleted ${res.succeeded} item${if (res.succeeded == 1) "" else "s"}")
-                    if (res.failed.isNotEmpty()) append(" (${res.failed.size} failed)")
+                    append(sEnd.format(Str.DELETED_ITEMS, sEnd.itemsCount(res.succeeded)))
+                    if (res.failed.isNotEmpty()) append(sEnd.format(Str.FAILED_PARENS, res.failed.size))
                 }
             }
             OperationRunOutcome(
@@ -1501,10 +1522,11 @@ class MainViewModel internal constructor(
         if (items.isEmpty()) return
         clearSelection()
         val finalZipName = if (archiveName.endsWith(".zip", ignoreCase = true)) archiveName else "$archiveName.zip"
+        val sStart = AppI18n.current()
         deps.operationRegistry.enqueue(
             context = context,
             kind = OperationKind.COMPRESS,
-            title = "Compressing $finalZipName",
+            title = sStart.format(Str.COMPRESSING_ZIP, finalZipName),
             retryAction = { compressItemsToZip(context, items, destinationDir, archiveName, compressionLevel) },
         ) { _, sink ->
             val created = deps.zipArchiver.compress(
@@ -1514,10 +1536,11 @@ class MainViewModel internal constructor(
                 level = compressionLevel,
                 sink = sink,
             )
+            val sEnd = AppI18n.current()
             OperationRunOutcome(
-                message = "${created.displayName} created",
+                message = sEnd.format(Str.CREATED_ARCHIVE, created.displayName),
                 destinationToOpen = created,
-                openLabel = "Open",
+                openLabel = sEnd[Str.OPEN],
             )
         }
     }
@@ -1531,10 +1554,11 @@ class MainViewModel internal constructor(
         overwrite: Boolean = false,
         allowBombOverride: Boolean = false,
     ) {
+        val sStart = AppI18n.current()
         deps.operationRegistry.enqueue(
             context = context,
             kind = OperationKind.EXTRACT,
-            title = "Extracting ${zipPath.displayName}",
+            title = sStart.format(Str.EXTRACTING_ZIP, zipPath.displayName),
             retryAction = {
                 extractArchive(context, zipPath, destinationDir, createSubfolderName, selectedEntries, overwrite, allowBombOverride)
             },
@@ -1562,15 +1586,16 @@ class MainViewModel internal constructor(
                 allowLargeArchive = allowBombOverride,
                 sink = sink,
             )
+            val sEnd = AppI18n.current()
             val unsafeNote = when (res.unsafeEntriesSkipped) {
                 0 -> ""
-                1 -> " · 1 unsafe entry skipped"
-                else -> " · ${res.unsafeEntriesSkipped} unsafe entries skipped"
+                1 -> sEnd[Str.UNSAFE_SKIPPED_SINGLE]
+                else -> sEnd.format(Str.UNSAFE_SKIPPED_PLURAL, res.unsafeEntriesSkipped)
             }
             OperationRunOutcome(
-                message = "Extracted ${res.extractedFiles} file${if (res.extractedFiles == 1) "" else "s"}$unsafeNote",
+                message = sEnd.format(Str.EXTRACTED_FILES, sEnd.filesCount(res.extractedFiles), unsafeNote),
                 destinationToOpen = actualDest,
-                openLabel = "Open",
+                openLabel = sEnd[Str.OPEN],
                 unsafeSkipped = res.unsafeEntriesSkipped,
             )
         }
@@ -1578,6 +1603,7 @@ class MainViewModel internal constructor(
 
     fun toggleNomedia(dirPath: VfsPath) {
         vmScope.launch {
+            val s = AppI18n.current()
             try {
                 val currentlyHas = withContext(ioDispatcher) {
                     deps.nomediaManager.has(dirPath)
@@ -1587,13 +1613,13 @@ class MainViewModel internal constructor(
                 }
                 reloadCurrentDirectory(silent = true)
                 val msg = if (!currentlyHas) {
-                    "Hidden '${dirPath.displayName}' from gallery (.nomedia created)"
+                    s.format(Str.HIDDEN_FROM_GALLERY_CREATED, dirPath.displayName)
                 } else {
-                    "Restored '${dirPath.displayName}' to gallery (.nomedia removed)"
+                    s.format(Str.RESTORED_TO_GALLERY_REMOVED, dirPath.displayName)
                 }
                 emitSimpleMessage(msg)
             } catch (e: Exception) {
-                emitSimpleMessage("Could not update .nomedia: ${e.message}")
+                emitSimpleMessage(s.format(Str.COULD_NOT_UPDATE_NOMEDIA, e.message.orEmpty()))
             }
         }
     }
@@ -1606,7 +1632,7 @@ class MainViewModel internal constructor(
     ) {
         vmScope.launch {
             deps.favoritesRepository.add(name, path, color, isDirectory = isDirectory)
-            emitSimpleMessage("Added '${name.ifBlank { path.displayName }}' to Favorites")
+            emitSimpleMessage(AppI18n.current().format(Str.ADDED_TO_FAVORITES, name.ifBlank { path.displayName }))
         }
     }
 
@@ -1623,7 +1649,7 @@ class MainViewModel internal constructor(
         val existing = deps.favoritesRepository.findByPath(path) ?: return
         vmScope.launch {
             deps.favoritesRepository.remove(existing.id)
-            emitSimpleMessage("Removed '${existing.name}' from Favorites")
+            emitSimpleMessage(AppI18n.current().format(Str.REMOVED_FROM_FAVORITES, existing.name))
         }
     }
 
@@ -1632,14 +1658,14 @@ class MainViewModel internal constructor(
         if (clean.isEmpty()) return
         vmScope.launch {
             deps.favoritesRepository.rename(id, clean)
-            emitSimpleMessage("Renamed favorite to '$clean'")
+            emitSimpleMessage(AppI18n.current().format(Str.RENAMED_FAVORITE, clean))
         }
     }
 
     fun removeFavorite(fav: Favorite) {
         vmScope.launch {
             deps.favoritesRepository.remove(fav.id)
-            emitSimpleMessage("Removed '${fav.name}' from Favorites")
+            emitSimpleMessage(AppI18n.current().format(Str.REMOVED_FROM_FAVORITES, fav.name))
         }
     }
 
@@ -1690,9 +1716,9 @@ class MainViewModel internal constructor(
                     token = if (filesOnlyQr) HotspotLinkCodec.generateToken() else null,
                 )
             } catch (e: HotspotException) {
-                emitSimpleMessage(e.message ?: "Could not start the hotspot")
+                emitSimpleMessage(e.message ?: AppI18n.current()[Str.COULD_NOT_START_HOTSPOT])
             } catch (e: Exception) {
-                emitSimpleMessage(e.message ?: "Could not start the hotspot")
+                emitSimpleMessage(e.message ?: AppI18n.current()[Str.COULD_NOT_START_HOTSPOT])
             }
         }
     }
@@ -1747,7 +1773,7 @@ class MainViewModel internal constructor(
 
         val payload = QrPayloads.parse(raw.trim())
         if (payload == null) {
-            _joinState.value = JoinUiState.Failed("Not a Files or Wi-Fi QR code")
+            _joinState.value = JoinUiState.Failed(AppI18n.current()[Str.NOT_FILES_OR_WIFI_QR])
             return
         }
         joinJob = vmScope.launch {
@@ -1769,7 +1795,7 @@ class MainViewModel internal constructor(
                         wifiJoined = true
                         _joinState.value = JoinUiState.FindingHost(payload.ssid)
                         findHotspotHost(joined.gateway, joined.ownIp, joined.prefixLength)
-                            ?: throw JoinException("Joined ${payload.ssid}, but no Files device answered")
+                            ?: throw JoinException(AppI18n.current().format(Str.JOINED_NO_DEVICE, payload.ssid))
                     }
                     is QrPayload.Hotspot -> {
                         _joinState.value = JoinUiState.Joining(payload.ssid)
@@ -1785,7 +1811,13 @@ class MainViewModel internal constructor(
                         _joinState.value = JoinUiState.FindingHost(payload.ssid)
                         val direct = probeRetrying(listOf(payload.ip), listOf(payload.port), attempts = 10)
                             ?: findHotspotHost(joined.gateway, joined.ownIp, joined.prefixLength)
-                            ?: throw JoinException("Joined ${payload.ssid}, but ${payload.name ?: "the host"} did not answer")
+                            ?: throw JoinException(
+                                AppI18n.current().format(
+                                    Str.JOINED_HOST_NO_ANSWER,
+                                    payload.ssid,
+                                    payload.name ?: AppI18n.current()[Str.THE_HOST],
+                                ),
+                            )
                         val withTok = direct.copy(linkToken = payload.tok, source = PeerSource.QR)
                         deps.upsertPeer(withTok)
                         withTok
@@ -1793,12 +1825,12 @@ class MainViewModel internal constructor(
                     is QrPayload.Peer -> {
                         _joinState.value = JoinUiState.FindingHost(payload.ip)
                         probeRetrying(listOf(payload.ip), listOf(payload.port), attempts = 3)
-                            ?: throw JoinException("${payload.ip}:${payload.port} not reachable — join its Wi-Fi first")
+                            ?: throw JoinException(AppI18n.current().format(Str.PEER_NOT_REACHABLE_WIFI, payload.ip, payload.port))
                     }
                     is QrPayload.Http -> {
                         _joinState.value = JoinUiState.FindingHost(payload.host)
                         probeRetrying(listOf(payload.host), listOf(payload.port), attempts = 3)
-                            ?: throw JoinException("${payload.host}:${payload.port} is not a Files device")
+                            ?: throw JoinException(AppI18n.current().format(Str.NOT_A_FILES_DEVICE, payload.host, payload.port))
                     }
                 }
                 _joinState.value = JoinUiState.Found(peer)
@@ -1806,7 +1838,7 @@ class MainViewModel internal constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                val msg = (e as? PeerTransferException)?.userMessage ?: e.message ?: "Could not connect"
+                val msg = (e as? PeerTransferException)?.userMessage ?: e.message ?: AppI18n.current()[Str.COULD_NOT_CONNECT]
                 _joinState.value = JoinUiState.Failed(msg, wifiFallback = wifiCreds?.takeIf { !wifiJoined })
             } finally {
                 if (joinedHere && !completed) {
@@ -1951,14 +1983,14 @@ class MainViewModel internal constructor(
                 direct(sendItems, sink)
             } else {
                 val uiSink = deps.linkProgressSink(sink)
-                val name = PeerPathPolicy.sanitizeDisplayName(link.peer.name, 64).ifEmpty { "the iPhone" }
+                val name = PeerPathPolicy.sanitizeDisplayName(link.peer.name, 64).ifEmpty { AppI18n.current()[Str.THE_IPHONE] }
                 ReannounceRetry.run(
                     initial = link.peer,
                     reannounces = link.reannounces,
                     abortActive = { client.cancelActive() },
                     isCancelled = { sink.isCancelled() },
-                    onWaiting = { deps.linkPhase("Waiting for $name — open Files on $name") },
-                    onRetry = { deps.linkPhase("Sending to $name…") },
+                    onWaiting = { deps.linkPhase(AppI18n.current().format(Str.WAITING_FOR_PEER_OPEN_FILES, name)) },
+                    onRetry = { deps.linkPhase(AppI18n.current().format(Str.SENDING_TO_ELLIPSIS, name)) },
                 ) { target, onSessionStarted ->
                     engine.send(
                         peer = target,
@@ -2003,7 +2035,7 @@ class MainViewModel internal constructor(
     ) {
         val trimmed = rawAddress.trim()
         if (trimmed.isEmpty()) {
-            onError("Enter host or IP address")
+            onError(AppI18n.current()[Str.ENTER_HOST_OR_IP])
             return
         }
         vmScope.launch {
@@ -2015,7 +2047,7 @@ class MainViewModel internal constructor(
             } catch (e: PeerTransferException) {
                 onError(e.userMessage)
             } catch (e: Exception) {
-                onError(e.message ?: "Could not reach $trimmed")
+                onError(e.message ?: AppI18n.current().format(Str.COULD_NOT_REACH, trimmed))
             }
         }
     }
@@ -2031,24 +2063,25 @@ class MainViewModel internal constructor(
         }
         val appContext = context.applicationContext ?: context
         val peerName = PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host }
+        val sStart = AppI18n.current()
         if (peer.readOnly) {
             releaseJoinedNetworkIfTarget(peer, immediate = true)
-            emitSimpleMessage("$peerName is read-only (Transfer ▸ Settings)")
+            emitSimpleMessage(sStart.format(Str.PEER_IS_READ_ONLY_HINT, peerName))
             return
         }
         clearSelection()
-        emitSimpleMessage("Sending to $peerName…")
+        emitSimpleMessage(sStart.format(Str.SENDING_TO_ELLIPSIS, peerName))
         // Bluetooth peers: the link dialog appears at t = 0 ms, before files are enumerated or Bluetooth connects.
         if (peer.needsLink) deps.beginBleSendAction(peerName)
 
-        val countLabel = if (items.size == 1) items.first().displayName else "${items.size} items"
+        val countLabel = if (items.size == 1) items.first().displayName else sStart.itemsCount(items.size)
         val txClient = PeerHttpClient(socketBinder = deps.peerSocketBinder)
         val bleFallback = java.util.concurrent.atomic.AtomicBoolean(false)
 
         deps.operationRegistry.enqueue(
             context = appContext,
             kind = OperationKind.SEND,
-            title = "Sending $countLabel to $peerName",
+            title = sStart.format(Str.SENDING_ITEMS_TO, countLabel, peerName),
             retryAction = { sendToPeer(appContext, peer, items) },
             onCancel = {
                 txClient.close()
@@ -2070,19 +2103,21 @@ class MainViewModel internal constructor(
                             roots = items,
                             includeHidden = settings.value.showHidden,
                         )
+                        val sRun = AppI18n.current()
                         if (sink.isCancelled()) {
-                            return@use OperationRunOutcome(message = "Sending to $peerName cancelled")
+                            return@use OperationRunOutcome(message = sRun.format(Str.SENDING_CANCELLED, peerName))
                         }
                         if (sendItems.isEmpty()) {
-                            preparingError = "Nothing to send to $peerName"
-                            return@use OperationRunOutcome(message = "Nothing to send to $peerName")
+                            val nothingMsg = sRun.format(Str.NOTHING_TO_SEND, peerName)
+                            preparingError = nothingMsg
+                            return@use OperationRunOutcome(message = nothingMsg)
                         }
                         enteredRunPeerSend = true
                         val res = runPeerSend(peer, sendItems, client, sink, bleFallback) { deps.operationRegistry.cancel(opId) }
                         formatPeerSendOutcome(peerName, res, sink.isCancelled())
                     } catch (e: PeerTransferException) {
                         if (sink.isCancelled()) {
-                            OperationRunOutcome(message = "Sending to $peerName cancelled")
+                            OperationRunOutcome(message = AppI18n.current().format(Str.SENDING_CANCELLED, peerName))
                         } else {
                             if (!enteredRunPeerSend) preparingError = e.userMessage
                             OperationRunOutcome(
@@ -2094,7 +2129,7 @@ class MainViewModel internal constructor(
                 }
             } catch (e: Exception) {
                 if (!enteredRunPeerSend && e !is kotlinx.coroutines.CancellationException) {
-                    preparingError = e.message ?: "Could not read the selected files"
+                    preparingError = e.message ?: AppI18n.current()[Str.COULD_NOT_READ_SELECTED]
                 }
                 throw e
             } finally {
@@ -2117,23 +2152,24 @@ class MainViewModel internal constructor(
         }
         val appContext = context.applicationContext ?: context
         val peerName = PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host }
+        val sStart = AppI18n.current()
         if (peer.readOnly) {
             releaseJoinedNetworkIfTarget(peer, immediate = true)
-            emitSimpleMessage("$peerName is read-only (Transfer ▸ Settings)")
+            emitSimpleMessage(sStart.format(Str.PEER_IS_READ_ONLY_HINT, peerName))
             return
         }
-        emitSimpleMessage("Sending to $peerName…")
+        emitSimpleMessage(sStart.format(Str.SENDING_TO_ELLIPSIS, peerName))
         // Bluetooth peers: the link dialog appears at t = 0 ms, before files are enumerated or Bluetooth connects.
         if (peer.needsLink) deps.beginBleSendAction(peerName)
 
-        val countLabel = if (uris.size == 1) "1 file" else "${uris.size} files"
+        val countLabel = sStart.filesCount(uris.size)
         val txClient = PeerHttpClient(socketBinder = deps.peerSocketBinder)
         val bleFallback = java.util.concurrent.atomic.AtomicBoolean(false)
 
         deps.operationRegistry.enqueue(
             context = appContext,
             kind = OperationKind.SEND,
-            title = "Sending $countLabel to $peerName",
+            title = sStart.format(Str.SENDING_ITEMS_TO, countLabel, peerName),
             retryAction = { sendUrisToPeer(appContext, peer, uris) },
             onCancel = {
                 txClient.close()
@@ -2151,19 +2187,21 @@ class MainViewModel internal constructor(
                 txClient.use { client ->
                     try {
                         val sendItems = resolveUriSendItems(appContext, uris, sink)
+                        val sRun = AppI18n.current()
                         if (sink.isCancelled()) {
-                            return@use OperationRunOutcome(message = "Sending to $peerName cancelled")
+                            return@use OperationRunOutcome(message = sRun.format(Str.SENDING_CANCELLED, peerName))
                         }
                         if (sendItems.isEmpty()) {
-                            preparingError = "Nothing to send to $peerName"
-                            return@use OperationRunOutcome(message = "Nothing to send to $peerName")
+                            val nothingMsg = sRun.format(Str.NOTHING_TO_SEND, peerName)
+                            preparingError = nothingMsg
+                            return@use OperationRunOutcome(message = nothingMsg)
                         }
                         enteredRunPeerSend = true
                         val res = runPeerSend(peer, sendItems, client, sink, bleFallback) { deps.operationRegistry.cancel(opId) }
                         formatPeerSendOutcome(peerName, res, sink.isCancelled())
                     } catch (e: PeerTransferException) {
                         if (sink.isCancelled()) {
-                            OperationRunOutcome(message = "Sending to $peerName cancelled")
+                            OperationRunOutcome(message = AppI18n.current().format(Str.SENDING_CANCELLED, peerName))
                         } else {
                             if (!enteredRunPeerSend) preparingError = e.userMessage
                             OperationRunOutcome(
@@ -2175,7 +2213,7 @@ class MainViewModel internal constructor(
                 }
             } catch (e: Exception) {
                 if (!enteredRunPeerSend && e !is kotlinx.coroutines.CancellationException) {
-                    preparingError = e.message ?: "Could not read the selected files"
+                    preparingError = e.message ?: AppI18n.current()[Str.COULD_NOT_READ_SELECTED]
                 }
                 throw e
             } finally {
@@ -2248,7 +2286,7 @@ class MainViewModel internal constructor(
                         total += n
                     }
                     total
-                } ?: throw FileNotFoundException("Cannot open selected document")
+                } ?: throw FileNotFoundException(AppI18n.current()[Str.CANNOT_OPEN_DOCUMENT])
             }
 
             val fallbackName = uri.lastPathSegment
@@ -2281,7 +2319,7 @@ class MainViewModel internal constructor(
                     isDirectory = false,
                     open = {
                         resolver.openInputStream(uri)
-                            ?: throw FileNotFoundException("Cannot open $uniqueRelName")
+                            ?: throw FileNotFoundException(AppI18n.current().format(Str.CANNOT_OPEN_ITEM, uniqueRelName))
                     },
                 ),
             )
@@ -2294,23 +2332,24 @@ class MainViewModel internal constructor(
         res: PeerSendResult,
         cancelled: Boolean,
     ): OperationRunOutcome {
+        val s = AppI18n.current()
         if (cancelled || res.cancelled) {
-            return OperationRunOutcome(message = "Sending to $peerName cancelled")
+            return OperationRunOutcome(message = s.format(Str.SENDING_CANCELLED, peerName))
         }
         val summary = buildString {
             when {
                 res.files > 0 -> {
-                    append("Sent ${res.files} file${if (res.files == 1) "" else "s"} to $peerName")
+                    append(s.format(Str.SENT_FILES_TO, s.filesCount(res.files), peerName))
                 }
                 res.dirs > 0 -> {
-                    append("Sent ${res.dirs} folder${if (res.dirs == 1) "" else "s"} to $peerName")
+                    append(s.format(Str.SENT_FOLDERS_TO, s.foldersCount(res.dirs), peerName))
                 }
                 else -> {
-                    append("Sent 0 files to $peerName")
+                    append(s.format(Str.SENT_ZERO_FILES_TO, peerName))
                 }
             }
             if (res.skipped > 0) {
-                append(" (${res.skipped} skipped)")
+                append(s.format(Str.SKIPPED_SUFFIX, res.skipped))
             }
         }
         return OperationRunOutcome(message = summary)
@@ -2366,8 +2405,9 @@ class MainViewModel internal constructor(
         VfsPath.Local("${deps.primaryStoragePathProvider().trimEnd('/')}/Download")
 
     fun friendlyShareDestinationLabel(path: VfsPath): String {
-        if (path == defaultShareReceivedPath()) return "Received"
-        if (path == defaultDownloadsPath()) return "Downloads"
+        val s = AppI18n.current()
+        if (path == defaultShareReceivedPath()) return s[Str.RECEIVED]
+        if (path == defaultDownloadsPath()) return s[Str.DOWNLOADS]
         return when (path) {
             is VfsPath.Ftp -> {
                 val serverName = deps.ftpServersRepository.findById(path.serverId)?.name ?: "FTP"
@@ -2384,6 +2424,7 @@ class MainViewModel internal constructor(
     }
 
     fun buildShareQuickDestinations(): List<ShareQuickDestination> {
+        val s = AppI18n.current()
         val result = ArrayList<ShareQuickDestination>()
         val seen = HashSet<VfsPath>()
         fun addUnique(id: String, label: String, path: VfsPath, kind: ShareDestinationKind) {
@@ -2393,15 +2434,15 @@ class MainViewModel internal constructor(
         }
 
         val received = defaultShareReceivedPath()
-        addUnique("received", "Received", received, ShareDestinationKind.RECEIVED)
+        addUnique("received", s[Str.RECEIVED], received, ShareDestinationKind.RECEIVED)
 
         val downloads = defaultDownloadsPath()
-        addUnique("downloads", "Downloads", downloads, ShareDestinationKind.DOWNLOADS)
+        addUnique("downloads", s[Str.DOWNLOADS], downloads, ShareDestinationKind.DOWNLOADS)
 
         val curDir = _browser.value.currentDir
         val curWritable = _browser.value.currentDirNode?.canWrite != false
         if (curDir != null && curWritable) {
-            val curLabel = "Current (${friendlyShareDestinationLabel(curDir)})"
+            val curLabel = s.format(Str.CURRENT_DEST_FMT, friendlyShareDestinationLabel(curDir))
             addUnique("current", curLabel, curDir, ShareDestinationKind.CURRENT)
         }
 
@@ -2431,7 +2472,7 @@ class MainViewModel internal constructor(
         val appContext = context.applicationContext ?: context
         if (_saveSharedState.value?.isSaving == true) {
             pendingIncomingShares.addLast(PendingIncomingShare.Raw(appContext, raw))
-            emitSimpleMessage("Queued incoming share until current save finishes")
+            emitSimpleMessage(AppI18n.current()[Str.QUEUED_INCOMING_SHARE])
             return
         }
         shareResolveJob?.cancel()
@@ -2444,13 +2485,13 @@ class MainViewModel internal constructor(
     internal fun presentOrQueueIncomingPayload(payload: IncomingSharePayload) {
         if (payload is IncomingSharePayload.Files && payload.items.isEmpty()) {
             if (payload.skippedBlockedCount > 0) {
-                emitSimpleMessage("Blocked unsafe private app file URI")
+                emitSimpleMessage(AppI18n.current()[Str.BLOCKED_UNSAFE_URI])
             }
             return
         }
         if (_saveSharedState.value?.isSaving == true) {
             pendingIncomingShares.addLast(PendingIncomingShare.Resolved(payload))
-            emitSimpleMessage("Queued incoming share until current save finishes")
+            emitSimpleMessage(AppI18n.current()[Str.QUEUED_INCOMING_SHARE])
             return
         }
         val defaultDest = defaultShareReceivedPath()
@@ -2585,13 +2626,14 @@ class MainViewModel internal constructor(
             }
             deps.refreshVolumesAction()
 
+            val sEnd = AppI18n.current()
             when {
                 res.cancelled -> {
                     _saveSharedState.value = null
                     val msg = if (res.saved.isNotEmpty()) {
-                        "Save cancelled (${res.saved.size} saved to $finalLabel)"
+                        sEnd.format(Str.SAVE_CANCELLED_PARTIAL, res.saved.size, finalLabel)
                     } else {
-                        "Save cancelled"
+                        sEnd[Str.SAVE_CANCELLED]
                     }
                     emitShareSnackbar(
                         message = msg,
@@ -2612,7 +2654,7 @@ class MainViewModel internal constructor(
                         )
                     } else {
                         emitShareSnackbar(
-                            message = "Save failed: $err",
+                            message = sEnd.format(Str.SAVE_FAILED_FMT, err),
                             destinationToOpen = null,
                             reauthGDriveServerId = res.reauthGDriveServerId,
                         )
@@ -2624,15 +2666,15 @@ class MainViewModel internal constructor(
                     _saveSharedState.value = null
                     val msg = when {
                         res.saved.size == 1 && res.skipped.isEmpty() && res.failed.isEmpty() ->
-                            "Saved ${res.saved.first().name} to $finalLabel"
+                            sEnd.format(Str.SAVED_SINGLE_TO, res.saved.first().name, finalLabel)
 
                         res.saved.isNotEmpty() -> buildString {
-                            append("Saved ${res.saved.size} file${if (res.saved.size == 1) "" else "s"} to $finalLabel")
-                            if (res.skipped.isNotEmpty()) append(" (${res.skipped.size} skipped)")
-                            if (res.failed.isNotEmpty()) append(" · ${res.failed.size} failed")
+                            append(sEnd.format(Str.SAVED_MULTI_TO, sEnd.filesCount(res.saved.size), finalLabel))
+                            if (res.skipped.isNotEmpty()) append(sEnd.format(Str.SKIPPED_SUFFIX, res.skipped.size))
+                            if (res.failed.isNotEmpty()) append(sEnd.format(Str.FAILED_COUNT_SUFFIX, res.failed.size))
                         }
 
-                        else -> "Skipped ${res.skipped.size} existing file${if (res.skipped.size == 1) "" else "s"} in $finalLabel"
+                        else -> sEnd.format(Str.SKIPPED_EXISTING_IN, sEnd.filesCount(res.skipped.size), finalLabel)
                     }
                     emitShareSnackbar(
                         message = msg,
@@ -2660,14 +2702,15 @@ class MainViewModel internal constructor(
         destinationToOpen: VfsPath?,
         reauthGDriveServerId: String? = null,
     ) {
+        val s = AppI18n.current()
         _snackbarMessages.tryEmit(
             OperationCompletionEvent(
                 id = "share-save-${System.currentTimeMillis()}",
                 kind = OperationKind.RECEIVE,
-                title = "Save to Files",
+                title = s[Str.SAVE_TO_FILES],
                 snackbarMessage = message,
                 destinationToOpen = destinationToOpen,
-                openLabel = "Open",
+                openLabel = s[Str.OPEN],
                 reauthGDriveServerId = reauthGDriveServerId,
             ),
         )

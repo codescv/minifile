@@ -35,7 +35,7 @@ class FtpServerServiceUnifiedTest {
         assertTrue("sections missing: $idx", idx.all { it >= 0 })
         assertEquals(idx.sorted(), idx)
         assertTrue(screen.contains("viewModel.setDiscoverable("))
-        assertTrue(screen.contains("\"Activity log (\${combinedLog.size})\""))
+        assertTrue(screen.contains("Str.ACTIVITY_LOG_COUNT"))
 
         val service = File(base, "service/FtpServerService.kt").readText()
         val launch = service.substringAfter("private fun launchHttpEngine()")

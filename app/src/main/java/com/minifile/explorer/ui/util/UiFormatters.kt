@@ -26,6 +26,8 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.core.content.FileProvider
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.ops.TextFileCodec
 import com.minifile.explorer.core.vfs.FileSystem
 import com.minifile.explorer.core.vfs.PathUtils
@@ -51,7 +53,7 @@ object UiFormatters {
     fun formatExactSize(context: Context, bytes: Long): String {
         if (bytes < 0L) return "—"
         val human = Formatter.formatFileSize(context, bytes)
-        return "$human (${String.format(Locale.US, "%,d", bytes)} bytes)"
+        return AppI18n.current().format(Str.EXACT_SIZE_BYTES, human, String.format(Locale.US, "%,d", bytes))
     }
 
     fun formatShortDate(epochMs: Long): String {
@@ -221,7 +223,7 @@ object UiFormatters {
                         }
                     }
                 } else if (!target.isFile) {
-                    throw IllegalArgumentException("Remote FTP file must be downloaded first before sharing.")
+                    throw IllegalArgumentException(AppI18n.current()[Str.FTP_DOWNLOAD_BEFORE_SHARE])
                 }
                 FileProvider.getUriForFile(
                     context,
@@ -239,7 +241,7 @@ object UiFormatters {
                         }
                     }
                 } else if (!target.isFile) {
-                    throw IllegalArgumentException("Google Drive file must be downloaded first before sharing.")
+                    throw IllegalArgumentException(AppI18n.current()[Str.GDRIVE_DOWNLOAD_BEFORE_SHARE])
                 }
                 FileProvider.getUriForFile(
                     context,
@@ -270,7 +272,8 @@ object UiFormatters {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         val toStart = if (forceChooser) {
-            Intent.createChooser(viewIntent, "Open ${node.name}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            Intent.createChooser(viewIntent, AppI18n.current().format(Str.OPEN_CHOOSER_TITLE, node.name))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         } else {
             viewIntent
         }
@@ -283,8 +286,9 @@ object UiFormatters {
         fs: FileSystem,
         nodes: List<VfsNode>,
     ): Result<Unit> = runCatching {
+        val s = AppI18n.current()
         val filesOnly = nodes.filterNot { it.isDirectory }
-        require(filesOnly.isNotEmpty()) { "Select at least one file to share (compress folders to ZIP first)." }
+        require(filesOnly.isNotEmpty()) { s[Str.SELECT_FILE_TO_SHARE] }
         if (filesOnly.size == 1) {
             val single = filesOnly.first()
             val uri = withContext(Dispatchers.IO) {
@@ -295,7 +299,10 @@ object UiFormatters {
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            context.startActivity(Intent.createChooser(send, "Share ${single.name}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            context.startActivity(
+                Intent.createChooser(send, s.format(Str.SHARE_SINGLE_TITLE, single.name))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
         } else {
             val uris = withContext(Dispatchers.IO) {
                 val list = ArrayList<Uri>(filesOnly.size)
@@ -309,7 +316,10 @@ object UiFormatters {
                 putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            context.startActivity(Intent.createChooser(send, "Share ${filesOnly.size} files").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            context.startActivity(
+                Intent.createChooser(send, s.format(Str.SHARE_MULTI_TITLE, filesOnly.size))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
         }
     }
 
@@ -330,7 +340,8 @@ object UiFormatters {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         val toStart = if (forceChooser) {
-            Intent.createChooser(viewIntent, "Open ${node.name}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            Intent.createChooser(viewIntent, AppI18n.current().format(Str.OPEN_CHOOSER_TITLE, node.name))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         } else {
             viewIntent
         }
@@ -342,8 +353,9 @@ object UiFormatters {
         safFs: SafFileSystem,
         nodes: List<VfsNode>,
     ): Result<Unit> = runCatching {
+        val s = AppI18n.current()
         val filesOnly = nodes.filterNot { it.isDirectory }
-        require(filesOnly.isNotEmpty()) { "Select at least one file to share (compress folders to ZIP first)." }
+        require(filesOnly.isNotEmpty()) { s[Str.SELECT_FILE_TO_SHARE] }
         if (filesOnly.size == 1) {
             val single = filesOnly.first()
             val uri = toShareableUri(context, safFs, single.path)
@@ -352,7 +364,10 @@ object UiFormatters {
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            context.startActivity(Intent.createChooser(send, "Share ${single.name}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            context.startActivity(
+                Intent.createChooser(send, s.format(Str.SHARE_SINGLE_TITLE, single.name))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
         } else {
             val uris = ArrayList<Uri>(filesOnly.size)
             for (n in filesOnly) {
@@ -363,7 +378,10 @@ object UiFormatters {
                 putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            context.startActivity(Intent.createChooser(send, "Share ${filesOnly.size} files").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            context.startActivity(
+                Intent.createChooser(send, s.format(Str.SHARE_MULTI_TITLE, filesOnly.size))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
         }
     }
 

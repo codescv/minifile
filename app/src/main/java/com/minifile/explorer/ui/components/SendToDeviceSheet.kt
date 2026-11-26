@@ -69,11 +69,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.peer.PeerInfo
 import com.minifile.explorer.core.peer.PeerPathPolicy
 import com.minifile.explorer.core.peer.PeerSource
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.ui.MainViewModel
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.NearbyAccessIssue
 import com.minifile.explorer.ui.util.NearbyPermissions
 import com.minifile.explorer.ui.util.NearbyStatusCopy
@@ -89,6 +91,7 @@ fun SendToDeviceSheet(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val peers by viewModel.peers.collectAsState()
     val isScanning by viewModel.isScanningPeers.collectAsState()
     val bleAvailability by viewModel.bleAvailability.collectAsState()
@@ -112,20 +115,20 @@ fun SendToDeviceSheet(
         }
     }
 
-    val headerTitle = remember(items, context) {
+    val headerTitle = remember(items, context, s) {
         val single = items.singleOrNull()
         if (single != null) {
             if (!single.isDirectory && single.size >= 0L) {
-                "Send ${single.name} · ${UiFormatters.formatSize(context, single.size)}"
+                s.format(Str.SEND_SINGLE_WITH_SIZE, single.name, UiFormatters.formatSize(context, single.size))
             } else {
-                "Send ${single.name}"
+                s.format(Str.SEND_SINGLE, single.name)
             }
         } else {
             val fileBytes = items.filter { !it.isDirectory && it.size > 0L }.sumOf { it.size }
             if (fileBytes > 0L) {
-                "Send ${items.size} items · ${UiFormatters.formatSize(context, fileBytes)}"
+                s.format(Str.SEND_MULTI_WITH_SIZE, items.size, UiFormatters.formatSize(context, fileBytes))
             } else {
-                "Send ${items.size} items"
+                s.format(Str.SEND_MULTI, items.size)
             }
         }
     }
@@ -150,7 +153,7 @@ fun SendToDeviceSheet(
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "Files are saved in the receiver's Received folder",
+                text = s[Str.FILES_SAVED_IN_RECEIVED],
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -170,13 +173,13 @@ fun SendToDeviceSheet(
                         )
                         Spacer(Modifier.width(10.dp))
                         Text(
-                            text = NearbyStatusCopy.searching(bleAvailability, isScanning),
+                            text = NearbyStatusCopy.searching(bleAvailability, isScanning, s),
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                         )
                     }
                     Text(
-                        text = NearbyStatusCopy.emptyState(bleAvailability, forSendSheet = true),
+                        text = NearbyStatusCopy.emptyState(bleAvailability, forSendSheet = true, strings = s),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -194,7 +197,7 @@ fun SendToDeviceSheet(
                                 val displayName = PeerPathPolicy.sanitizeDisplayName(peer.name, 64)
                                     .ifEmpty { peer.host }
                                 if (peer.readOnly) {
-                                    viewModel.emitSimpleMessage("$displayName is read-only (Transfer ▸ Settings)")
+                                    viewModel.emitSimpleMessage(s.format(Str.PEER_IS_READ_ONLY_HINT, displayName))
                                 } else {
                                     onSelectPeer(peer)
                                 }
@@ -226,7 +229,7 @@ fun SendToDeviceSheet(
                 ) {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Add by address…")
+                    Text(s[Str.ADD_BY_ADDRESS_ELLIPSIS])
                 }
 
                 if (showScanButton || isScanning) {
@@ -240,11 +243,11 @@ fun SendToDeviceSheet(
                                 modifier = Modifier.size(14.dp),
                             )
                             Spacer(Modifier.width(6.dp))
-                            Text("Scanning…")
+                            Text(s[Str.SCANNING])
                         } else {
                             Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Scan")
+                            Text(s[Str.SCAN])
                         }
                     }
                 }
@@ -297,8 +300,8 @@ fun SendToDeviceSheet(
 }
 
 /**
- * "Hotspot Direct" + "Scan QR" — Scheme B entry points (spec §3.7). Labels are single-line English only
- * (user feedback on v1.0.18: no secondary-language captions on these two buttons).
+ * "Hotspot Direct" + "Scan QR" — Scheme B entry points (spec §3.7). Labels are single-line localized only
+ * (no secondary-language captions on these two buttons).
  */
 @Composable
 fun DirectHotspotButtons(
@@ -306,6 +309,8 @@ fun DirectHotspotButtons(
     onScanQr: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    @Suppress("UNUSED_VARIABLE")
+    val s = LocalAppStrings.current
     Row(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = modifier.fillMaxWidth(),
@@ -352,6 +357,7 @@ fun DirectHotspotButtons(
 @Composable
 fun NearbyAccessRow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val bleAvailability by viewModel.bleAvailability.collectAsState()
     var refreshTick by remember { mutableIntStateOf(0) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -389,7 +395,7 @@ fun NearbyAccessRow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            text = NearbyStatusCopy.hint(issue),
+            text = NearbyStatusCopy.hint(issue, s),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
@@ -409,7 +415,7 @@ fun NearbyAccessRow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 }
             }
         }) {
-            Text(NearbyStatusCopy.actionLabel(issue))
+            Text(NearbyStatusCopy.actionLabel(issue, s))
         }
     }
 }
@@ -422,20 +428,21 @@ fun PeerDeviceRow(
     trailingActionLabel: String? = null,
     onTrailingAction: (() -> Unit)? = null,
 ) {
+    val s = LocalAppStrings.current
     val cleanName = remember(peer.name, peer.host) {
         PeerPathPolicy.sanitizeDisplayName(peer.name, 64).ifEmpty { peer.host }
     }
-    val subtitle = remember(peer.displayEndpoint, peer.readOnly, peer.source, peer.platform) {
+    val subtitle = remember(peer.displayEndpoint, peer.readOnly, peer.source, peer.platform, s) {
         val base = when {
-            peer.source == PeerSource.BLE -> "Bluetooth · Direct" + when (peer.platform) {
+            peer.source == PeerSource.BLE -> s[Str.PEER_SUBTITLE_BLE_DIRECT] + when (peer.platform) {
                 "ios" -> " · iPhone"
                 "android" -> " · Android"
                 else -> ""
             }
-            peer.source == PeerSource.QR || peer.hotspot -> "${peer.displayEndpoint} · Hotspot"
+            peer.source == PeerSource.QR || peer.hotspot -> s.format(Str.PEER_SUBTITLE_HOTSPOT, peer.displayEndpoint)
             else -> peer.displayEndpoint
         }
-        if (peer.readOnly) "$base · Read-only" else base
+        if (peer.readOnly) s.format(Str.PEER_SUBTITLE_READ_ONLY, base) else base
     }
     val leadingIcon = when {
         peer.source == PeerSource.BLE -> Icons.Filled.Bluetooth
@@ -461,7 +468,7 @@ fun PeerDeviceRow(
             ) {
                 Icon(
                     imageVector = leadingIcon,
-                    contentDescription = if (peer.source == PeerSource.BLE) "Bluetooth" else null,
+                    contentDescription = if (peer.source == PeerSource.BLE) s[Str.BLUETOOTH_LABEL] else null,
                     tint = if (peer.readOnly) {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     } else {
@@ -497,13 +504,13 @@ fun PeerDeviceRow(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Filled.Lock,
-                                contentDescription = "Read-only",
+                                contentDescription = s[Str.READ_ONLY],
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(16.dp),
                             )
                             Spacer(Modifier.width(4.dp))
                             Text(
-                                text = "Read-only",
+                                text = s[Str.READ_ONLY],
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -522,7 +529,7 @@ fun PeerDeviceRow(
                 peer.readOnly -> {
                     Icon(
                         imageVector = Icons.Filled.Lock,
-                        contentDescription = "Read-only",
+                        contentDescription = s[Str.READ_ONLY],
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp),
                     )
@@ -544,6 +551,7 @@ fun AddPeerByAddressDialog(
     onAdded: (PeerInfo) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     var addressInput by remember { mutableStateOf("") }
     var isProbing by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -567,11 +575,11 @@ fun AddPeerByAddressDialog(
 
     AlertDialog(
         onDismissRequest = { if (!isProbing) onDismiss() },
-        title = { Text("Add device by address") },
+        title = { Text(s[Str.ADD_DEVICE_BY_ADDRESS]) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Enter the other device's IP address and port (default port 8080).",
+                    text = s[Str.ADD_DEVICE_BY_ADDRESS_HINT],
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -581,7 +589,7 @@ fun AddPeerByAddressDialog(
                         addressInput = it
                         errorMessage = null
                     },
-                    label = { Text("Address (host[:port])") },
+                    label = { Text(s[Str.ADDRESS_HOST_PORT]) },
                     placeholder = { Text("192.168.1.42:8080") },
                     singleLine = true,
                     enabled = !isProbing,
@@ -614,9 +622,9 @@ fun AddPeerByAddressDialog(
                         modifier = Modifier.size(16.dp),
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text("Connecting…")
+                    Text(s[Str.CONNECTING])
                 } else {
-                    Text("Add")
+                    Text(s[Str.ADD])
                 }
             }
         },
@@ -625,7 +633,7 @@ fun AddPeerByAddressDialog(
                 onClick = onDismiss,
                 enabled = !isProbing,
             ) {
-                Text("Cancel")
+                Text(s[Str.CANCEL])
             }
         },
     )

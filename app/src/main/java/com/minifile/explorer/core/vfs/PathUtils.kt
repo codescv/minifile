@@ -1,5 +1,8 @@
 package com.minifile.explorer.core.vfs
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.AppStrings
+import com.minifile.explorer.core.i18n.Str
 import java.util.Locale
 
 sealed interface NameValidation {
@@ -42,23 +45,27 @@ object PathUtils {
     fun isHiddenName(name: String): Boolean =
         name.startsWith(".") && name != "." && name != ".."
 
-    fun validateName(name: String, fatSafe: Boolean = false): NameValidation {
-        if (name.isEmpty()) return NameValidation.Invalid("Name cannot be empty")
-        if (name.isBlank()) return NameValidation.Invalid("Name cannot be blank")
-        if (name == "." || name == "..") return NameValidation.Invalid("Reserved directory name")
+    fun validateName(
+        name: String,
+        fatSafe: Boolean = false,
+        strings: AppStrings = AppI18n.current(),
+    ): NameValidation {
+        if (name.isEmpty()) return NameValidation.Invalid(strings[Str.ERR_NAME_EMPTY])
+        if (name.isBlank()) return NameValidation.Invalid(strings[Str.ERR_NAME_BLANK])
+        if (name == "." || name == "..") return NameValidation.Invalid(strings[Str.ERR_NAME_RESERVED])
         if (name.contains('/') || name.contains('\u0000')) {
-            return NameValidation.Invalid("Name contains illegal path character")
+            return NameValidation.Invalid(strings[Str.ERR_NAME_ILLEGAL_CHAR])
         }
         if (name.toByteArray(Charsets.UTF_8).size > 255) {
-            return NameValidation.Invalid("Name is too long (max 255 UTF-8 bytes)")
+            return NameValidation.Invalid(strings[Str.ERR_NAME_TOO_LONG])
         }
         if (fatSafe) {
             val bad = name.firstOrNull { it in FAT_ILLEGAL_CHARS || it.code < 0x20 }
             if (bad != null) {
-                return NameValidation.Invalid("Character '$bad' is not allowed on external storage")
+                return NameValidation.Invalid(strings.format(Str.ERR_NAME_FAT_CHAR, bad))
             }
             if (name.endsWith('.') || name.endsWith(' ')) {
-                return NameValidation.Invalid("Name cannot end with a dot or space on FAT volumes")
+                return NameValidation.Invalid(strings[Str.ERR_NAME_FAT_TRAILING])
             }
         }
         return NameValidation.Valid

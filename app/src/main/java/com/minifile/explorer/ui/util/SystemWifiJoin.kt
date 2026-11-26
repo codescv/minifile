@@ -10,6 +10,8 @@ import android.net.wifi.WifiNetworkSuggestion
 import android.os.Build
 import android.os.PersistableBundle
 import android.provider.Settings
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.service.WifiSpecifierConnector
 
 /**
@@ -53,7 +55,7 @@ object SystemWifiJoin {
     /** Copies the Wi-Fi password, flagged sensitive so Android 13+ hides it from the clipboard preview. */
     fun copyPassword(context: Context, password: String): Boolean = runCatching {
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return false
-        val clip = ClipData.newPlainText("Wi-Fi password", password)
+        val clip = ClipData.newPlainText(AppI18n.current()[Str.WIFI_PASSWORD], password)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             clip.description.extras = PersistableBundle().apply {
                 putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)

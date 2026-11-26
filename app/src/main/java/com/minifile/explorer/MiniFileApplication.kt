@@ -1,9 +1,12 @@
 package com.minifile.explorer
 
 import android.app.Application
+import android.content.res.Configuration
 import android.os.Build
+import com.minifile.explorer.core.i18n.AppI18n
 import com.minifile.explorer.di.AppContainer
 import dalvik.system.ZipPathValidator
+import java.util.Locale
 
 class MiniFileApplication : Application() {
     lateinit var container: AppContainer
@@ -24,5 +27,11 @@ class MiniFileApplication : Application() {
             obbDir
         }
         container = AppContainer(this)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val locale = newConfig.locales[0] ?: Locale.getDefault()
+        AppI18n.onSystemLocaleChanged(locale)
     }
 }

@@ -32,9 +32,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.service.BleLinkRole
 import com.minifile.explorer.service.BleLinkUiState
 import com.minifile.explorer.service.IncomingBleRequest
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.NearbyStatusCopy
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.delay
@@ -50,6 +52,7 @@ fun PeerConsentDialog(
     onDecline: () -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     var nowMs by remember(request.requestId) { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(request.requestId) {
         while (true) {
@@ -62,7 +65,7 @@ fun PeerConsentDialog(
     val totalMs = 60_000f
     val fraction = ((request.deadlineMs - nowMs) / totalMs).coerceIn(0f, 1f)
     val what = buildString {
-        append(if (request.files == 1) "1 file" else "${request.files} files")
+        append(s.filesCount(request.files))
         if (request.bytes > 0L) append(" (").append(UiFormatters.formatSize(context, request.bytes)).append(")")
     }
     val platform = when (request.os) {
@@ -75,29 +78,28 @@ fun PeerConsentDialog(
         onDismissRequest = {},
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
         icon = { Icon(Icons.Filled.Bluetooth, contentDescription = null) },
-        title = { Text("${request.fromName} wants to send $what") },
+        title = { Text(s.format(Str.PEER_WANTS_TO_SEND, request.fromName, what)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = buildString {
-                        append("Nearby")
-                        if (platform != null) append(" ").append(platform)
-                        append(" via Bluetooth. Files are saved to Received. ")
-                        append("A temporary Wi-Fi link may be created if you are not on the same network.")
+                    text = if (platform != null) {
+                        s.format(Str.PEER_CONSENT_DESC_PLATFORM, platform)
+                    } else {
+                        s[Str.PEER_CONSENT_DESC_GENERIC]
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
                 Text(
-                    text = "Auto-declines in $remainingSec s",
+                    text = s.format(Str.AUTO_DECLINES_IN, remainingSec),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         },
-        confirmButton = { Button(onClick = onAccept) { Text("Accept") } },
-        dismissButton = { TextButton(onClick = onDecline) { Text("Decline") } },
+        confirmButton = { Button(onClick = onAccept) { Text(s[Str.ACCEPT]) } },
+        dismissButton = { TextButton(onClick = onDecline) { Text(s[Str.DECLINE]) } },
     )
 }
 
@@ -108,6 +110,7 @@ fun HotspotLinkDialog(
     onCancel: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     val done = state.finished || state.error != null
     AlertDialog(
         onDismissRequest = { if (done) onDismiss() },
@@ -115,8 +118,8 @@ fun HotspotLinkDialog(
         title = {
             Text(
                 text = when (state.role) {
-                    BleLinkRole.SENDER -> "Sending to ${state.peerName}"
-                    BleLinkRole.RECEIVER -> "Receiving from ${state.peerName}"
+                    BleLinkRole.SENDER -> s.format(Str.SENDING_TO, state.peerName)
+                    BleLinkRole.RECEIVER -> s.format(Str.RECEIVING_FROM, state.peerName)
                 },
                 fontWeight = FontWeight.SemiBold,
             )
@@ -156,9 +159,9 @@ fun HotspotLinkDialog(
         },
         confirmButton = {
             if (done) {
-                TextButton(onClick = onDismiss) { Text("Close") }
+                TextButton(onClick = onDismiss) { Text(s[Str.CLOSE]) }
             } else {
-                TextButton(onClick = onCancel) { Text("Cancel") }
+                TextButton(onClick = onCancel) { Text(s[Str.CANCEL]) }
             }
         },
     )

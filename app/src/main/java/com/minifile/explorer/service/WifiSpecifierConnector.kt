@@ -1,5 +1,7 @@
 package com.minifile.explorer.service
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
@@ -50,7 +52,7 @@ interface HotspotJoinController {
         val NOOP: HotspotJoinController = object : HotspotJoinController {
             override val joined: JoinedNetwork? get() = null
             override suspend fun join(ssid: String, pass: String, sec: String, expectedHostIp: String?): JoinedNetwork =
-                throw JoinException("Wi-Fi join unavailable")
+                throw JoinException(AppI18n.current()[Str.JOIN_ERR_UNAVAILABLE])
             override fun releaseAfter(graceMs: Long) = Unit
             override fun release() = Unit
         }
@@ -215,7 +217,7 @@ class WifiSpecifierConnector internal constructor(
                 if (isLast) throw e
             }
         }
-        throw lastError ?: JoinException("Connection declined or timed out")
+        throw lastError ?: JoinException(AppI18n.current()[Str.JOIN_ERR_DECLINED_TIMEOUT])
     }
 
     private suspend fun joinWithSpecifierOnce(ssid: String, pass: String, mode: String, timeoutMs: Long): JoinedNetwork {
@@ -231,7 +233,7 @@ class WifiSpecifierConnector internal constructor(
                     override fun onUnavailable() {
                         // Release BEFORE resuming: an undispatched continuation may start the next attempt at once.
                         releaseIfCurrentRegistration(regToken)
-                        if (cont.isActive) cont.resume(Result.failure(JoinException("Connection declined or timed out")))
+                        if (cont.isActive) cont.resume(Result.failure(JoinException(AppI18n.current()[Str.JOIN_ERR_DECLINED_TIMEOUT])))
                     }
 
                     override fun onLost(network: Network?) {
@@ -245,7 +247,7 @@ class WifiSpecifierConnector internal constructor(
                     synchronized(lock) { activeRegistration = reg }
                 } catch (e: Exception) {
                     synchronized(lock) { activeRegistration = null }
-                    if (cont.isActive) cont.resume(Result.failure(JoinException("Could not request Wi-Fi: ${e.message}")))
+                    if (cont.isActive) cont.resume(Result.failure(JoinException(AppI18n.current().format(Str.JOIN_ERR_REQUEST_FMT, e.message.orEmpty()))))
                 }
                 cont.invokeOnCancellation { releaseIfCurrentRegistration(regToken) }
             }
@@ -275,7 +277,7 @@ class WifiSpecifierConnector internal constructor(
     private suspend fun joinLegacy(ssid: String, pass: String, expectedHostIp: String?): JoinedNetwork =
         withContext(ioDispatcher) {
             val id = ops.addAndEnableLegacy(ssid, pass)
-            if (id < 0) throw JoinException("Could not add Wi-Fi network $ssid")
+            if (id < 0) throw JoinException(AppI18n.current().format(Str.JOIN_ERR_ADD_NETWORK_FMT, ssid))
             synchronized(lock) { legacyNetworkId = id }
             val expectedSubnetBase = expectedHostIp?.takeIf { HostDecision.parseIpv4(it) != null }
             val joinedInfo = withTimeoutOrNull(JOIN_TIMEOUT_MS) {
@@ -293,7 +295,7 @@ class WifiSpecifierConnector internal constructor(
                 }
                 found
             }
-            joinedInfo ?: throw JoinException("Could not join $ssid within 60 s")
+            joinedInfo ?: throw JoinException(AppI18n.current().format(Str.JOIN_ERR_TIMEOUT_FMT, ssid))
         }
 
     private class AndroidPlatformOps(
@@ -358,7 +360,7 @@ class WifiSpecifierConnector internal constructor(
         @SuppressLint("MissingPermission")
         @Suppress("DEPRECATION")
         override fun addAndEnableLegacy(ssid: String, pass: String): Int {
-            val wifi = wm ?: throw JoinException("Wi-Fi is not available")
+            val wifi = wm ?: throw JoinException(AppI18n.current()[Str.JOIN_ERR_WIFI_UNAVAILABLE])
             if (!wifi.isWifiEnabled) runCatching { wifi.isWifiEnabled = true }
             val conf = WifiConfiguration().apply {
                 SSID = "\"$ssid\""

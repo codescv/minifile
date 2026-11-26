@@ -2,4 +2,14 @@
 <resources>
     <string name="app_name">Files</string>
     <string name="save_to_files">Save to Files</string>
+    <string name="notif_channel_transfer_name">Wireless File Transfer</string>
+    <string name="notif_channel_transfer_desc">Active HTTP and FTP wireless file sharing</string>
+    <string name="notif_channel_ops_name">File Operations</string>
+    <string name="notif_channel_ops_desc">Active copy, move, delete, ZIP, and nearby transfer operations</string>
+    <string name="notif_action_stop">Stop</string>
+    <string name="notif_action_cancel">Cancel</string>
+    <string name="notif_stopped_by_system_title">File transfer stopped</string>
+    <string name="notif_stopped_by_system_text">Android stopped background transfer after the system time limit. Open Files to start again.</string>
+    <string name="notif_ops_finishing">Finishing file operations…</string>
+    <string name="notif_ops_working">Working…</string>
 </resources>

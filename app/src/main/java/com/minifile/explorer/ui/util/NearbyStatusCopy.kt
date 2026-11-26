@@ -1,5 +1,8 @@
 package com.minifile.explorer.ui.util
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.AppStrings
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.service.BleAvailability
 
 /** What blocks Bluetooth QR-free nearby transfer, in the order the user should fix it. */
@@ -16,34 +19,29 @@ enum class NearbyAccessIssue {
 data class NearbyHeaderStatus(val text: String, val bluetooth: Boolean)
 
 /**
- * Pure (no `android.*`) copy + decisions for the Nearby Devices / Send sheet UI so the strings that tell users
- * "Bluetooth QR-free transfer exists" are unit-testable. Transfer UI copy is English-only.
+ * Pure (no `android.*`) copy + decisions for the Nearby Devices / Send sheet UI.
+ * All copy delegates to [AppI18n] so the Transfer tab and Send sheet render cleanly
+ * in the active single UI language (`zh`, `en`, `ja`).
  */
 object NearbyStatusCopy {
-    const val HOTSPOT_DIRECT_LABEL = "Hotspot Direct"
-    const val SCAN_QR_LABEL = "Scan QR"
-    const val HOTSPOT_DIRECT_SUBTITLE = "No router or mobile data needed"
-    const val SHOW_QR_INSTEAD = "Show QR code instead"
+    val HOTSPOT_DIRECT_LABEL: String get() = AppI18n.current()[Str.HOTSPOT_DIRECT_LABEL]
+    val SCAN_QR_LABEL: String get() = AppI18n.current()[Str.SCAN_QR_LABEL]
+    val HOTSPOT_DIRECT_SUBTITLE: String get() = AppI18n.current()[Str.HOTSPOT_DIRECT_SUBTITLE]
+    val SHOW_QR_INSTEAD: String get() = AppI18n.current()[Str.SHOW_QR_INSTEAD]
 
     // --- Transfer tab (1:1 with iOS `TransferView`) ---
-    const val DISCOVERABLE_LABEL = "Discoverable"
-    const val TRANSFER_EMPTY_DISCOVERABLE =
-        "Looking for nearby devices over Bluetooth, Wi-Fi and Nearby P2P… Open Files on the other phone — no QR or password needed."
-    const val TRANSFER_EMPTY_HIDDEN =
-        "Turn on Discoverable above to receive files from nearby devices, or keep browsing to send."
-    const val ADD_PEER_PLACEHOLDER = "Add by IP or URI (e.g. 192.168.1.20:8080)"
-    const val NEARBY_FOOTER =
-        "Send files from Browse → Select → Send. While Discoverable is on, nearby phones running Files can find and " +
-            "send to this phone (Bluetooth, Wi-Fi, Nearby P2P) while Files is open on any tab. Incoming transfers land in Received/."
-    const val FILE_SERVER_TITLE = "HTTP & FTP Server"
-    const val FILE_SERVER_RUNNING = "HTTP & FTP Running"
-    const val FILE_SERVER_FOOTER =
-        "Scan the QR code or open the address in any browser on the same network to browse, upload and download " +
-            "files. Use the FTP address with Finder, Windows Explorer or FileZilla."
+    val DISCOVERABLE_LABEL: String get() = AppI18n.current()[Str.DISCOVERABLE_LABEL]
+    val TRANSFER_EMPTY_DISCOVERABLE: String get() = AppI18n.current()[Str.TRANSFER_EMPTY_DISCOVERABLE]
+    val TRANSFER_EMPTY_HIDDEN: String get() = AppI18n.current()[Str.TRANSFER_EMPTY_HIDDEN]
+    val ADD_PEER_PLACEHOLDER: String get() = AppI18n.current()[Str.ADD_PEER_PLACEHOLDER]
+    val NEARBY_FOOTER: String get() = AppI18n.current()[Str.NEARBY_FOOTER]
+    val FILE_SERVER_TITLE: String get() = AppI18n.current()[Str.FILE_SERVER_TITLE]
+    val FILE_SERVER_RUNNING: String get() = AppI18n.current()[Str.FILE_SERVER_RUNNING]
+    val FILE_SERVER_FOOTER: String get() = AppI18n.current()[Str.FILE_SERVER_FOOTER]
 
     /** Transfer tab empty state for the Nearby Devices card (iOS copy when [discoverable]). */
-    fun transferEmptyState(discoverable: Boolean): String =
-        if (discoverable) TRANSFER_EMPTY_DISCOVERABLE else TRANSFER_EMPTY_HIDDEN
+    fun transferEmptyState(discoverable: Boolean, strings: AppStrings = AppI18n.current()): String =
+        if (discoverable) strings[Str.TRANSFER_EMPTY_DISCOVERABLE] else strings[Str.TRANSFER_EMPTY_HIDDEN]
 
     fun issue(
         hasBleHardware: Boolean,
@@ -58,52 +56,61 @@ object NearbyStatusCopy {
         else -> null
     }
 
-    fun hint(issue: NearbyAccessIssue): String = when (issue) {
-        NearbyAccessIssue.PERMISSIONS -> "Allow Bluetooth & Nearby Wi-Fi for QR-free nearby transfer"
-        NearbyAccessIssue.BLUETOOTH_OFF -> "Turn on Bluetooth for QR-free nearby discovery"
-        NearbyAccessIssue.LOCATION_OFF -> "Turn on Location for Bluetooth & hotspot discovery"
+    fun hint(issue: NearbyAccessIssue, strings: AppStrings = AppI18n.current()): String = when (issue) {
+        NearbyAccessIssue.PERMISSIONS -> strings[Str.NEARBY_HINT_PERMISSIONS]
+        NearbyAccessIssue.BLUETOOTH_OFF -> strings[Str.NEARBY_HINT_BT_OFF]
+        NearbyAccessIssue.LOCATION_OFF -> strings[Str.NEARBY_HINT_LOCATION_OFF]
     }
 
-    fun actionLabel(issue: NearbyAccessIssue): String = when (issue) {
-        NearbyAccessIssue.PERMISSIONS -> "Allow"
-        NearbyAccessIssue.BLUETOOTH_OFF -> "Turn on"
-        NearbyAccessIssue.LOCATION_OFF -> "Settings"
+    fun actionLabel(issue: NearbyAccessIssue, strings: AppStrings = AppI18n.current()): String = when (issue) {
+        NearbyAccessIssue.PERMISSIONS -> strings[Str.ALLOW]
+        NearbyAccessIssue.BLUETOOTH_OFF -> strings[Str.TURN_ON]
+        NearbyAccessIssue.LOCATION_OFF -> strings[Str.SETTINGS_LABEL]
     }
 
     /**
      * Caption for the "Nearby Devices" header. Starting HTTP Share is only suggested when Bluetooth discovery is
      * unsupported; when Bluetooth is merely off / not permitted the access row below the list explains the fix.
      */
-    fun header(ble: BleAvailability, httpRunning: Boolean, readOnly: Boolean): NearbyHeaderStatus? = when {
-        readOnly -> NearbyHeaderStatus("Read-only on", bluetooth = false)
+    fun header(
+        ble: BleAvailability,
+        httpRunning: Boolean,
+        readOnly: Boolean,
+        strings: AppStrings = AppI18n.current(),
+    ): NearbyHeaderStatus? = when {
+        readOnly -> NearbyHeaderStatus(strings[Str.NEARBY_HEADER_RO], bluetooth = false)
         ble == BleAvailability.READY ->
-            NearbyHeaderStatus(if (httpRunning) "Bluetooth + Wi-Fi ready" else "Bluetooth ready · No QR", bluetooth = true)
-        httpRunning -> NearbyHeaderStatus("Wi-Fi ready", bluetooth = false)
-        ble == BleAvailability.UNSUPPORTED -> NearbyHeaderStatus("Start HTTP Share to be discoverable", bluetooth = false)
+            NearbyHeaderStatus(
+                if (httpRunning) strings[Str.NEARBY_HEADER_BT_WIFI] else strings[Str.NEARBY_HEADER_BT_NO_QR],
+                bluetooth = true,
+            )
+        httpRunning -> NearbyHeaderStatus(strings[Str.NEARBY_HEADER_WIFI], bluetooth = false)
+        ble == BleAvailability.UNSUPPORTED -> NearbyHeaderStatus(strings[Str.NEARBY_HEADER_START_HTTP], bluetooth = false)
         else -> null
     }
 
     /** Empty-state text for the Transfer tab ([forSendSheet] = false) or the Send sheet. */
-    fun emptyState(ble: BleAvailability, forSendSheet: Boolean): String {
-        val alt = if (forSendSheet) "or use Hotspot Direct / Scan QR below" else "or start HTTP Share for LAN"
-        return when (ble) {
-            BleAvailability.READY ->
-                "No devices yet — open Files on the other phone to discover via Bluetooth (no QR or shared Wi-Fi needed), $alt."
-            BleAvailability.UNSUPPORTED ->
-                if (forSendSheet) {
-                    "No devices yet — open Files ▸ Transfer on the other phone and start HTTP Share, $alt."
-                } else {
-                    "No devices yet — on the other phone open Transfer and start HTTP Share."
-                }
-            else ->
-                "No devices yet — enable Bluetooth discovery below for QR-free transfer, $alt."
-        }
+    fun emptyState(
+        ble: BleAvailability,
+        forSendSheet: Boolean,
+        strings: AppStrings = AppI18n.current(),
+    ): String = when (ble) {
+        BleAvailability.READY ->
+            if (forSendSheet) strings[Str.NEARBY_EMPTY_READY_SEND] else strings[Str.NEARBY_EMPTY_READY_TAB]
+        BleAvailability.UNSUPPORTED ->
+            if (forSendSheet) strings[Str.NEARBY_EMPTY_UNSUPPORTED_SEND] else strings[Str.NEARBY_EMPTY_UNSUPPORTED_TAB]
+        else ->
+            if (forSendSheet) strings[Str.NEARBY_EMPTY_OTHER_SEND] else strings[Str.NEARBY_EMPTY_OTHER_TAB]
     }
 
     /** Searching line shown above the empty state. */
-    fun searching(ble: BleAvailability, lanScanRunning: Boolean): String = when {
-        lanScanRunning -> "Scanning local network…"
-        ble == BleAvailability.READY -> "Looking for nearby devices via Bluetooth & Wi-Fi…"
-        else -> "Looking for nearby devices…"
+    fun searching(
+        ble: BleAvailability,
+        lanScanRunning: Boolean,
+        strings: AppStrings = AppI18n.current(),
+    ): String = when {
+        lanScanRunning -> strings[Str.NEARBY_SEARCHING_LAN]
+        ble == BleAvailability.READY -> strings[Str.NEARBY_SEARCHING_BT_WIFI]
+        else -> strings[Str.NEARBY_SEARCHING_DEFAULT]
     }
 }

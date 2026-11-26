@@ -59,6 +59,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.Favorite
 import com.minifile.explorer.core.model.FolderStats
 import com.minifile.explorer.core.model.OperationProgress
@@ -71,6 +72,7 @@ import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.data.SafFileSystem
 import com.minifile.explorer.ui.ConflictPrompt
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -84,15 +86,16 @@ fun CreateFolderDialog(
     onConfirm: (name: String, onError: (String) -> Unit) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val initial = remember(existingNames) {
-        PathUtils.uniqueName("New folder", existingNames, isDirectory = true)
+    val s = LocalAppStrings.current
+    val initial = remember(existingNames, s) {
+        PathUtils.uniqueName(s[Str.NEW_FOLDER], existingNames, isDirectory = true)
     }
     var name by remember { mutableStateOf(initial) }
     var error by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("New folder") },
+        title = { Text(s[Str.NEW_FOLDER]) },
         text = {
             Column {
                 OutlinedTextField(
@@ -101,7 +104,7 @@ fun CreateFolderDialog(
                         name = it
                         error = null
                     },
-                    label = { Text("Folder name") },
+                    label = { Text(s[Str.FOLDER_NAME]) },
                     singleLine = true,
                     isError = error != null,
                     modifier = Modifier.fillMaxWidth(),
@@ -119,11 +122,11 @@ fun CreateFolderDialog(
                     if (error == null) onDismiss()
                 },
             ) {
-                Text("Create")
+                Text(s[Str.CREATE])
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(s[Str.CANCEL]) }
         },
     )
 }
@@ -134,6 +137,7 @@ fun CreateFileDialog(
     onConfirm: (name: String, openInEditor: Boolean, onError: (String) -> Unit) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     val initial = remember(existingNames) {
         PathUtils.uniqueName("untitled.txt", existingNames, isDirectory = false)
     }
@@ -143,7 +147,7 @@ fun CreateFileDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("New file") },
+        title = { Text(s[Str.NEW_FILE]) },
         text = {
             Column {
                 OutlinedTextField(
@@ -152,7 +156,7 @@ fun CreateFileDialog(
                         name = it
                         error = null
                     },
-                    label = { Text("File name") },
+                    label = { Text(s[Str.FILE_NAME]) },
                     singleLine = true,
                     isError = error != null,
                     modifier = Modifier.fillMaxWidth(),
@@ -170,7 +174,7 @@ fun CreateFileDialog(
                 ) {
                     Checkbox(checked = openInEditor, onCheckedChange = { openInEditor = it })
                     Spacer(Modifier.width(6.dp))
-                    Text("Open in editor")
+                    Text(s[Str.OPEN_IN_EDITOR])
                 }
             }
         },
@@ -185,11 +189,11 @@ fun CreateFileDialog(
                     if (!failed) onDismiss()
                 },
             ) {
-                Text("Create")
+                Text(s[Str.CREATE])
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(s[Str.CANCEL]) }
         },
     )
 }
@@ -200,12 +204,13 @@ fun RenameDialog(
     onConfirm: (newName: String, onError: (String) -> Unit, onSuccess: () -> Unit) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     var name by remember(node.path) { mutableStateOf(node.name) }
     var error by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Rename") },
+        title = { Text(s[Str.RENAME]) },
         text = {
             Column {
                 OutlinedTextField(
@@ -214,7 +219,7 @@ fun RenameDialog(
                         name = it
                         error = null
                     },
-                    label = { Text("Name") },
+                    label = { Text(s[Str.NAME]) },
                     singleLine = true,
                     isError = error != null,
                     modifier = Modifier.fillMaxWidth(),
@@ -239,11 +244,11 @@ fun RenameDialog(
                     }
                 },
             ) {
-                Text("Rename")
+                Text(s[Str.RENAME])
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(s[Str.CANCEL]) }
         },
     )
 }
@@ -254,11 +259,12 @@ fun DeleteConfirmDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     val allGDrive = nodes.isNotEmpty() && nodes.all { it.path is VfsPath.GDrive }
     val title = if (nodes.size == 1) {
-        "Delete '${nodes.first().name}'?"
+        s.format(Str.DELETE_SINGLE_TITLE, nodes.first().name)
     } else {
-        "Delete ${nodes.size} items?"
+        s.format(Str.DELETE_MULTI_TITLE, nodes.size)
     }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -266,22 +272,18 @@ fun DeleteConfirmDialog(
         text = {
             Column {
                 Text(
-                    if (allGDrive) {
-                        "Selected items will be moved to Google Drive trash."
-                    } else {
-                        "This can't be undone."
-                    },
+                    if (allGDrive) s[Str.DELETE_GDRIVE_NOTE] else s[Str.DELETE_PERMANENT_NOTE],
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(8.dp))
                 val shown = nodes.take(5)
                 for (n in shown) {
-                    val tag = if (n.isDirectory) " (folder)" else ""
+                    val tag = if (n.isDirectory) s[Str.FOLDER_TAG] else ""
                     Text("• ${n.name}$tag", style = MaterialTheme.typography.bodySmall)
                 }
                 if (nodes.size > 5) {
                     Text(
-                        "…and ${nodes.size - 5} more",
+                        s.format(Str.AND_MORE_ITEMS, nodes.size - 5),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -299,11 +301,11 @@ fun DeleteConfirmDialog(
                     contentColor = MaterialTheme.colorScheme.onError,
                 ),
             ) {
-                Text("Delete")
+                Text(s[Str.DELETE])
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(s[Str.CANCEL]) }
         },
     )
 }
@@ -314,24 +316,25 @@ fun ConflictDialog(
     onResolve: (ConflictResolution, Boolean) -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     var applyToAll by remember(prompt) { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = { onResolve(ConflictResolution.SKIP, applyToAll) },
-        title = { Text("Item already exists") },
+        title = { Text(s[Str.ITEM_ALREADY_EXISTS]) },
         text = {
             Column {
                 Text(
-                    "'${prompt.existing.name}' already exists in the destination.",
+                    s.format(Str.ITEM_EXISTS_IN_DEST, prompt.existing.name),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Source: ${UiFormatters.formatSize(context, prompt.source.size)} · ${UiFormatters.formatShortDate(prompt.source.lastModified)}",
+                    s.format(Str.CONFLICT_SOURCE, UiFormatters.formatSize(context, prompt.source.size), UiFormatters.formatShortDate(prompt.source.lastModified)),
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Text(
-                    "Existing: ${UiFormatters.formatSize(context, prompt.existing.size)} · ${UiFormatters.formatShortDate(prompt.existing.lastModified)}",
+                    s.format(Str.CONFLICT_EXISTING, UiFormatters.formatSize(context, prompt.existing.size), UiFormatters.formatShortDate(prompt.existing.lastModified)),
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Spacer(Modifier.height(10.dp))
@@ -343,20 +346,20 @@ fun ConflictDialog(
                 ) {
                     Checkbox(checked = applyToAll, onCheckedChange = { applyToAll = it })
                     Spacer(Modifier.width(6.dp))
-                    Text("Apply to all conflicts")
+                    Text(s[Str.APPLY_TO_ALL_CONFLICTS])
                 }
             }
         },
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 TextButton(onClick = { onResolve(ConflictResolution.SKIP, applyToAll) }) {
-                    Text("Skip")
+                    Text(s[Str.SKIP])
                 }
                 OutlinedButton(onClick = { onResolve(ConflictResolution.KEEP_BOTH, applyToAll) }) {
-                    Text("Keep both")
+                    Text(s[Str.KEEP_BOTH])
                 }
                 Button(onClick = { onResolve(ConflictResolution.OVERWRITE, applyToAll) }) {
-                    Text("Overwrite")
+                    Text(s[Str.OVERWRITE])
                 }
             }
         },
@@ -369,15 +372,16 @@ fun AddFavoriteDialog(
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     var name by remember(defaultName) { mutableStateOf(defaultName) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add to Favorites") },
+        title = { Text(s[Str.ADD_TO_FAVORITES]) },
         text = {
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
-                label = { Text("Bookmark name") },
+                label = { Text(s[Str.BOOKMARK_NAME]) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -389,11 +393,11 @@ fun AddFavoriteDialog(
                     onDismiss()
                 },
             ) {
-                Text("Save")
+                Text(s[Str.SAVE])
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(s[Str.CANCEL]) }
         },
     )
 }
@@ -408,6 +412,7 @@ fun CompressZipDialog(
     onConfirm: (archiveName: String, destinationDir: VfsPath, level: Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     val baseDefault = remember(items, currentDir, existingNames) {
         val stem = if (items.size == 1) {
             val single = items.first()
@@ -419,26 +424,27 @@ fun CompressZipDialog(
     }
     var archiveName by remember { mutableStateOf(baseDefault) }
     var selectedDest by remember { mutableStateOf(currentDir) }
-    var selectedDestLabel by remember { mutableStateOf("Current folder (${currentDir.displayName})") }
+    val currentFolderLabel = s.format(Str.CURRENT_FOLDER_FMT, currentDir.displayName)
+    var selectedDestLabel by remember(currentFolderLabel) { mutableStateOf(currentFolderLabel) }
     var destExpanded by remember { mutableStateOf(false) }
     var level by remember { mutableIntStateOf(Deflater.DEFAULT_COMPRESSION) }
 
     val levels = listOf(
-        Deflater.NO_COMPRESSION to "Store",
-        Deflater.BEST_SPEED to "Fast",
-        Deflater.DEFAULT_COMPRESSION to "Normal",
-        Deflater.BEST_COMPRESSION to "Best",
+        Deflater.NO_COMPRESSION to s[Str.COMP_STORE],
+        Deflater.BEST_SPEED to s[Str.COMP_FAST],
+        Deflater.DEFAULT_COMPRESSION to s[Str.COMP_NORMAL],
+        Deflater.BEST_COMPRESSION to s[Str.COMP_BEST],
     )
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Compress to ZIP") },
+        title = { Text(s[Str.COMPRESS_TO_ZIP]) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = archiveName,
                     onValueChange = { archiveName = it },
-                    label = { Text("Archive name") },
+                    label = { Text(s[Str.ARCHIVE_NAME]) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -451,7 +457,7 @@ fun CompressZipDialog(
                         value = selectedDestLabel,
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Destination") },
+                        label = { Text(s[Str.DESTINATION]) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = destExpanded) },
                         modifier = Modifier
                             .menuAnchor(MenuAnchorType.PrimaryNotEditable)
@@ -462,10 +468,10 @@ fun CompressZipDialog(
                         onDismissRequest = { destExpanded = false },
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Current folder (${currentDir.displayName})") },
+                            text = { Text(currentFolderLabel) },
                             onClick = {
                                 selectedDest = currentDir
-                                selectedDestLabel = "Current folder (${currentDir.displayName})"
+                                selectedDestLabel = currentFolderLabel
                                 destExpanded = false
                             },
                         )
@@ -482,7 +488,7 @@ fun CompressZipDialog(
                     }
                 }
 
-                Text("Compression level", style = MaterialTheme.typography.labelMedium)
+                Text(s[Str.COMPRESSION_LEVEL], style = MaterialTheme.typography.labelMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     for ((lvl, label) in levels) {
                         FilterChip(
@@ -502,11 +508,11 @@ fun CompressZipDialog(
                     onDismiss()
                 },
             ) {
-                Text("Compress")
+                Text(s[Str.COMPRESS])
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(s[Str.CANCEL]) }
         },
     )
 }
@@ -520,6 +526,7 @@ fun ExtractZipDialog(
     onConfirm: (destinationDir: VfsPath, newSubfolderName: String?, overwrite: Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     val stem = remember(zipPath) {
         PathUtils.splitBaseAndExtension(zipPath.displayName, isDirectory = false).first.ifEmpty { "extracted" }
     }
@@ -527,12 +534,13 @@ fun ExtractZipDialog(
     var subfolderName by remember { mutableStateOf(stem) }
     var overwrite by remember { mutableStateOf(false) }
     var selectedDest by remember { mutableStateOf(defaultParentDir) }
-    var selectedDestLabel by remember { mutableStateOf("Current folder (${defaultParentDir.displayName})") }
+    val currentFolderLabel = s.format(Str.CURRENT_FOLDER_FMT, defaultParentDir.displayName)
+    var selectedDestLabel by remember(currentFolderLabel) { mutableStateOf(currentFolderLabel) }
     var destExpanded by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Extract ${zipPath.displayName}") },
+        title = { Text(s.format(Str.EXTRACT_TITLE, zipPath.displayName)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 ExposedDropdownMenuBox(
@@ -543,7 +551,7 @@ fun ExtractZipDialog(
                         value = selectedDestLabel,
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Extract into") },
+                        label = { Text(s[Str.EXTRACT_INTO]) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = destExpanded) },
                         modifier = Modifier
                             .menuAnchor(MenuAnchorType.PrimaryNotEditable)
@@ -554,10 +562,10 @@ fun ExtractZipDialog(
                         onDismissRequest = { destExpanded = false },
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Current folder (${defaultParentDir.displayName})") },
+                            text = { Text(currentFolderLabel) },
                             onClick = {
                                 selectedDest = defaultParentDir
-                                selectedDestLabel = "Current folder (${defaultParentDir.displayName})"
+                                selectedDestLabel = currentFolderLabel
                                 destExpanded = false
                             },
                         )
@@ -582,14 +590,14 @@ fun ExtractZipDialog(
                 ) {
                     Checkbox(checked = createSubfolder, onCheckedChange = { createSubfolder = it })
                     Spacer(Modifier.width(6.dp))
-                    Text("Extract into new folder")
+                    Text(s[Str.EXTRACT_INTO_NEW_FOLDER])
                 }
 
                 if (createSubfolder) {
                     OutlinedTextField(
                         value = subfolderName,
                         onValueChange = { subfolderName = it },
-                        label = { Text("Folder name") },
+                        label = { Text(s[Str.FOLDER_NAME]) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -600,7 +608,7 @@ fun ExtractZipDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("Overwrite existing files")
+                    Text(s[Str.OVERWRITE_EXISTING_FILES])
                     Switch(checked = overwrite, onCheckedChange = { overwrite = it })
                 }
             }
@@ -616,11 +624,11 @@ fun ExtractZipDialog(
                     onDismiss()
                 },
             ) {
-                Text("Extract")
+                Text(s[Str.EXTRACT])
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(s[Str.CANCEL]) }
         },
     )
 }
@@ -640,6 +648,7 @@ fun PropertiesSheet(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val scope = rememberCoroutineScope()
 
     var folderStats by remember(node.path) { mutableStateOf<FolderStats?>(null) }
@@ -701,7 +710,7 @@ fun PropertiesSheet(
                         onRequestRename()
                     },
                 ) {
-                    Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = "Rename")
+                    Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = s[Str.RENAME])
                 }
             }
 
@@ -714,28 +723,28 @@ fun PropertiesSheet(
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("Install APK")
+                    Text(s[Str.INSTALL_APK])
                 }
             }
 
-            PropertyRow("Type", node.resolvedMimeType)
+            PropertyRow(s[Str.TYPE], node.resolvedMimeType)
 
             if (node.isDirectory) {
                 if (computingStats) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
-                        Text("Calculating folder size…", style = MaterialTheme.typography.bodySmall)
+                        Text(s[Str.CALCULATING_FOLDER_SIZE], style = MaterialTheme.typography.bodySmall)
                     }
                 } else if (folderStats != null) {
                     val st = folderStats!!
                     PropertyRow(
-                        "Contents",
-                        "${UiFormatters.formatExactSize(context, st.totalBytes)} · ${st.fileCount} files, ${st.dirCount} folders",
+                        s[Str.CONTENTS],
+                        s.format(Str.FOLDER_CONTENTS_FMT, UiFormatters.formatExactSize(context, st.totalBytes), st.fileCount, st.dirCount),
                     )
                 }
             } else {
-                PropertyRow("Size", UiFormatters.formatExactSize(context, node.size))
+                PropertyRow(s[Str.SIZE], UiFormatters.formatExactSize(context, node.size))
             }
 
             val fullLoc = when (val p = node.path) {
@@ -749,15 +758,15 @@ fun PropertiesSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable {
-                        UiFormatters.copyToSystemClipboard(context, "Path", fullLoc)
-                        onCopiedMessage("Location copied to clipboard")
+                        UiFormatters.copyToSystemClipboard(context, s[Str.PATH], fullLoc)
+                        onCopiedMessage(s[Str.LOCATION_COPIED])
                     },
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Location", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(s[Str.LOCATION], style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(fullLoc, style = MaterialTheme.typography.bodyMedium)
                 }
-                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy path", modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.ContentCopy, contentDescription = s[Str.COPY_PATH], modifier = Modifier.size(18.dp))
             }
 
             Column(
@@ -767,25 +776,25 @@ fun PropertiesSheet(
                         onClick = {},
                         onLongClick = {
                             val iso = UiFormatters.formatIsoDate(node.lastModified)
-                            UiFormatters.copyToSystemClipboard(context, "ISO Timestamp", iso)
-                            onCopiedMessage("Copied ISO timestamp: $iso")
+                            UiFormatters.copyToSystemClipboard(context, s[Str.ISO_TIMESTAMP], iso)
+                            onCopiedMessage(s.format(Str.COPIED_ISO_TIMESTAMP, iso))
                         },
                     ),
             ) {
-                Text("Last modified", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(s[Str.LAST_MODIFIED], style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(UiFormatters.formatFullDate(node.lastModified), style = MaterialTheme.typography.bodyMedium)
             }
 
             val flagsText = buildList {
-                add(if (node.canRead) "Readable" else "Not readable")
-                add(if (node.canWrite) "Writable" else "Read-only")
-                if (node.isHidden) add("Hidden")
-                if (node.isSymlink) add("Symlink")
+                add(if (node.canRead) s[Str.ATTR_READABLE] else s[Str.ATTR_NOT_READABLE])
+                add(if (node.canWrite) s[Str.ATTR_WRITABLE] else s[Str.READ_ONLY])
+                if (node.isHidden) add(s[Str.ATTR_HIDDEN])
+                if (node.isSymlink) add(s[Str.ATTR_SYMLINK])
             }.joinToString(" · ")
-            PropertyRow("Attributes", flagsText)
-            PropertyRow("Permissions", node.posixPermissions ?: "—")
+            PropertyRow(s[Str.ATTRIBUTES], flagsText)
+            PropertyRow(s[Str.PERMISSIONS], node.posixPermissions ?: "—")
             if (node.symlinkTarget != null) {
-                PropertyRow("Symlink target", node.symlinkTarget)
+                PropertyRow(s[Str.SYMLINK_TARGET], node.symlinkTarget)
             }
 
             HorizontalDivider()
@@ -794,7 +803,7 @@ fun PropertiesSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Favorite")
+                Text(s[Str.FAVORITE])
                 Switch(
                     checked = isFavorite,
                     onCheckedChange = {
@@ -808,7 +817,7 @@ fun PropertiesSheet(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("Hide from gallery (.nomedia)")
+                    Text(s[Str.HIDE_FROM_GALLERY_NOMEDIA])
                     Switch(
                         checked = node.hasNomedia,
                         onCheckedChange = {
@@ -819,7 +828,7 @@ fun PropertiesSheet(
                 }
             } else {
                 HorizontalDivider()
-                Text("Checksums", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(s[Str.CHECKSUMS], style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
 
                 ChecksumRow(
                     algorithm = "MD5",
@@ -842,7 +851,7 @@ fun PropertiesSheet(
                     onCopy = {
                         md5Value?.let {
                             UiFormatters.copyToSystemClipboard(context, "MD5", it)
-                            onCopiedMessage("MD5 copied")
+                            onCopiedMessage(s[Str.MD5_COPIED])
                         }
                     },
                 )
@@ -868,7 +877,7 @@ fun PropertiesSheet(
                     onCopy = {
                         sha256Value?.let {
                             UiFormatters.copyToSystemClipboard(context, "SHA-256", it)
-                            onCopiedMessage("SHA-256 copied")
+                            onCopiedMessage(s[Str.SHA256_COPIED])
                         }
                     },
                 )
@@ -876,7 +885,7 @@ fun PropertiesSheet(
                 OutlinedTextField(
                     value = expectedHash,
                     onValueChange = { expectedHash = it },
-                    label = { Text("Verify expected hash (MD5 or SHA-256)") },
+                    label = { Text(s[Str.VERIFY_EXPECTED_HASH]) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -892,7 +901,7 @@ fun PropertiesSheet(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            text = if (matched) "✓ Checksum matches" else "✗ Checksum does not match",
+                            text = if (matched) s[Str.CHECKSUM_MATCHES] else s[Str.CHECKSUM_MISMATCH],
                             color = if (matched) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                             fontWeight = FontWeight.Medium,
                         )
@@ -920,6 +929,7 @@ private fun ChecksumRow(
     onCompute: () -> Unit,
     onCopy: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth(),
@@ -939,11 +949,11 @@ private fun ChecksumRow(
         Spacer(Modifier.width(8.dp))
         if (value == null) {
             OutlinedButton(onClick = onCompute, enabled = !computing) {
-                Text("Compute $algorithm")
+                Text(s.format(Str.COMPUTE_ALG, algorithm))
             }
         } else {
             IconButton(onClick = onCopy) {
-                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy $algorithm")
+                Icon(Icons.Filled.ContentCopy, contentDescription = s.format(Str.COPY_ALG, algorithm))
             }
         }
     }
@@ -957,13 +967,14 @@ fun ActiveOperationsSheet(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 8.dp),
         ) {
-            Text("Active Operations", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(s[Str.ACTIVE_OPERATIONS], style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(12.dp))
             LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
                 items(operations, key = { it.id }) { op ->
@@ -974,7 +985,7 @@ fun ActiveOperationsSheet(
                         ) {
                             Text(op.title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
                             TextButton(onClick = { onCancel(op.id) }) {
-                                Text("Cancel", color = MaterialTheme.colorScheme.error)
+                                Text(s[Str.CANCEL], color = MaterialTheme.colorScheme.error)
                             }
                         }
                         if (op.currentItem.isNotEmpty()) {

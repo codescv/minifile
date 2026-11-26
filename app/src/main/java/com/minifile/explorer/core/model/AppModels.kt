@@ -1,5 +1,6 @@
 package com.minifile.explorer.core.model
 
+import com.minifile.explorer.core.i18n.AppLanguage
 import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
@@ -319,6 +320,7 @@ data class AppSettings(
     val gdriveLastClientId: String = "",
     val gdriveLastClientSecret: String = "",
     val agentFeedbackEmail: String = "",
+    val appLanguage: AppLanguage = AppLanguage.SYSTEM,
 )
 
 enum class OperationKind {

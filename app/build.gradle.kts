@@ -15,8 +15,8 @@ android {
         applicationId = "com.minifile.explorer"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10025
-        versionName = "1.0.25"
+        versionCode = 10026
+        versionName = "1.0.26"
 
         buildConfigField("boolean", "THUMBNAILS", "true")
         val apiBase = System.getenv("MINIFILE_UPDATE_API_BASE")

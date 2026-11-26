@@ -13,6 +13,8 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.minifile.explorer.MainActivity
 import com.minifile.explorer.R
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.OperationProgress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,11 +36,23 @@ class FileOperationService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var collectorJob: Job? = null
     private var completionJob: Job? = null
+    private var languageJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
         ensureChannel()
         startForegroundCompat(buildActiveNotification(emptyList()))
+
+        languageJob = scope.launch {
+            AppI18n.currentLanguage.collect {
+                ensureChannel(updateExisting = true)
+                val activeList = OperationRegistry.instance.active.value
+                if (activeList.isNotEmpty()) {
+                    val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    nm.notify(NOTIF_ID_ACTIVE, buildActiveNotification(activeList))
+                }
+            }
+        }
 
         collectorJob = scope.launch {
             OperationRegistry.instance.active.collect { activeList ->
@@ -83,6 +97,7 @@ class FileOperationService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        languageJob?.cancel()
         collectorJob?.cancel()
         completionJob?.cancel()
         scope.cancel()
@@ -102,13 +117,14 @@ class FileOperationService : Service() {
     }
 
     private fun buildActiveNotification(active: List<OperationProgress>): Notification {
+        val s = AppI18n.current()
         val lead = active.firstOrNull()
         val title = when {
-            active.isEmpty() -> "Finishing file operation…"
+            active.isEmpty() -> s[Str.SVC_OPS_FINISHING]
             active.size == 1 -> lead!!.title
-            else -> "${lead!!.title} (+${active.size - 1} more)"
+            else -> s.format(Str.ACTIVE_OP_MORE, lead!!.title, active.size - 1)
         }
-        val text = lead?.currentItem?.takeIf { it.isNotEmpty() } ?: "Working…"
+        val text = lead?.currentItem?.takeIf { it.isNotEmpty() } ?: s[Str.SVC_OPS_WORKING]
         val pct = lead?.fraction?.let { (it * 100).toInt().coerceIn(0, 100) }
 
         val openAppIntent = PendingIntent.getActivity(
@@ -131,7 +147,7 @@ class FileOperationService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openAppIntent)
-            .addAction(0, "Cancel", cancelIntent)
+            .addAction(0, s[Str.CANCEL], cancelIntent)
             .apply {
                 if (pct != null) {
                     setProgress(100, pct, false)
@@ -165,16 +181,17 @@ class FileOperationService : Service() {
         }
     }
 
-    private fun ensureChannel() {
+    private fun ensureChannel(updateExisting: Boolean = false) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
+            if (updateExisting || nm.getNotificationChannel(CHANNEL_ID) == null) {
+                val s = AppI18n.current()
                 val ch = NotificationChannel(
                     CHANNEL_ID,
-                    "File Operations",
+                    s[Str.SVC_CHANNEL_OPS_NAME],
                     NotificationManager.IMPORTANCE_LOW,
                 ).apply {
-                    description = "Progress of copy, move, delete, archive, and peer transfer tasks"
+                    description = s[Str.SVC_CHANNEL_OPS_DESC]
                 }
                 nm.createNotificationChannel(ch)
             }

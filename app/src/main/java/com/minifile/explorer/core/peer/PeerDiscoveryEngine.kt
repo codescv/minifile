@@ -1,5 +1,7 @@
 package com.minifile.explorer.core.peer
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.ftp.FtpAccessDeniedException
 import com.minifile.explorer.core.ftp.FtpServerEngine
 import com.minifile.explorer.core.model.Clock
@@ -233,19 +235,19 @@ class PeerDiscoveryEngine(
     ): PeerInfo = withContext(ioDispatcher) {
         val cleanHost = host.trim().removeSurrounding("[", "]").substringBefore('%')
         if (cleanHost.isEmpty()) {
-            throw PeerTransferException(null, "Enter a device IP address")
+            throw PeerTransferException(null, AppI18n.current()[Str.PEER_ERR_ENTER_IP])
         }
         if (port !in 1..65535) {
-            throw PeerTransferException(null, "Port must be between 1 and 65535")
+            throw PeerTransferException(null, AppI18n.current()[Str.ERR_PORT_RANGE_1_65535])
         }
 
         val addr = try {
             InetAddress.getByName(cleanHost)
         } catch (e: IOException) {
-            throw PeerTransferException(null, "$cleanHost:$port not reachable", e)
+            throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_NOT_REACHABLE_FMT, "$cleanHost:$port"), e)
         }
         if (!FtpServerEngine.isAllowedClientAddress(addr)) {
-            throw PeerTransferException(null, "Only local network (LAN) addresses are allowed")
+            throw PeerTransferException(null, AppI18n.current()[Str.PEER_ERR_LAN_ONLY])
         }
 
         val resolvedIp = addr.hostAddress?.substringBefore('%') ?: cleanHost
@@ -262,14 +264,14 @@ class PeerDiscoveryEngine(
                 client.get(infoUrl, timeoutMs = timeoutMs, connectTimeoutOverrideMs = timeoutMs)
             }
         } catch (e: FtpAccessDeniedException) {
-            throw PeerTransferException(null, "Only local network (LAN) addresses are allowed", e)
+            throw PeerTransferException(null, AppI18n.current()[Str.PEER_ERR_LAN_ONLY], e)
         } catch (e: IOException) {
-            throw PeerTransferException(null, "$endpointLabel not reachable", e, beforeSession = true, kind = PeerFailureKind.UNREACHABLE)
+            throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_NOT_REACHABLE_FMT, endpointLabel), e, beforeSession = true, kind = PeerFailureKind.UNREACHABLE)
         }
 
         when (resp.status) {
-            404 -> throw PeerTransferException(404, "$endpointLabel needs Files 1.0.6+")
-            401 -> throw PeerTransferException(401, "$endpointLabel requires a PIN — update Files")
+            404 -> throw PeerTransferException(404, AppI18n.current().format(Str.PEER_ERR_NEEDS_UPDATE_FMT, endpointLabel))
+            401 -> throw PeerTransferException(401, AppI18n.current().format(Str.PEER_ERR_PIN_REQUIRED_FMT, endpointLabel))
         }
         if (PeerTransferException.isRedirectStatus(resp.status)) {
             // Files never redirects /api/peer/info: a VPN / proxy / captive portal answered for this address.
@@ -281,22 +283,22 @@ class PeerDiscoveryEngine(
             )
         }
         if (resp.status != 200) {
-            throw PeerTransferException(resp.status, "$endpointLabel returned HTTP ${resp.status}")
+            throw PeerTransferException(resp.status, AppI18n.current().format(Str.PEER_ERR_HTTP_STATUS_FMT, endpointLabel, resp.status))
         }
 
         val obj = try {
             MiniJson.parse(resp.bodyText) as? JsonValue.Obj
         } catch (_: Exception) {
             null
-        } ?: throw PeerTransferException(null, "$endpointLabel is not a Files peer")
+        } ?: throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_NOT_FILES_PEER_FMT, endpointLabel))
 
         val app = obj.str("app")
         if (app != null && app != "Files") {
-            throw PeerTransferException(null, "$endpointLabel is not a Files peer")
+            throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_NOT_FILES_PEER_FMT, endpointLabel))
         }
         // A captive portal / proxy JSON blob carries none of the Files identity fields.
         if (app == null && obj.str("id").isNullOrBlank() && obj.entries["proto"] == null) {
-            throw PeerTransferException(null, "$endpointLabel is not a Files peer")
+            throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_NOT_FILES_PEER_FMT, endpointLabel))
         }
 
         val rawName = obj.str("name").orEmpty()
@@ -304,16 +306,16 @@ class PeerDiscoveryEngine(
             .ifEmpty { resolvedIp }
         val proto = obj.int("proto", 1)
         if (proto > SUPPORTED_PROTO) {
-            throw PeerTransferException(null, "$displayName needs newer Files")
+            throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_NEEDS_NEWER_FMT, displayName))
         }
         if (proto < 1) {
-            throw PeerTransferException(null, "$endpointLabel reported unsupported protocol")
+            throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_UNSUPPORTED_PROTOCOL_FMT, endpointLabel))
         }
 
         val id = obj.str("id")?.trim()?.takeIf { it.isNotEmpty() && it.length <= MAX_ID_CHARS }
             ?: "$resolvedIp:$port"
         if (id == selfIdProvider()) {
-            throw PeerTransferException(null, "That address is this device")
+            throw PeerTransferException(null, AppI18n.current()[Str.PEER_ERR_SELF])
         }
         val ver = PeerPathPolicy.sanitizeDisplayName(obj.str("ver").orEmpty(), MAX_VER_CHARS)
             .ifEmpty { DEFAULT_APP_VERSION }
@@ -950,20 +952,20 @@ class PeerDiscoveryEngine(
         fun parseHostAndPort(rawInput: String, defaultPort: Int = DEFAULT_HTTP_PORT): Pair<String, Int> {
             val trimmed = rawInput.trim()
             if (trimmed.isEmpty()) {
-                throw PeerTransferException(null, "Enter a device IP address")
+                throw PeerTransferException(null, AppI18n.current()[Str.PEER_ERR_ENTER_IP])
             }
 
             if (trimmed.contains("://")) {
                 val uri = try {
                     URI(trimmed)
                 } catch (e: Exception) {
-                    throw PeerTransferException(null, "Invalid address: $trimmed", e)
+                    throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_INVALID_ADDRESS_FMT, trimmed), e)
                 }
                 val h = uri.host?.removeSurrounding("[", "]")
-                    ?: throw PeerTransferException(null, "Missing host in address: $trimmed")
+                    ?: throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_MISSING_HOST_FMT, trimmed))
                 val p = if (uri.port != -1) uri.port else defaultPort
                 if (p !in 1..65535) {
-                    throw PeerTransferException(null, "Port must be between 1 and 65535")
+                    throw PeerTransferException(null, AppI18n.current()[Str.ERR_PORT_RANGE_1_65535])
                 }
                 return h to p
             }
@@ -972,18 +974,18 @@ class PeerDiscoveryEngine(
             if (withoutPath.startsWith("[")) {
                 val closeIdx = withoutPath.indexOf(']')
                 if (closeIdx <= 1) {
-                    throw PeerTransferException(null, "Invalid IPv6 address: $trimmed")
+                    throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_INVALID_IPV6_FMT, trimmed))
                 }
                 val host = withoutPath.substring(1, closeIdx)
                 val rest = withoutPath.substring(closeIdx + 1)
                 val port = when {
                     rest.isEmpty() -> defaultPort
                     rest.startsWith(":") -> rest.substring(1).toIntOrNull()
-                        ?: throw PeerTransferException(null, "Invalid port in address: $trimmed")
-                    else -> throw PeerTransferException(null, "Invalid address: $trimmed")
+                        ?: throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_INVALID_PORT_IN_ADDRESS_FMT, trimmed))
+                    else -> throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_INVALID_ADDRESS_FMT, trimmed))
                 }
                 if (port !in 1..65535) {
-                    throw PeerTransferException(null, "Port must be between 1 and 65535")
+                    throw PeerTransferException(null, AppI18n.current()[Str.ERR_PORT_RANGE_1_65535])
                 }
                 return host to port
             }
@@ -994,9 +996,9 @@ class PeerDiscoveryEngine(
                 val host = withoutPath.substring(0, firstColon).trim()
                 val portStr = withoutPath.substring(firstColon + 1).trim()
                 val port = portStr.toIntOrNull()
-                    ?: throw PeerTransferException(null, "Invalid port: $portStr")
+                    ?: throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_INVALID_PORT_FMT, portStr))
                 if (port !in 1..65535) {
-                    throw PeerTransferException(null, "Port must be between 1 and 65535")
+                    throw PeerTransferException(null, AppI18n.current()[Str.ERR_PORT_RANGE_1_65535])
                 }
                 return host to port
             }

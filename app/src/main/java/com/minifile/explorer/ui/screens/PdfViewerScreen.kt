@@ -80,11 +80,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.vfs.FileSystem
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.data.SafFileSystem
 import com.minifile.explorer.ui.MainViewModel
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -195,7 +198,7 @@ private suspend fun openPdfSession(
         is VfsPath.Local -> {
             val file = File(path.normalized)
             if (!file.exists() || !file.isFile) {
-                throw FileNotFoundException("PDF file does not exist: ${path.displayName}")
+                throw FileNotFoundException(AppI18n.current().format(Str.PDF_NOT_EXIST, path.displayName))
             }
             val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
             try {
@@ -279,6 +282,7 @@ fun PdfViewerScreen(
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
@@ -317,9 +321,9 @@ fun PdfViewerScreen(
                 session = loaded
                 pageSpecs = specs
             } catch (_: SecurityException) {
-                errorMessage = "This PDF is password-protected or access was denied. Use 'Open with…' to open it in an external PDF reader."
+                errorMessage = s[Str.PDF_PROTECTED_ERROR]
             } catch (e: Exception) {
-                errorMessage = e.message ?: "Unable to open PDF document."
+                errorMessage = e.message ?: s[Str.PDF_OPEN_ERROR]
             } finally {
                 isLoading = false
             }
@@ -373,7 +377,7 @@ fun PdfViewerScreen(
                 node = node,
                 forceChooser = true,
             ).onFailure { err ->
-                viewModel.emitSimpleMessage("Cannot open externally: ${err.message}")
+                viewModel.emitSimpleMessage(s.format(Str.CANNOT_OPEN_EXTERNALLY, err.message.orEmpty()))
             }
         }
     }
@@ -398,7 +402,7 @@ fun PdfViewerScreen(
             TopAppBar(
                 navigationIcon = {
                     IconButton(onClick = onClose) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s[Str.BACK])
                     }
                 },
                 title = {
@@ -411,7 +415,7 @@ fun PdfViewerScreen(
                         )
                         if (pageCount > 0) {
                             Text(
-                                text = "Page $currentPage / $pageCount",
+                                text = s.format(Str.PAGE_OF_FMT, currentPage, pageCount),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.primary,
                             )
@@ -421,11 +425,11 @@ fun PdfViewerScreen(
                 actions = {
                     if (pageCount > 0) {
                         IconButton(onClick = { showJumpDialog = true }) {
-                            Icon(Icons.Filled.FindInPage, contentDescription = "Jump to page")
+                            Icon(Icons.Filled.FindInPage, contentDescription = s[Str.JUMP_TO_PAGE])
                         }
                     }
                     IconButton(onClick = { openExternally() }) {
-                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Open with…")
+                        Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = s[Str.OPEN_WITH])
                     }
                 },
             )
@@ -450,7 +454,7 @@ fun PdfViewerScreen(
                             modifier = Modifier.clickable { showJumpDialog = true },
                         ) {
                             Text(
-                                text = "Page $currentPage / $pageCount",
+                                text = s.format(Str.PAGE_OF_FMT, currentPage, pageCount),
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                                 fontWeight = FontWeight.Medium,
@@ -466,7 +470,7 @@ fun PdfViewerScreen(
                                 onClick = { applyZoom(zoom - 0.25f) },
                                 enabled = zoom > MIN_ZOOM + 0.01f,
                             ) {
-                                Icon(Icons.Filled.ZoomOut, contentDescription = "Zoom out")
+                                Icon(Icons.Filled.ZoomOut, contentDescription = s[Str.ZOOM_OUT])
                             }
                             TextButton(
                                 onClick = { applyZoom(1.0f) },
@@ -480,7 +484,7 @@ fun PdfViewerScreen(
                                 onClick = { applyZoom(zoom + 0.25f) },
                                 enabled = zoom < MAX_ZOOM - 0.01f,
                             ) {
-                                Icon(Icons.Filled.ZoomIn, contentDescription = "Zoom in")
+                                Icon(Icons.Filled.ZoomIn, contentDescription = s[Str.ZOOM_IN])
                             }
                         }
                     }
@@ -506,7 +510,7 @@ fun PdfViewerScreen(
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator()
                             Spacer(Modifier.height(12.dp))
-                            Text("Opening PDF…", style = MaterialTheme.typography.bodyMedium)
+                            Text(s[Str.OPENING_PDF], style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
@@ -535,14 +539,14 @@ fun PdfViewerScreen(
                         OutlinedButton(onClick = { openExternally() }) {
                             Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Open with…")
+                            Text(s[Str.OPEN_WITH])
                         }
                     }
                 }
 
                 pageSpecs.isEmpty() -> {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("This PDF has 0 pages.", style = MaterialTheme.typography.bodyLarge)
+                        Text(s[Str.PDF_ZERO_PAGES], style = MaterialTheme.typography.bodyLarge)
                     }
                 }
 
@@ -624,7 +628,7 @@ fun PdfViewerScreen(
 
         AlertDialog(
             onDismissRequest = { showJumpDialog = false },
-            title = { Text("Jump to page") },
+            title = { Text(s[Str.JUMP_TO_PAGE]) },
             text = {
                 Column {
                     OutlinedTextField(
@@ -633,7 +637,7 @@ fun PdfViewerScreen(
                             pageInput = it
                             inputError = null
                         },
-                        label = { Text("Page (1–$pageCount)") },
+                        label = { Text(s.format(Str.PAGE_RANGE_LABEL, pageCount)) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
@@ -653,7 +657,7 @@ fun PdfViewerScreen(
                     onClick = {
                         val target = pageInput.trim().toIntOrNull()
                         if (target == null || target !in 1..pageCount) {
-                            inputError = "Enter a page between 1 and $pageCount"
+                            inputError = s.format(Str.PAGE_RANGE_ERROR, pageCount)
                         } else {
                             showJumpDialog = false
                             scope.launch {
@@ -662,12 +666,12 @@ fun PdfViewerScreen(
                         }
                     },
                 ) {
-                    Text("Go")
+                    Text(s[Str.GO])
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showJumpDialog = false }) {
-                    Text("Cancel")
+                    Text(s[Str.CANCEL])
                 }
             },
         )
@@ -682,6 +686,7 @@ private fun PdfPageCard(
     targetWidthPx: Int,
     bitmapCache: LruCache<String, Bitmap>,
 ) {
+    val s = LocalAppStrings.current
     val cacheKey = "${spec.index}@$targetWidthPx"
     var bitmap by remember(spec.index) { mutableStateOf(bitmapCache.get(cacheKey)) }
 
@@ -718,7 +723,7 @@ private fun PdfPageCard(
             if (bmp != null) {
                 Image(
                     bitmap = bmp.asImageBitmap(),
-                    contentDescription = "Page ${spec.index + 1} of $totalPages",
+                    contentDescription = s.format(Str.PAGE_CONTENT_DESC, spec.index + 1, totalPages),
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
                 )

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Files</string>
+    <string name="save_to_files">保存到 Files</string>
+    <string name="notif_channel_transfer_name">无线文件传输</string>
+    <string name="notif_channel_transfer_desc">正在进行的 HTTP 和 FTP 无线文件共享</string>
+    <string name="notif_channel_ops_name">文件操作</string>
+    <string name="notif_channel_ops_desc">正在进行的复制、移动、删除、ZIP 和附近传输操作</string>
+    <string name="notif_action_stop">停止</string>
+    <string name="notif_action_cancel">取消</string>
+    <string name="notif_stopped_by_system_title">文件传输已停止</string>
+    <string name="notif_stopped_by_system_text">由于系统时间限制，Android 已停止后台传输。请打开 Files 重新启动。</string>
+    <string name="notif_ops_finishing">正在完成文件操作…</string>
+    <string name="notif_ops_working">正在处理…</string>
+</resources>

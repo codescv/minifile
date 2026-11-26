@@ -1,5 +1,9 @@
 package com.minifile.explorer.core.diag
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.AppStrings
+import com.minifile.explorer.core.i18n.ResolvedLanguage
+import com.minifile.explorer.core.i18n.Str
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -30,11 +34,15 @@ object DiagnosticExport {
     fun exportFileName(epochMs: Long, zone: ZoneId): String =
         FILE_PREFIX + FILE_STAMP.format(Instant.ofEpochMilli(epochMs).atZone(zone)) + ".txt"
 
-    /** Settings ▸ Diagnostics row caption (English, shared wording with iOS). */
-    fun statusLine(enabled: Boolean, totalBytes: Long): String = when {
-        enabled -> "Recording · ${formatSize(totalBytes)}"
-        totalBytes > 0L -> "Off · ${formatSize(totalBytes)} saved"
-        else -> "Off — enable to record transfer & network diagnostics"
+    /** Settings ▸ Diagnostics row caption. */
+    fun statusLine(
+        enabled: Boolean,
+        totalBytes: Long,
+        strings: AppStrings = AppI18n.stringsFor(ResolvedLanguage.EN),
+    ): String = when {
+        enabled -> strings.format(Str.DIAG_STATUS_RECORDING, formatSize(totalBytes))
+        totalBytes > 0L -> strings.format(Str.DIAG_STATUS_OFF_SAVED, formatSize(totalBytes))
+        else -> strings[Str.DIAG_STATUS_OFF]
     }
 
     /** `0 B`, `812 B`, `18.4 KB`, `1.0 MB` (1024-based, always `.` decimal separator). */

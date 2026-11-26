@@ -4,6 +4,9 @@ import com.minifile.explorer.core.diag.Diag
 import com.minifile.explorer.core.ftp.FtpAccessDeniedException
 import com.minifile.explorer.core.ftp.FtpPathResolver
 import com.minifile.explorer.core.ftp.FtpServerEngine
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.ResolvedLanguage
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.JsonValue
 import com.minifile.explorer.core.model.MiniJson
 import com.minifile.explorer.core.model.SortSpec
@@ -173,6 +176,8 @@ class HttpFileServerEngine(
      * times out (`false` ⇒ 403 `declined`). `null` auto-accepts. Not consulted for token-gated (BLE-accepted) sessions.
      */
     private val peerBeginApprover: ((PeerBeginOffer) -> Boolean)? = null,
+    /** Provides the active app language for the built-in HTML/JS Web UI. */
+    private val languageProvider: () -> ResolvedLanguage = { AppI18n.currentLanguage.value },
 ) {
     private val pathResolver = FtpPathResolver(config.root, fs)
     private val sortComparator = SortSpec().comparator()
@@ -733,7 +738,7 @@ class HttpFileServerEngine(
         val relParam = query["path"].orEmpty().ifBlank { "/" }
         val resolved = resolveStrictPath(relParam)
         val dirNode = fs.stat(resolved.vfsPath)
-            ?: throw HttpStatusException(404, "Not Found", "Folder not found")
+            ?: throw HttpStatusException(404, "Not Found", AppI18n.stringsFor(languageProvider())[Str.WEB_ERR_FOLDER_NOT_FOUND])
         if (!dirNode.isDirectory) {
             throw HttpStatusException(400, "Bad Request", "Target path is not a folder")
         }
@@ -890,7 +895,7 @@ class HttpFileServerEngine(
         val relParam = query["path"].orEmpty().ifBlank { "/" }
         val resolved = resolveStrictPath(relParam)
         val rootNode = fs.stat(resolved.vfsPath)
-            ?: throw HttpStatusException(404, "Not Found", "Folder not found")
+            ?: throw HttpStatusException(404, "Not Found", AppI18n.stringsFor(languageProvider())[Str.WEB_ERR_FOLDER_NOT_FOUND])
 
         val baseArchiveStem = if (resolved.virtualPath == "/") {
             config.root.displayName.takeIf { it.isNotBlank() && it != "/" } ?: "files"
@@ -999,8 +1004,9 @@ class HttpFileServerEngine(
         val bodyInfo = prepareRequestBody(headers, input, sendContinueIfNeeded = false)
         drainSmallBodyIfBounded(bodyInfo)
 
+        val s = AppI18n.stringsFor(languageProvider())
         if (config.readOnly) {
-            throw FtpAccessDeniedException("Server is in read-only mode")
+            throw FtpAccessDeniedException(s[Str.WEB_ERR_READ_ONLY])
         }
 
         val parentRel = query["path"].orEmpty().ifBlank { "/" }
@@ -1009,9 +1015,9 @@ class HttpFileServerEngine(
 
         val resolvedParent = resolveStrictPath(parentRel)
         val parentNode = fs.stat(resolvedParent.vfsPath)
-            ?: throw HttpStatusException(404, "Not Found", "Parent folder does not exist")
+            ?: throw HttpStatusException(404, "Not Found", s[Str.WEB_ERR_PARENT_NOT_FOUND])
         if (!parentNode.isDirectory) {
-            throw HttpStatusException(400, "Bad Request", "Parent path is not a folder")
+            throw HttpStatusException(400, "Bad Request", s[Str.WEB_ERR_PARENT_NOT_FOLDER])
         }
 
         val candidateChild = fs.child(resolvedParent.vfsPath, cleanName)
@@ -1019,7 +1025,7 @@ class HttpFileServerEngine(
 
         val existing = fs.stat(candidateChild)
         if (existing != null && !existing.isDirectory) {
-            throw HttpStatusException(409, "Conflict", "A file named '$cleanName' already exists")
+            throw HttpStatusException(409, "Conflict", s.format(Str.WEB_ERR_FILE_EXISTS, cleanName))
         }
         if (existing == null) {
             fs.createDirectory(resolvedParent.vfsPath, cleanName)
@@ -1061,16 +1067,17 @@ class HttpFileServerEngine(
         output: OutputStream,
         closeConnection: Boolean,
     ): Boolean {
+        val s = AppI18n.stringsFor(languageProvider())
         if (config.readOnly) {
-            throw FtpAccessDeniedException("Server is in read-only mode")
+            throw FtpAccessDeniedException(s[Str.WEB_ERR_READ_ONLY])
         }
 
         val dirRel = query["path"].orEmpty().ifBlank { "/" }
         val resolvedDir = resolveStrictPath(dirRel)
         val dirNode = fs.stat(resolvedDir.vfsPath)
-            ?: throw HttpStatusException(404, "Not Found", "Destination folder does not exist")
+            ?: throw HttpStatusException(404, "Not Found", s[Str.WEB_ERR_DEST_NOT_FOUND])
         if (!dirNode.isDirectory) {
-            throw HttpStatusException(400, "Bad Request", "Destination path is not a folder")
+            throw HttpStatusException(400, "Bad Request", s[Str.WEB_ERR_DEST_NOT_FOLDER])
         }
 
         val contentType = headers["content-type"].orEmpty()
@@ -1084,7 +1091,7 @@ class HttpFileServerEngine(
 
             val existing = fs.stat(candidateChild)
             if (existing?.isDirectory == true) {
-                throw HttpStatusException(409, "Conflict", "A folder named '$leafName' already exists")
+                throw HttpStatusException(409, "Conflict", s.format(Str.WEB_ERR_FOLDER_EXISTS, leafName))
             }
 
             val bodyInfo = prepareRequestBody(headers, input, sendContinueIfNeeded = true, rawOut = output)
@@ -1230,7 +1237,11 @@ class HttpFileServerEngine(
                 pathResolver.ensureLocalInside(candidateChild)
                 val existing = fs.stat(candidateChild)
                 if (existing?.isDirectory == true) {
-                    throw HttpStatusException(409, "Conflict", "A folder named '$leafName' already exists")
+                    throw HttpStatusException(
+                        409,
+                        "Conflict",
+                        AppI18n.stringsFor(languageProvider()).format(Str.WEB_ERR_FOLDER_EXISTS, leafName),
+                    )
                 }
                 val targetPath = existing?.path
                     ?: fs.createFile(resolvedDir.vfsPath, leafName, PathUtils.guessMimeType(leafName))
@@ -2121,14 +2132,15 @@ class HttpFileServerEngine(
     }
 
     private fun validateLeafName(rawName: String): String {
+        val s = AppI18n.stringsFor(languageProvider())
         if (rawName.contains('\u0000') || rawName.contains('/') || rawName.contains('\\')) {
-            throw FtpAccessDeniedException("Illegal path separator in name")
+            throw FtpAccessDeniedException(s[Str.WEB_ERR_ILLEGAL_SEPARATOR])
         }
         val trimmed = rawName.trim()
         if (trimmed == "." || trimmed == "..") {
-            throw FtpAccessDeniedException("Reserved directory traversal name")
+            throw FtpAccessDeniedException(s[Str.WEB_ERR_RESERVED_TRAVERSAL])
         }
-        when (val v = PathUtils.validateName(trimmed, fatSafe = config.root is VfsPath.Saf)) {
+        when (val v = PathUtils.validateName(trimmed, fatSafe = config.root is VfsPath.Saf, strings = s)) {
             NameValidation.Valid -> return trimmed
             is NameValidation.Invalid -> throw HttpStatusException(400, "Bad Request", v.reason)
         }
@@ -2197,18 +2209,21 @@ class HttpFileServerEngine(
         entries: List<VfsNode>,
         readOnly: Boolean,
     ): String {
+        val lang = languageProvider()
+        val s = AppI18n.stringsFor(lang)
+        val appName = s[Str.APP_NAME]
         val segments = virtualPath.split('/').filter { it.isNotEmpty() }
-        val pageTitle = if (segments.isEmpty()) "Files" else segments.last()
+        val pageTitle = if (segments.isEmpty()) appName else segments.last()
         val encodedCurPath = encodeUrlComponent(virtualPath)
         val jsCurPath = escapeJsSingleQuoted(virtualPath)
 
         val dateFmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
 
         return buildString(8192 + entries.size * 320) {
-            append("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n")
+            append("<!DOCTYPE html>\n<html lang=\"").append(lang.htmlLang).append("\">\n<head>\n")
             append("<meta charset=\"utf-8\">\n")
             append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")
-            append("<title>").append(escapeHtml(pageTitle)).append(" — Files</title>\n")
+            append("<title>").append(escapeHtml(pageTitle)).append(" — ").append(escapeHtml(appName)).append("</title>\n")
             append("<style>\n")
             append(WEB_UI_CSS)
             append("\n</style>\n</head>\n<body>\n")
@@ -2219,27 +2234,29 @@ class HttpFileServerEngine(
             append("  <div class=\"brand\">\n")
             append("    <span class=\"logo\" aria-hidden=\"true\">&#128193;</span>\n")
             append("    <div>\n")
-            append("      <h1>Files</h1>\n")
-            append("      <div class=\"sub\">").append(entries.size)
-                .append(if (entries.size == 1) " item" else " items")
-            if (readOnly) append(" &middot; <span class=\"badge-ro\">Read-only</span>")
+            append("      <h1>").append(escapeHtml(appName)).append("</h1>\n")
+            append("      <div class=\"sub\">").append(escapeHtml(s.itemsCount(entries.size)))
+            if (readOnly) append(" &middot; <span class=\"badge-ro\">").append(escapeHtml(s[Str.READ_ONLY])).append("</span>")
             append("</div>\n")
             append("    </div>\n")
             append("  </div>\n")
 
             append("  <div class=\"actions\">\n")
-            append("    <a class=\"btn btn-tonal\" href=\"/zip?path=").append(encodedCurPath).append("\">&#11015; Download Folder (.zip)</a>\n")
+            append("    <a class=\"btn btn-tonal\" href=\"/zip?path=").append(encodedCurPath).append("\">&#11015; ")
+                .append(escapeHtml(s[Str.WEB_DOWNLOAD_FOLDER_ZIP])).append("</a>\n")
             if (!readOnly) {
-                append("    <button class=\"btn btn-tonal\" type=\"button\" onclick=\"promptMkdir()\">+ New Folder</button>\n")
-                append("    <label class=\"btn btn-primary\" for=\"file-input\">&#11014; Upload Files</label>\n")
+                append("    <button class=\"btn btn-tonal\" type=\"button\" onclick=\"promptMkdir()\">+ ")
+                    .append(escapeHtml(s[Str.WEB_NEW_FOLDER])).append("</button>\n")
+                append("    <label class=\"btn btn-primary\" for=\"file-input\">&#11014; ")
+                    .append(escapeHtml(s[Str.WEB_UPLOAD_FILES])).append("</label>\n")
                 append("    <input id=\"file-input\" type=\"file\" multiple hidden onchange=\"uploadFiles(this.files)\">\n")
             }
             append("  </div>\n")
             append("</header>\n")
 
             // Breadcrumbs
-            append("<nav class=\"crumbs\" aria-label=\"Breadcrumb\">\n")
-            append("  <a href=\"/browse\">Home</a>")
+            append("<nav class=\"crumbs\" aria-label=\"").append(escapeHtml(s[Str.WEB_BREADCRUMB_ARIA])).append("\">\n")
+            append("  <a href=\"/browse\">").append(escapeHtml(s[Str.WEB_HOME])).append("</a>")
             var running = ""
             for (seg in segments) {
                 running += "/$seg"
@@ -2255,7 +2272,7 @@ class HttpFileServerEngine(
             if (!readOnly) {
                 append("<div id=\"upload-card\" class=\"upload-card hidden\">\n")
                 append("  <div class=\"upload-row\">\n")
-                append("    <span id=\"upload-status\">Uploading…</span>\n")
+                append("    <span id=\"upload-status\">").append(escapeHtml(s[Str.WEB_UPLOADING])).append("</span>\n")
                 append("    <span id=\"upload-pct\">0%</span>\n")
                 append("  </div>\n")
                 append("  <div class=\"progress-track\"><div id=\"upload-bar\" class=\"progress-fill\"></div></div>\n")
@@ -2270,13 +2287,14 @@ class HttpFileServerEngine(
                 append("  <div class=\"row\">\n")
                 append("    <a class=\"row-main\" href=\"").append(parentHref).append("\">\n")
                 append("      <span class=\"icon\" aria-hidden=\"true\">&#11014;&#65039;</span>\n")
-                append("      <span class=\"meta\"><span class=\"name\">Parent folder</span><span class=\"detail\">Up one level</span></span>\n")
+                append("      <span class=\"meta\"><span class=\"name\">").append(escapeHtml(s[Str.WEB_PARENT_FOLDER]))
+                    .append("</span><span class=\"detail\">").append(escapeHtml(s[Str.WEB_UP_ONE_LEVEL])).append("</span></span>\n")
                 append("    </a>\n")
                 append("  </div>\n")
             }
 
             if (entries.isEmpty()) {
-                append("  <div class=\"empty\">This folder is empty.</div>\n")
+                append("  <div class=\"empty\">").append(escapeHtml(s[Str.WEB_EMPTY_FOLDER])).append("</div>\n")
             } else {
                 for (entry in entries) {
                     val itemVirtual = if (virtualPath == "/") "/${entry.name}" else "$virtualPath/${entry.name}"
@@ -2284,12 +2302,8 @@ class HttpFileServerEngine(
                     val mtimeStr = if (entry.lastModified > 0L) dateFmt.format(Date(entry.lastModified)) else ""
 
                     if (entry.isDirectory) {
-                        val countNote = when {
-                            entry.childCount < 0 -> "Folder"
-                            entry.childCount == 1 -> "1 item"
-                            else -> "${entry.childCount} items"
-                        }
-                        val detail = if (mtimeStr.isNotEmpty()) "$countNote &middot; $mtimeStr" else countNote
+                        val countNote = if (entry.childCount < 0) s[Str.FOLDER] else s.itemsCount(entry.childCount)
+                        val detail = if (mtimeStr.isNotEmpty()) "${escapeHtml(countNote)} &middot; $mtimeStr" else escapeHtml(countNote)
                         append("  <div class=\"row\">\n")
                         append("    <a class=\"row-main\" href=\"/browse?path=").append(encItemPath).append("\">\n")
                         append("      <span class=\"icon folder\" aria-hidden=\"true\">&#128193;</span>\n")
@@ -2298,7 +2312,7 @@ class HttpFileServerEngine(
                         append("    </a>\n")
                         append("    <div class=\"row-actions\">\n")
                         append("      <a class=\"btn-sm\" href=\"/zip?path=").append(encItemPath)
-                            .append("\" title=\"Download folder as ZIP\">.zip</a>\n")
+                            .append("\" title=\"").append(escapeHtml(s[Str.WEB_DOWNLOAD_FOLDER_AS_ZIP_TITLE])).append("\">.zip</a>\n")
                         append("    </div>\n")
                         append("  </div>\n")
                     } else {
@@ -2312,7 +2326,7 @@ class HttpFileServerEngine(
                         append("    </a>\n")
                         append("    <div class=\"row-actions\">\n")
                         append("      <a class=\"btn-sm btn-dl\" href=\"/raw?path=").append(encItemPath)
-                            .append("&amp;download=1\" download>Download</a>\n")
+                            .append("&amp;download=1\" download>").append(escapeHtml(s[Str.WEB_DOWNLOAD])).append("</a>\n")
                         append("    </div>\n")
                         append("  </div>\n")
                     }
@@ -2324,6 +2338,14 @@ class HttpFileServerEngine(
             if (!readOnly) {
                 append("<script>\n")
                 append("const CUR_PATH = '").append(jsCurPath).append("';\n")
+                append("const I18N = {\n")
+                append("  promptNewFolder: '").append(escapeJsSingleQuoted(s[Str.WEB_PROMPT_NEW_FOLDER])).append("',\n")
+                append("  failedCreateFolder: '").append(escapeJsSingleQuoted(s[Str.WEB_FAILED_CREATE_FOLDER])).append("',\n")
+                append("  uploadFailed: '").append(escapeJsSingleQuoted(s[Str.WEB_UPLOAD_FAILED])).append("',\n")
+                append("  networkErrorUpload: '").append(escapeJsSingleQuoted(s[Str.WEB_NETWORK_ERROR_UPLOAD])).append("',\n")
+                append("  uploadingProgress: '").append(escapeJsSingleQuoted(s[Str.WEB_UPLOADING_PROGRESS])).append("',\n")
+                append("  uploadComplete: '").append(escapeJsSingleQuoted(s[Str.WEB_UPLOAD_COMPLETE])).append("',\n")
+                append("};\n")
                 append(WEB_UI_SCRIPT)
                 append("\n</script>\n")
             }
@@ -2804,14 +2826,21 @@ class HttpFileServerEngine(
         """.trimIndent()
 
         private val WEB_UI_SCRIPT = """
+            function fmtI18n(template, a, b, c) {
+              return template
+                .replace('{0}', a !== undefined ? String(a) : '')
+                .replace('{1}', b !== undefined ? String(b) : '')
+                .replace('{2}', c !== undefined ? String(c) : '');
+            }
+
             async function promptMkdir() {
-              const name = window.prompt('New folder name:');
+              const name = window.prompt(I18N.promptNewFolder);
               if (!name || !name.trim()) return;
               const url = '/mkdir?path=' + encodeURIComponent(CUR_PATH) + '&name=' + encodeURIComponent(name.trim());
               const res = await fetch(url, { method: 'POST' });
               if (!res.ok) {
                 const data = await res.json().catch(() => ({}));
-                alert(data.error || ('Failed to create folder (' + res.status + ')'));
+                alert(data.error || fmtI18n(I18N.failedCreateFolder, res.status));
                 return;
               }
               window.location.reload();
@@ -2829,12 +2858,12 @@ class HttpFileServerEngine(
                 xhr.onload = () => {
                   if (xhr.status >= 200 && xhr.status < 300) resolve();
                   else {
-                    let msg = 'Upload failed (' + xhr.status + ')';
+                    let msg = fmtI18n(I18N.uploadFailed, xhr.status);
                     try { msg = JSON.parse(xhr.responseText).error || msg; } catch (_) {}
                     reject(new Error(msg));
                   }
                 };
-                xhr.onerror = () => reject(new Error('Network error during upload'));
+                xhr.onerror = () => reject(new Error(I18N.networkErrorUpload));
                 xhr.send(file);
               });
             }
@@ -2854,7 +2883,7 @@ class HttpFileServerEngine(
               try {
                 for (let i = 0; i < files.length; i++) {
                   const f = files[i];
-                  statusEl.textContent = 'Uploading (' + (i + 1) + '/' + files.length + '): ' + f.name;
+                  statusEl.textContent = fmtI18n(I18N.uploadingProgress, i + 1, files.length, f.name);
                   await sendSingleFile(f, (loaded) => {
                     const pct = totalBytes > 0 ? Math.min(100, Math.round(((completedBytes + loaded) / totalBytes) * 100)) : 100;
                     pctEl.textContent = pct + '%';
@@ -2865,10 +2894,10 @@ class HttpFileServerEngine(
                   pctEl.textContent = pct + '%';
                   barEl.style.width = pct + '%';
                 }
-                statusEl.textContent = 'Upload complete! Refreshing…';
+                statusEl.textContent = I18N.uploadComplete;
                 window.location.reload();
               } catch (err) {
-                alert(err.message || 'Upload failed');
+                alert(err.message || I18N.uploadFailed.replace(' ({0})', ''));
                 card.classList.add('hidden');
               }
             }

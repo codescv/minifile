@@ -1,5 +1,7 @@
 package com.minifile.explorer.core.peer
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.JsonValue
 import java.util.UUID
 
@@ -281,10 +283,10 @@ object HostDecision {
 
     /** User-facing, actionable explanation for [blocker]. */
     fun blockerMessage(blocker: LinkBlocker, peerName: String): String = when (blocker) {
-        LinkBlocker.RECEIVER_CANNOT_HOST -> "Allow Nearby Wi-Fi permission on $peerName (Files ▸ Transfer)"
+        LinkBlocker.RECEIVER_CANNOT_HOST -> AppI18n.current().format(Str.LINK_BLOCK_RECEIVER_FMT, peerName)
         LinkBlocker.SENDER_CANNOT_HOST ->
-            "Allow Nearby Wi-Fi permission on this phone (Files ▸ Transfer) to send to $peerName without shared Wi-Fi"
-        LinkBlocker.IOS_PAIR -> "Use Nearby (AWDL) between two iPhones"
+            AppI18n.current().format(Str.LINK_BLOCK_SENDER_FMT, peerName)
+        LinkBlocker.IOS_PAIR -> AppI18n.current()[Str.LINK_BLOCK_IOS_PAIR]
     }
 
     /** `true` when any IPv4 of [a] shares a /24 with any IPv4 of [b]. */

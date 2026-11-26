@@ -1,5 +1,7 @@
 package com.minifile.explorer.service
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import android.annotation.SuppressLint
 import com.minifile.explorer.core.diag.Diag
 import android.content.Context
@@ -122,14 +124,14 @@ class LocalOnlyHotspotManager(
      * for [HotspotPurpose.DIRECT] a non-null [token] (Files-only QR) arms the `begin` gate.
      */
     suspend fun start(purpose: HotspotPurpose, token: String? = null): HotspotInfo = mutex.withLock {
-        val wm = wifiManager ?: throw HotspotException("Wi-Fi is not available on this device")
+        val wm = wifiManager ?: throw HotspotException(AppI18n.current()[Str.HOTSPOT_WIFI_UNAVAILABLE])
         if (!NearbyPermissions.hasHotspotPermissions(appContext)) {
             throw HotspotException(
-                if (Build.VERSION.SDK_INT >= 33) "Allow Nearby devices to start a hotspot" else "Allow Location to start a hotspot",
+                if (Build.VERSION.SDK_INT >= 33) AppI18n.current()[Str.HOTSPOT_ALLOW_NEARBY] else AppI18n.current()[Str.HOTSPOT_ALLOW_LOCATION],
             )
         }
         if (NearbyPermissions.needsLocationServices(appContext)) {
-            throw HotspotException("Location must be on for Android ≤12 to start a hotspot")
+            throw HotspotException(AppI18n.current()[Str.HOTSPOT_LOCATION_NEEDED])
         }
         autoStopJob?.cancel()
         Diag.log(Diag.HOTSPOT) { "start purpose=$purpose tok=${token.orEmpty()} existing=${activeInfo != null && reservation != null}" }
@@ -151,7 +153,7 @@ class LocalOnlyHotspotManager(
                 startReservation(wm)
             } catch (e: HotspotException) {
                 Diag.log(Diag.HOTSPOT) { "reservation failed: ${e.message.orEmpty()}" }
-                _state.value = HotspotState.Failed(e.message ?: "Hotspot failed")
+                _state.value = HotspotState.Failed(e.message ?: AppI18n.current()[Str.HOTSPOT_FAILED])
                 rollbackHttpIfNeeded()
                 throw e
             }
@@ -415,7 +417,7 @@ class LocalOnlyHotspotManager(
         }
         rollbackHttpIfNeeded()
         Diag.log(Diag.HOTSPOT) { "HTTP server did not start for hotspot: ${HttpServerHolder.state.value.lastError.orEmpty()}" }
-        throw HotspotException(HttpServerHolder.state.value.lastError ?: "Could not start the transfer server")
+        throw HotspotException(HttpServerHolder.state.value.lastError ?: AppI18n.current()[Str.HOTSPOT_SERVER_FAILED])
     }
 
     private fun rollbackHttpIfNeeded() {
@@ -433,7 +435,7 @@ class LocalOnlyHotspotManager(
                     val cb = object : WifiManager.LocalOnlyHotspotCallback() {
                         override fun onStarted(res: WifiManager.LocalOnlyHotspotReservation?) {
                             if (res == null) {
-                                if (cont.isActive) cont.resume(Result.failure(HotspotException("Hotspot failed to start")))
+                                if (cont.isActive) cont.resume(Result.failure(HotspotException(AppI18n.current()[Str.HOTSPOT_FAILED_TO_START])))
                                 return
                             }
                             if (cont.isActive) cont.resume(Result.success(res)) else runCatching { res.close() }
@@ -451,15 +453,15 @@ class LocalOnlyHotspotManager(
                     try {
                         wm.startLocalOnlyHotspot(cb, Handler(Looper.getMainLooper()))
                     } catch (e: SecurityException) {
-                        if (cont.isActive) cont.resume(Result.failure(HotspotException("Permission denied: ${e.message}")))
+                        if (cont.isActive) cont.resume(Result.failure(HotspotException(AppI18n.current().format(Str.HOTSPOT_PERMISSION_DENIED_FMT, e.message.orEmpty()))))
                     } catch (e: IllegalStateException) {
                         if (cont.isActive) {
-                            cont.resume(Result.failure(HotspotException("A hotspot request is already active — retry")))
+                            cont.resume(Result.failure(HotspotException(AppI18n.current()[Str.HOTSPOT_REQUEST_ACTIVE])))
                         }
                     }
                 }
-            } ?: throw HotspotException("Hotspot did not start within 15 s — turn Wi-Fi on and retry")
-            result.getOrElse { throw (it as? HotspotException ?: HotspotException(it.message ?: "Hotspot failed")) }
+            } ?: throw HotspotException(AppI18n.current()[Str.HOTSPOT_START_TIMEOUT])
+            result.getOrElse { throw (it as? HotspotException ?: HotspotException(it.message ?: AppI18n.current()[Str.HOTSPOT_FAILED])) }
         }
 
     private fun onSystemStopped() {
@@ -467,7 +469,7 @@ class LocalOnlyHotspotManager(
         scope.launch {
             if (reservation != null || _state.value is HotspotState.Active) {
                 stop()
-                _state.value = HotspotState.Failed("The system stopped the hotspot")
+                _state.value = HotspotState.Failed(AppI18n.current()[Str.HOTSPOT_SYSTEM_STOPPED])
             }
         }
     }
@@ -535,12 +537,12 @@ class LocalOnlyHotspotManager(
 
         fun mapFailure(reason: Int): String = when (reason) {
             WifiManager.LocalOnlyHotspotCallback.ERROR_INCOMPATIBLE_MODE ->
-                "Turn off the system hotspot / Wi-Fi Direct first"
-            WifiManager.LocalOnlyHotspotCallback.ERROR_TETHERING_DISALLOWED -> "Blocked by device policy"
+                AppI18n.current()[Str.HOTSPOT_ERR_INCOMPATIBLE]
+            WifiManager.LocalOnlyHotspotCallback.ERROR_TETHERING_DISALLOWED -> AppI18n.current()[Str.HOTSPOT_ERR_POLICY]
             WifiManager.LocalOnlyHotspotCallback.ERROR_NO_CHANNEL,
             WifiManager.LocalOnlyHotspotCallback.ERROR_GENERIC,
-            -> "Turn Wi-Fi on and retry"
-            else -> "Hotspot failed (code $reason)"
+            -> AppI18n.current()[Str.HOTSPOT_ERR_WIFI_OFF]
+            else -> AppI18n.current().format(Str.HOTSPOT_ERR_CODE_FMT, reason)
         }
     }
 }

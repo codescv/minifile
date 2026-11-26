@@ -1,5 +1,7 @@
 package com.minifile.explorer.core.peer
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.JsonValue
 import com.minifile.explorer.core.model.MiniJson
 import com.minifile.explorer.core.model.OperationKind
@@ -197,7 +199,7 @@ class L2capPeerTransferEngine(
                 OperationProgress(
                     id = "",
                     kind = OperationKind.SEND,
-                    title = "Sending to $peerName",
+                    title = AppI18n.current().format(Str.SENDING_TO, peerName),
                     currentItem = current,
                     processedItems = processed,
                     totalItems = totalItems,
@@ -270,7 +272,7 @@ class L2capPeerTransferEngine(
             val done = Mfl2Codec.readFrame(input)
             when (done.str("t")) {
                 "done" -> if (!done.bool("ok", false)) {
-                    throw PeerTransferException(null, "$peerName did not save every file")
+                    throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_NOT_ALL_SAVED_FMT, peerName))
                 }
                 "err" -> throw PeerTransferException(null, "$peerName: ${done.str("msg").orEmpty().ifBlank { "transfer failed" }}")
                 else -> throw Mfl2ProtocolException("Unexpected MFL2 reply '${done.str("t")}'")
@@ -284,7 +286,7 @@ class L2capPeerTransferEngine(
             if (sink.isCancelled()) {
                 cancelledResult()
             } else {
-                throw PeerTransferException(null, "Bluetooth connection to $peerName lost", e)
+                throw PeerTransferException(null, AppI18n.current().format(Str.BLE_LINK_TO_LOST_FMT, peerName), e)
             }
         }
     }
@@ -350,7 +352,7 @@ class L2capPeerTransferEngine(
                 return@withContext result(false, "Invalid session token")
             }
             senderId = begin.str("id").orEmpty().take(128)
-            senderName = PeerPathPolicy.sanitizeDisplayName(begin.str("name").orEmpty(), 64).ifEmpty { "Nearby device" }
+            senderName = PeerPathPolicy.sanitizeDisplayName(begin.str("name").orEmpty(), 64).ifEmpty { AppI18n.current()[Str.BLE_NEARBY_DEVICE] }
             totalFiles = begin.int("files", 0).coerceAtLeast(0)
             totalBytes = begin.long("bytes", 0L).coerceAtLeast(0L)
             val inbox = try {
@@ -457,7 +459,7 @@ class L2capPeerTransferEngine(
             if (isCancelled()) {
                 result(false, "Cancelled", cancelled = true)
             } else {
-                result(false, if (senderName.isEmpty()) "Bluetooth connection lost" else "Connection to $senderName lost")
+                result(false, if (senderName.isEmpty()) AppI18n.current()[Str.BLE_CONNECTION_LOST] else AppI18n.current().format(Str.PEER_ERR_CONNECTION_LOST_FMT, senderName))
             }
         } catch (e: CancellationException) {
             throw e

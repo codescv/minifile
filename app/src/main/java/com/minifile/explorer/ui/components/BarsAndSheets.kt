@@ -72,6 +72,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.ClipboardState
 import com.minifile.explorer.core.model.Favorite
 import com.minifile.explorer.core.model.SortField
@@ -85,6 +86,8 @@ import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.vfs.Volume
+import com.minifile.explorer.core.vfs.VolumeKind
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -97,6 +100,7 @@ fun SelectionTopBar(
     onSelectAll: () -> Unit,
     onInvertSelection: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     TopAppBar(
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.secondaryContainer,
@@ -104,18 +108,18 @@ fun SelectionTopBar(
         ),
         navigationIcon = {
             IconButton(onClick = onExitSelection) {
-                Icon(Icons.Filled.Close, contentDescription = "Exit selection")
+                Icon(Icons.Filled.Close, contentDescription = s[Str.EXIT_SELECTION])
             }
         },
         title = {
-            Text("$selectedCount selected", fontWeight = FontWeight.SemiBold)
+            Text(s.format(Str.COUNT_SELECTED, selectedCount), fontWeight = FontWeight.SemiBold)
         },
         actions = {
             TextButton(onClick = onSelectAll) {
-                Text("Select all")
+                Text(s[Str.SELECT_ALL])
             }
             TextButton(onClick = onInvertSelection) {
-                Text("Invert")
+                Text(s[Str.INVERT])
             }
         },
     )
@@ -142,6 +146,7 @@ fun SelectionBottomBar(
     onShare: () -> Unit,
     onMoreAction: (SelectionMoreAction) -> Unit,
 ) {
+    val s = LocalAppStrings.current
     var moreExpanded by remember { mutableStateOf(false) }
     val single = selectedNodes.singleOrNull()
     val singleIsZip = single != null && !single.isDirectory &&
@@ -160,12 +165,12 @@ fun SelectionBottomBar(
             TextButton(onClick = onCopy) {
                 Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Copy")
+                Text(s[Str.COPY])
             }
             TextButton(onClick = onCut) {
                 Icon(Icons.Filled.ContentCut, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Cut")
+                Text(s[Str.CUT])
             }
             TextButton(onClick = onDelete) {
                 Icon(
@@ -175,16 +180,16 @@ fun SelectionBottomBar(
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.width(4.dp))
-                Text("Delete", color = MaterialTheme.colorScheme.error)
+                Text(s[Str.DELETE], color = MaterialTheme.colorScheme.error)
             }
             TextButton(onClick = onShare) {
                 Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Share")
+                Text(s[Str.SHARE])
             }
             Box {
                 IconButton(onClick = { moreExpanded = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                    Icon(Icons.Filled.MoreVert, contentDescription = s[Str.MORE])
                 }
                 DropdownMenu(
                     expanded = moreExpanded,
@@ -192,7 +197,7 @@ fun SelectionBottomBar(
                 ) {
                     if (single != null) {
                         DropdownMenuItem(
-                            text = { Text("Rename") },
+                            text = { Text(s[Str.RENAME]) },
                             onClick = {
                                 moreExpanded = false
                                 onMoreAction(SelectionMoreAction.RENAME)
@@ -200,14 +205,14 @@ fun SelectionBottomBar(
                         )
                     }
                     DropdownMenuItem(
-                        text = { Text("Copy to Favorite…") },
+                        text = { Text(s[Str.COPY_TO_FAVORITE]) },
                         onClick = {
                             moreExpanded = false
                             onMoreAction(SelectionMoreAction.COPY_TO_FAVORITE)
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Move to Favorite…") },
+                        text = { Text(s[Str.MOVE_TO_FAVORITE]) },
                         onClick = {
                             moreExpanded = false
                             onMoreAction(SelectionMoreAction.MOVE_TO_FAVORITE)
@@ -215,14 +220,14 @@ fun SelectionBottomBar(
                     )
                     HorizontalDivider()
                     DropdownMenuItem(
-                        text = { Text("Compress to ZIP") },
+                        text = { Text(s[Str.COMPRESS_TO_ZIP]) },
                         onClick = {
                             moreExpanded = false
                             onMoreAction(SelectionMoreAction.COMPRESS_ZIP)
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Send to device…") },
+                        text = { Text(s[Str.SEND_TO_DEVICE]) },
                         onClick = {
                             moreExpanded = false
                             onMoreAction(SelectionMoreAction.SEND_TO_DEVICE)
@@ -230,7 +235,7 @@ fun SelectionBottomBar(
                     )
                     if (singleIsZip) {
                         DropdownMenuItem(
-                            text = { Text("Extract…") },
+                            text = { Text(s[Str.EXTRACT_ELLIPSIS]) },
                             onClick = {
                                 moreExpanded = false
                                 onMoreAction(SelectionMoreAction.EXTRACT_ZIP)
@@ -239,7 +244,7 @@ fun SelectionBottomBar(
                     }
                     if (single != null) {
                         DropdownMenuItem(
-                            text = { Text("Add to Favorites") },
+                            text = { Text(s[Str.ADD_TO_FAVORITES]) },
                             onClick = {
                                 moreExpanded = false
                                 onMoreAction(SelectionMoreAction.ADD_TO_FAVORITES)
@@ -248,7 +253,7 @@ fun SelectionBottomBar(
                     }
                     if (allFolders) {
                         DropdownMenuItem(
-                            text = { Text("Hide from gallery (.nomedia)") },
+                            text = { Text(s[Str.HIDE_FROM_GALLERY_NOMEDIA]) },
                             onClick = {
                                 moreExpanded = false
                                 onMoreAction(SelectionMoreAction.TOGGLE_NOMEDIA)
@@ -258,7 +263,7 @@ fun SelectionBottomBar(
                     if (single != null) {
                         HorizontalDivider()
                         DropdownMenuItem(
-                            text = { Text("Properties") },
+                            text = { Text(s[Str.PROPERTIES]) },
                             onClick = {
                                 moreExpanded = false
                                 onMoreAction(SelectionMoreAction.PROPERTIES)
@@ -281,9 +286,13 @@ fun ClipboardBar(
     onClear: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val s = LocalAppStrings.current
     var showItemsDialog by remember { mutableStateOf(false) }
-    val verb = if (clipboard.mode == TransferMode.COPY) "Copy" else "Move"
-    val label = "$verb ${clipboard.items.size} item${if (clipboard.items.size == 1) "" else "s"}"
+    val label = if (clipboard.mode == TransferMode.COPY) {
+        if (clipboard.items.size == 1) s[Str.CLIPBOARD_COPY_SINGLE] else s.format(Str.CLIPBOARD_COPY_PLURAL, clipboard.items.size)
+    } else {
+        if (clipboard.items.size == 1) s[Str.CLIPBOARD_MOVE_SINGLE] else s.format(Str.CLIPBOARD_MOVE_PLURAL, clipboard.items.size)
+    }
 
     Card(
         shape = RoundedCornerShape(16.dp),
@@ -329,7 +338,7 @@ fun ClipboardBar(
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                 modifier = Modifier.height(34.dp),
             ) {
-                Text("To Favorite ▾", style = MaterialTheme.typography.labelMedium)
+                Text(s[Str.TO_FAVORITE_BTN], style = MaterialTheme.typography.labelMedium)
             }
             Spacer(Modifier.width(6.dp))
             Button(
@@ -340,13 +349,13 @@ fun ClipboardBar(
             ) {
                 Icon(Icons.Filled.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("Paste here", style = MaterialTheme.typography.labelMedium)
+                Text(s[Str.PASTE_HERE], style = MaterialTheme.typography.labelMedium)
             }
             IconButton(
                 onClick = onClear,
                 modifier = Modifier.size(34.dp),
             ) {
-                Icon(Icons.Filled.Close, contentDescription = "Clear clipboard", modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.Close, contentDescription = s[Str.CLEAR_CLIPBOARD], modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -368,7 +377,7 @@ fun ClipboardBar(
             },
             confirmButton = {
                 TextButton(onClick = { showItemsDialog = false }) {
-                    Text("Close")
+                    Text(s[Str.CLOSE])
                 }
             },
         )
@@ -386,20 +395,21 @@ fun SortBottomSheet(
     onToggleShowHidden: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 8.dp),
         ) {
-            Text("Sort & View", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(s[Str.SORT_AND_VIEW], style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(12.dp))
 
             val sortOptions = listOf(
-                SortField.NAME to "Name",
-                SortField.SIZE to "Size",
-                SortField.DATE to "Date modified",
-                SortField.TYPE to "Type",
+                SortField.NAME to s[Str.SORT_NAME],
+                SortField.SIZE to s[Str.SORT_SIZE],
+                SortField.DATE to s[Str.SORT_DATE],
+                SortField.TYPE to s[Str.SORT_TYPE],
             )
             for ((field, label) in sortOptions) {
                 Row(
@@ -425,14 +435,14 @@ fun SortBottomSheet(
                     onClick = { onUpdateSort(currentSort.copy(ascending = true)) },
                     shape = SegmentedButtonDefaults.itemShape(0, 2),
                 ) {
-                    Text("Ascending")
+                    Text(s[Str.ASCENDING])
                 }
                 SegmentedButton(
                     selected = !currentSort.ascending,
                     onClick = { onUpdateSort(currentSort.copy(ascending = false)) },
                     shape = SegmentedButtonDefaults.itemShape(1, 2),
                 ) {
-                    Text("Descending")
+                    Text(s[Str.DESCENDING])
                 }
             }
 
@@ -442,7 +452,7 @@ fun SortBottomSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Folders first", style = MaterialTheme.typography.bodyLarge)
+                Text(s[Str.FOLDERS_FIRST], style = MaterialTheme.typography.bodyLarge)
                 Switch(
                     checked = currentSort.foldersFirst,
                     onCheckedChange = { onUpdateSort(currentSort.copy(foldersFirst = it)) },
@@ -457,7 +467,7 @@ fun SortBottomSheet(
                 FilterChip(
                     selected = showHidden,
                     onClick = onToggleShowHidden,
-                    label = { Text("Show hidden files") },
+                    label = { Text(s[Str.SHOW_HIDDEN_FILES]) },
                 )
                 FilterChip(
                     selected = viewMode == ViewMode.GRID,
@@ -469,7 +479,7 @@ fun SortBottomSheet(
                             modifier = Modifier.size(18.dp),
                         )
                     },
-                    label = { Text(if (viewMode == ViewMode.GRID) "Grid view" else "List view") },
+                    label = { Text(if (viewMode == ViewMode.GRID) s[Str.GRID_VIEW] else s[Str.LIST_VIEW]) },
                 )
             }
             Spacer(Modifier.height(24.dp))
@@ -492,6 +502,7 @@ fun FavoritePickerSheet(
     onAddCurrentFolderToFavorites: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     var mode by remember { mutableStateOf(initialMode) }
     var miniBrowserDir by remember { mutableStateOf<VfsPath?>(null) }
     var miniBrowserSubfolders by remember { mutableStateOf<List<VfsNode>>(emptyList()) }
@@ -532,10 +543,9 @@ fun FavoritePickerSheet(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp),
         ) {
-            val actionVerb = if (mode == TransferMode.COPY) "Copy" else "Move"
-            val itemDesc = if (items.size == 1) items.first().displayName else "${items.size} items"
+            val itemDesc = if (items.size == 1) items.first().displayName else s.itemsCount(items.size)
             Text(
-                text = "$actionVerb $itemDesc to…",
+                text = s.format(if (mode == TransferMode.COPY) Str.COPY_TARGET_TO else Str.MOVE_TARGET_TO, itemDesc),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(horizontal = 4.dp),
@@ -548,14 +558,14 @@ fun FavoritePickerSheet(
                     onClick = { mode = TransferMode.COPY },
                     shape = SegmentedButtonDefaults.itemShape(0, 2),
                 ) {
-                    Text("Copy")
+                    Text(s[Str.COPY])
                 }
                 SegmentedButton(
                     selected = mode == TransferMode.MOVE,
                     onClick = { mode = TransferMode.MOVE },
                     shape = SegmentedButtonDefaults.itemShape(1, 2),
                 ) {
-                    Text("Move")
+                    Text(s[Str.MOVE])
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -587,7 +597,7 @@ fun FavoritePickerSheet(
                                         Spacer(Modifier.width(6.dp))
                                         Icon(
                                             Icons.Filled.Usb,
-                                            contentDescription = "External/SAF",
+                                            contentDescription = s[Str.EXTERNAL_SAF],
                                             modifier = Modifier.size(14.dp),
                                         )
                                     }
@@ -627,7 +637,7 @@ fun FavoritePickerSheet(
                         HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
                         ListItem(
                             leadingContent = { Icon(Icons.Filled.Folder, contentDescription = null) },
-                            headlineContent = { Text("Choose another folder…") },
+                            headlineContent = { Text(s[Str.CHOOSE_ANOTHER_FOLDER]) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { browsingOtherFolder = true },
@@ -635,7 +645,7 @@ fun FavoritePickerSheet(
                         if (currentDir != null) {
                             ListItem(
                                 leadingContent = { Icon(Icons.Filled.Add, contentDescription = null) },
-                                headlineContent = { Text("Add current folder to Favorites") },
+                                headlineContent = { Text(s[Str.ADD_CURRENT_FOLDER_FAVORITES]) },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { onAddCurrentFolderToFavorites() },
@@ -662,10 +672,10 @@ fun FavoritePickerSheet(
                             }
                         },
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s[Str.BACK])
                     }
                     Text(
-                        text = miniBrowserDir?.displayName ?: "Select volume",
+                        text = miniBrowserDir?.displayName ?: s[Str.SELECT_VOLUME],
                         style = MaterialTheme.typography.titleSmall,
                         modifier = Modifier.weight(1f),
                         maxLines = 1,
@@ -678,7 +688,7 @@ fun FavoritePickerSheet(
                                 onSelectCustomFolder(targetDir, targetDir.displayName, mode)
                             },
                         ) {
-                            Text("$actionVerb here")
+                            Text(if (mode == TransferMode.COPY) s[Str.COPY_HERE] else s[Str.MOVE_HERE])
                         }
                     }
                 }
@@ -689,7 +699,7 @@ fun FavoritePickerSheet(
                         items(readyVolumes, key = { it.id }) { vol ->
                             ListItem(
                                 leadingContent = { Icon(Icons.Filled.Folder, contentDescription = null) },
-                                headlineContent = { Text(vol.name) },
+                                headlineContent = { Text(if (vol.kind == VolumeKind.PRIMARY) s[Str.INTERNAL_STORAGE] else vol.name) },
                                 supportingContent = vol.subtitle?.let { { Text(it, maxLines = 1) } },
                                 modifier = Modifier
                                     .fillMaxWidth()

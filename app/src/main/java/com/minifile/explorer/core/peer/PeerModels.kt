@@ -1,5 +1,7 @@
 package com.minifile.explorer.core.peer
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import java.io.IOException
 import java.io.InputStream
 import java.util.Locale
@@ -127,9 +129,9 @@ class PeerTransferException(
 
         fun isRedirectStatus(status: Int): Boolean = status in REDIRECT_STATUSES
 
-        /** Actionable English copy for an intercepted LAN request (never "returned HTTP 302"). */
+        /** Actionable localized copy for an intercepted LAN request (never "returned HTTP 302"). */
         fun interceptedMessage(peerName: String, status: Int): String =
-            "Connection to $peerName was intercepted (HTTP $status) — turn off VPN or proxy (or enable LAN bypass) and try again"
+            AppI18n.current().format(Str.PEER_ERR_INTERCEPTED_FMT, peerName, status)
 
         /**
          * `Location` header reduced to `scheme://host[:port]/path` for logs: query, fragment and userinfo stripped so

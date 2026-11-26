@@ -9,6 +9,8 @@ import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.minifile.explorer.BuildConfig
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.update.AppUpdater
 import com.minifile.explorer.core.update.CancelToken
 import com.minifile.explorer.core.update.DirectInstallAction
@@ -149,7 +151,7 @@ class UpdateManager(
                         if (force) {
                             _state.value = UpdateUiState.Error(
                                 code = UpdateErrorCode.NO_ASSET,
-                                message = "Release ${result.latest.tagName} has no downloadable APK asset.",
+                                message = AppI18n.current().format(Str.UPDATE_NO_ASSET_FMT, result.latest.tagName),
                                 releasePageUrl = result.latest.htmlUrl ?: UpdateUiState.DEFAULT_RELEASE_PAGE,
                             )
                         }
@@ -189,7 +191,7 @@ class UpdateManager(
                 if (force) {
                     _state.value = UpdateUiState.Error(
                         code = UpdateErrorCode.NETWORK,
-                        message = e.message ?: "Update check failed",
+                        message = e.message ?: AppI18n.current()[Str.UPDATE_CHECK_FAILED],
                     )
                 }
             }
@@ -266,7 +268,7 @@ class UpdateManager(
                 dest.delete()
                 _state.value = UpdateUiState.Error(
                     code = UpdateErrorCode.NETWORK,
-                    message = e.message ?: "Download failed",
+                    message = e.message ?: AppI18n.current()[Str.UPDATE_DOWNLOAD_FAILED],
                     releasePageUrl = release.htmlUrl ?: UpdateUiState.DEFAULT_RELEASE_PAGE,
                 )
             }
@@ -284,18 +286,19 @@ class UpdateManager(
      * [onHostResume] installs it automatically once the user grants permission and returns.
      */
     fun launchInstaller(context: Context): InstallLaunchResult {
+        val s = AppI18n.current()
         val ready = _state.value as? UpdateUiState.Ready
-            ?: return InstallLaunchResult.Failed("No verified update ready to install.")
+            ?: return InstallLaunchResult.Failed(s[Str.UPDATE_NONE_READY])
         if (!ready.apkFile.isFile) {
             directInstallCoordinator.clearPending()
             _state.value = UpdateUiState.Idle
-            return InstallLaunchResult.Failed("Cached update APK was removed; please check again.")
+            return InstallLaunchResult.Failed(s[Str.UPDATE_CACHED_REMOVED])
         }
         return when (val action = directInstallCoordinator.onApkVerified(ready.apkFile, canRequestPackageInstalls())) {
             is DirectInstallAction.LaunchInstaller -> startInstallerActivity(context, action.apkFile)
             is DirectInstallAction.RequestInstallPermission ->
                 InstallLaunchResult.NeedsUnknownSourcesPermission(buildUnknownSourcesSettingsIntent())
-            DirectInstallAction.None -> InstallLaunchResult.Failed("No verified update ready to install.")
+            DirectInstallAction.None -> InstallLaunchResult.Failed(s[Str.UPDATE_NONE_READY])
         }
     }
 
@@ -320,9 +323,10 @@ class UpdateManager(
     ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
     private fun startInstallerActivity(context: Context, apkFile: File): InstallLaunchResult {
+        val s = AppI18n.current()
         if (!apkFile.isFile) {
             _state.value = UpdateUiState.Idle
-            return InstallLaunchResult.Failed("Cached update APK was removed; please check again.")
+            return InstallLaunchResult.Failed(s[Str.UPDATE_CACHED_REMOVED])
         }
         return try {
             val contentUri = FileProvider.getUriForFile(
@@ -337,7 +341,7 @@ class UpdateManager(
             context.startActivity(installIntent)
             InstallLaunchResult.Launched
         } catch (e: Exception) {
-            InstallLaunchResult.Failed(e.message ?: "Could not launch system package installer.")
+            InstallLaunchResult.Failed(e.message ?: s[Str.UPDATE_LAUNCH_INSTALLER_FAILED])
         }
     }
 
@@ -370,16 +374,19 @@ class UpdateManager(
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
-    private fun friendlyErrorMessage(e: UpdateException): String = when (e.code) {
-        UpdateErrorCode.RATE_LIMITED -> "GitHub rate limit reached, try later."
-        UpdateErrorCode.VERIFY_FAILED -> e.message ?: "The downloaded update is not signed by the same key as the installed app."
-        UpdateErrorCode.INSECURE_URL -> "Blocked insecure update URL: ${e.message}"
-        UpdateErrorCode.TIMEOUT -> "Connection to GitHub timed out."
-        UpdateErrorCode.NOT_FOUND -> "No published releases found on GitHub yet."
-        UpdateErrorCode.NO_ASSET -> "Release found, but no APK asset is attached."
-        UpdateErrorCode.CORRUPT_DOWNLOAD -> "Downloaded APK was incomplete or corrupted (${e.message})."
-        UpdateErrorCode.BAD_JSON -> "Could not parse GitHub release metadata."
-        UpdateErrorCode.CANCELLED -> "Update cancelled."
-        UpdateErrorCode.NETWORK -> e.message ?: "Could not reach GitHub Releases."
+    private fun friendlyErrorMessage(e: UpdateException): String {
+        val s = AppI18n.current()
+        return when (e.code) {
+            UpdateErrorCode.RATE_LIMITED -> s[Str.UPDATE_ERR_RATE_LIMITED]
+            UpdateErrorCode.VERIFY_FAILED -> e.message ?: s[Str.UPDATE_ERR_VERIFY_FAILED]
+            UpdateErrorCode.INSECURE_URL -> s.format(Str.UPDATE_ERR_INSECURE_URL, e.message ?: "")
+            UpdateErrorCode.TIMEOUT -> s[Str.UPDATE_ERR_TIMEOUT]
+            UpdateErrorCode.NOT_FOUND -> s[Str.UPDATE_ERR_NOT_FOUND]
+            UpdateErrorCode.NO_ASSET -> s[Str.UPDATE_ERR_NO_ASSET]
+            UpdateErrorCode.CORRUPT_DOWNLOAD -> s.format(Str.UPDATE_ERR_CORRUPT, e.message ?: "")
+            UpdateErrorCode.BAD_JSON -> s[Str.UPDATE_ERR_BAD_JSON]
+            UpdateErrorCode.CANCELLED -> s[Str.UPDATE_ERR_CANCELLED]
+            UpdateErrorCode.NETWORK -> e.message ?: s[Str.UPDATE_ERR_NETWORK]
+        }
     }
 }

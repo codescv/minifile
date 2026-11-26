@@ -86,6 +86,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.minifile.explorer.BuildConfig
 import com.minifile.explorer.core.gdrive.GDriveTokenParser
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.ClipboardState
 import com.minifile.explorer.core.model.Favorite
 import com.minifile.explorer.core.model.FtpServerBookmark
@@ -98,6 +99,7 @@ import com.minifile.explorer.core.vfs.VolumeKind
 import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
 import com.minifile.explorer.data.gdrive.GDriveSignInState
 import com.minifile.explorer.ui.components.ClipboardBar
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.UiFormatters
 
 const val MINIFILE_APK_PACKAGE = "com.minifile.explorer"
@@ -182,6 +184,7 @@ fun StorageHomeScreen(
     onClearClipboard: () -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val storageVolumes = volumes.filter {
         it.kind == VolumeKind.PRIMARY || it.kind == VolumeKind.SD_CARD || it.kind == VolumeKind.USB_OTG
     }
@@ -213,18 +216,18 @@ fun StorageHomeScreen(
 
     val primaryBase = Environment.getExternalStorageDirectory().absolutePath
     val quickAccess = listOf(
-        Triple("Download", Icons.Filled.Download, "$primaryBase/Download"),
-        Triple("DCIM", Icons.Filled.PhotoCamera, "$primaryBase/DCIM"),
-        Triple("Pictures", Icons.Filled.Image, "$primaryBase/Pictures"),
-        Triple("Documents", Icons.Filled.Description, "$primaryBase/Documents"),
-        Triple("Movies", Icons.Filled.Movie, "$primaryBase/Movies"),
-        Triple("Music", Icons.Filled.MusicNote, "$primaryBase/Music"),
+        Triple(s[Str.QA_DOWNLOAD], Icons.Filled.Download, "$primaryBase/Download"),
+        Triple(s[Str.QA_DCIM], Icons.Filled.PhotoCamera, "$primaryBase/DCIM"),
+        Triple(s[Str.QA_PICTURES], Icons.Filled.Image, "$primaryBase/Pictures"),
+        Triple(s[Str.QA_DOCUMENTS], Icons.Filled.Description, "$primaryBase/Documents"),
+        Triple(s[Str.QA_MOVIES], Icons.Filled.Movie, "$primaryBase/Movies"),
+        Triple(s[Str.QA_MUSIC], Icons.Filled.MusicNote, "$primaryBase/Music"),
     )
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Files", fontWeight = FontWeight.SemiBold) },
+                title = { Text(s[Str.APP_NAME], fontWeight = FontWeight.SemiBold) },
             )
         },
         bottomBar = {
@@ -232,7 +235,7 @@ fun StorageHomeScreen(
                 ClipboardBar(
                     clipboard = clipboard,
                     canPasteHere = false,
-                    disabledPasteReason = "Open a folder to paste here",
+                    disabledPasteReason = s[Str.OPEN_FOLDER_TO_PASTE],
                     onPasteHere = {},
                     onPickFavorite = onClipboardToFavorite,
                     onClear = onClearClipboard,
@@ -264,13 +267,13 @@ fun StorageHomeScreen(
                             modifier = Modifier.padding(16.dp),
                         ) {
                             Text(
-                                text = "Storage access",
+                                text = s[Str.STORAGE_ACCESS],
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                             )
                             Text(
-                                text = "Grant All-files access to browse and manage Internal Storage.",
+                                text = s[Str.GRANT_ALL_FILES_DESC],
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                             )
@@ -279,11 +282,11 @@ fun StorageHomeScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Button(onClick = onGrantAllFilesAccess) {
-                                    Text("Grant access")
+                                    Text(s[Str.GRANT_ACCESS])
                                 }
                                 Spacer(Modifier.weight(1f))
                                 TextButton(onClick = onDismissOnboarding) {
-                                    Text("Dismiss")
+                                    Text(s[Str.DISMISS])
                                 }
                             }
                         }
@@ -293,7 +296,7 @@ fun StorageHomeScreen(
 
             // 1. Storage Volumes
             item(key = "storage-section") {
-                SectionHeader("Storage")
+                SectionHeader(s[Str.STORAGE])
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -330,14 +333,14 @@ fun StorageHomeScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    SectionHeader("Servers")
+                    SectionHeader(s[Str.SERVERS])
                     TextButton(
                         onClick = {
                             onCancelGDriveSignIn()
                             showAddServerDialog = true
                         },
                     ) {
-                        Text("+ Add Server")
+                        Text(s[Str.ADD_SERVER_BTN])
                     }
                 }
                 Card(
@@ -356,13 +359,13 @@ fun StorageHomeScreen(
                                 .padding(horizontal = 16.dp, vertical = 14.dp),
                         ) {
                             Text(
-                                text = "No servers configured",
+                                text = s[Str.NO_SERVERS_CONFIGURED],
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                             )
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                text = "Tap + Add Server to connect Google Drive or an FTP server.",
+                                text = s[Str.NO_SERVERS_HINT],
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -409,7 +412,7 @@ fun StorageHomeScreen(
 
             // 3. Quick Access
             item(key = "quick-access") {
-                SectionHeader("Quick Access")
+                SectionHeader(s[Str.QUICK_ACCESS])
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -417,7 +420,7 @@ fun StorageHomeScreen(
                 ) {
                     for ((label, icon, pathStr) in quickAccess) {
                         AssistChip(
-                            onClick = { onOpenQuickPath(VfsPath.Local(pathStr), "Internal") },
+                            onClick = { onOpenQuickPath(VfsPath.Local(pathStr), s[Str.INTERNAL]) },
                             leadingIcon = { Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp)) },
                             label = { Text(label) },
                         )
@@ -432,9 +435,9 @@ fun StorageHomeScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    SectionHeader("Recent Favorites")
+                    SectionHeader(s[Str.RECENT_FAVORITES])
                     TextButton(onClick = onSeeAllFavorites) {
-                        Text("See all →")
+                        Text(s[Str.SEE_ALL_ARROW])
                     }
                 }
                 Card(
@@ -450,13 +453,13 @@ fun StorageHomeScreen(
                                 .padding(horizontal = 16.dp, vertical = 14.dp),
                         ) {
                             Text(
-                                text = "No favorites yet",
+                                text = s[Str.NO_FAVORITES_YET],
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                             )
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                text = "Bookmark any folder or file from Browse for one-tap access and quick transfers.",
+                                text = s[Str.NO_FAVORITES_HINT],
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -490,12 +493,12 @@ fun StorageHomeScreen(
         var text by remember(fav.id) { mutableStateOf(fav.name) }
         AlertDialog(
             onDismissRequest = { renamingFavorite = null },
-            title = { Text("Rename Favorite") },
+            title = { Text(s[Str.RENAME_FAVORITE]) },
             text = {
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it },
-                    label = { Text("Name") },
+                    label = { Text(s[Str.NAME]) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -507,11 +510,11 @@ fun StorageHomeScreen(
                         renamingFavorite = null
                     },
                 ) {
-                    Text("Save")
+                    Text(s[Str.SAVE])
                 }
             },
             dismissButton = {
-                TextButton(onClick = { renamingFavorite = null }) { Text("Cancel") }
+                TextButton(onClick = { renamingFavorite = null }) { Text(s[Str.CANCEL]) }
             },
         )
     }
@@ -613,6 +616,7 @@ private fun FavoriteRow(
     onMoveDown: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     var menuOpen by remember { mutableStateOf(false) }
     val subtitle = when (val p = favorite.path) {
         is VfsPath.Local -> p.normalized
@@ -647,7 +651,7 @@ private fun FavoriteRow(
                     Spacer(Modifier.width(6.dp))
                     Icon(
                         Icons.Filled.Usb,
-                        contentDescription = "External/SAF",
+                        contentDescription = s[Str.EXTERNAL_SAF],
                         modifier = Modifier.size(15.dp),
                     )
                 }
@@ -679,21 +683,21 @@ private fun FavoriteRow(
         }
         Box {
             IconButton(onClick = { menuOpen = true }) {
-                Icon(Icons.Filled.MoreVert, contentDescription = "More actions for ${favorite.name}")
+                Icon(Icons.Filled.MoreVert, contentDescription = s.format(Str.MORE_ACTIONS_FOR, favorite.name))
             }
             DropdownMenu(
                 expanded = menuOpen,
                 onDismissRequest = { menuOpen = false },
             ) {
                 DropdownMenuItem(
-                    text = { Text("Rename") },
+                    text = { Text(s[Str.RENAME]) },
                     onClick = {
                         menuOpen = false
                         onRename()
                     },
                 )
                 DropdownMenuItem(
-                    text = { Text("Properties") },
+                    text = { Text(s[Str.PROPERTIES]) },
                     onClick = {
                         menuOpen = false
                         onProperties()
@@ -701,7 +705,7 @@ private fun FavoriteRow(
                 )
                 if (canMoveUp) {
                     DropdownMenuItem(
-                        text = { Text("Move up") },
+                        text = { Text(s[Str.MOVE_UP]) },
                         onClick = {
                             menuOpen = false
                             onMoveUp()
@@ -710,7 +714,7 @@ private fun FavoriteRow(
                 }
                 if (canMoveDown) {
                     DropdownMenuItem(
-                        text = { Text("Move down") },
+                        text = { Text(s[Str.MOVE_DOWN]) },
                         onClick = {
                             menuOpen = false
                             onMoveDown()
@@ -719,7 +723,7 @@ private fun FavoriteRow(
                 }
                 HorizontalDivider()
                 DropdownMenuItem(
-                    text = { Text("Remove", color = MaterialTheme.colorScheme.error) },
+                    text = { Text(s[Str.REMOVE], color = MaterialTheme.colorScheme.error) },
                     onClick = {
                         menuOpen = false
                         onRemove()
@@ -739,6 +743,7 @@ private fun ServerRow(
     onEdit: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     var menuOpen by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -773,21 +778,21 @@ private fun ServerRow(
         }
         Box {
             IconButton(onClick = { menuOpen = true }) {
-                Icon(Icons.Filled.MoreVert, contentDescription = "More actions for $title")
+                Icon(Icons.Filled.MoreVert, contentDescription = s.format(Str.MORE_ACTIONS_FOR, title))
             }
             DropdownMenu(
                 expanded = menuOpen,
                 onDismissRequest = { menuOpen = false },
             ) {
                 DropdownMenuItem(
-                    text = { Text("Edit") },
+                    text = { Text(s[Str.EDIT]) },
                     onClick = {
                         menuOpen = false
                         onEdit()
                     },
                 )
                 DropdownMenuItem(
-                    text = { Text("Remove", color = MaterialTheme.colorScheme.error) },
+                    text = { Text(s[Str.REMOVE], color = MaterialTheme.colorScheme.error) },
                     onClick = {
                         menuOpen = false
                         onRemove()
@@ -832,13 +837,14 @@ fun AddServerDialog(
     onCopiedMessage: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     // 0 = Google Drive (default), 1 = FTP Server
     var selectedType by remember { mutableIntStateOf(0) }
     var ftpSaveTrigger by remember { mutableIntStateOf(0) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add Server") },
+        title = { Text(s[Str.ADD_SERVER]) },
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -862,7 +868,7 @@ fun AddServerDialog(
                         },
                         shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
                     ) {
-                        Text("FTP Server")
+                        Text(s[Str.FTP_SERVER])
                     }
                 }
 
@@ -892,12 +898,12 @@ fun AddServerDialog(
         confirmButton = {
             if (selectedType == 1) {
                 Button(onClick = { ftpSaveTrigger++ }) {
-                    Text("Save")
+                    Text(s[Str.SAVE])
                 }
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
+            TextButton(onClick = onDismiss) { Text(s[Str.CLOSE]) }
         },
     )
 }
@@ -930,16 +936,17 @@ fun EditGDriveServerDialog(
     onCopiedMessage: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     var reauthMode by remember(bookmark.id, startInReauthMode) { mutableStateOf(startInReauthMode) }
     var name by remember(bookmark.id) { mutableStateOf(bookmark.name) }
     var startFolder by remember(bookmark.id) { mutableStateOf(bookmark.initialPath) }
 
-    val accountLine = remember(bookmark) {
+    val accountLine = remember(bookmark, s) {
         val who = bookmark.email.ifBlank { bookmark.accountName.ifBlank { "Google Drive" } }
         val modeLabel = when (bookmark.authMode) {
-            GDriveAuthMode.SYSTEM_ACCOUNT -> "Android Account"
-            GDriveAuthMode.BROWSER_PKCE -> "Browser OAuth"
-            GDriveAuthMode.PASTED_TOKEN -> "Pasted Token"
+            GDriveAuthMode.SYSTEM_ACCOUNT -> s[Str.GDRIVE_AUTH_ANDROID]
+            GDriveAuthMode.BROWSER_PKCE -> s[Str.GDRIVE_AUTH_BROWSER]
+            GDriveAuthMode.PASTED_TOKEN -> s[Str.GDRIVE_AUTH_TOKEN]
         }
         "$who · $modeLabel"
     }
@@ -947,7 +954,7 @@ fun EditGDriveServerDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(if (reauthMode) "Sign in to Google Drive" else "Edit Google Drive")
+            Text(if (reauthMode) s[Str.SIGN_IN_GDRIVE] else s[Str.EDIT_GDRIVE])
         },
         text = {
             Column(
@@ -987,14 +994,14 @@ fun EditGDriveServerDialog(
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it },
-                        label = { Text("Display name") },
+                        label = { Text(s[Str.DISPLAY_NAME]) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
                     OutlinedTextField(
                         value = startFolder,
                         onValueChange = { startFolder = it },
-                        label = { Text("Start folder") },
+                        label = { Text(s[Str.START_FOLDER]) },
                         placeholder = { Text("/") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
@@ -1003,14 +1010,14 @@ fun EditGDriveServerDialog(
                         onClick = { reauthMode = true },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Re-authenticate")
+                        Text(s[Str.REAUTHENTICATE])
                     }
                     TextButton(
                         onClick = onRemove,
                         colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Remove Server")
+                        Text(s[Str.REMOVE_SERVER])
                     }
                 }
             }
@@ -1028,7 +1035,7 @@ fun EditGDriveServerDialog(
                         )
                     },
                 ) {
-                    Text("Save")
+                    Text(s[Str.SAVE])
                 }
             }
         },
@@ -1043,7 +1050,7 @@ fun EditGDriveServerDialog(
                     }
                 },
             ) {
-                Text(if (reauthMode && !startInReauthMode) "Back" else "Cancel")
+                Text(if (reauthMode && !startInReauthMode) s[Str.BACK] else s[Str.CANCEL])
             }
         },
     )
@@ -1075,6 +1082,7 @@ private fun GDriveServerForm(
     onCopiedMessage: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     var displayName by remember { mutableStateOf(initialDisplayName) }
     var startFolder by remember { mutableStateOf(initialStartFolder) }
 
@@ -1105,8 +1113,8 @@ private fun GDriveServerForm(
         OutlinedTextField(
             value = displayName,
             onValueChange = { displayName = it },
-            label = { Text("Display name (optional)") },
-            placeholder = { Text("Defaults to Google email") },
+            label = { Text(s[Str.DISPLAY_NAME_OPTIONAL]) },
+            placeholder = { Text(s[Str.DEFAULTS_TO_GOOGLE_EMAIL]) },
             singleLine = true,
             enabled = !isBusy,
             modifier = Modifier.fillMaxWidth(),
@@ -1114,7 +1122,7 @@ private fun GDriveServerForm(
         OutlinedTextField(
             value = startFolder,
             onValueChange = { startFolder = it },
-            label = { Text("Start folder") },
+            label = { Text(s[Str.START_FOLDER]) },
             placeholder = { Text("/") },
             singleLine = true,
             enabled = !isBusy,
@@ -1127,18 +1135,18 @@ private fun GDriveServerForm(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(
-                text = "Sign-in method",
+                text = s[Str.SIGN_IN_METHOD],
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
             )
             TextButton(onClick = { showSetupHelp = !showSetupHelp }) {
                 Icon(
                     Icons.AutoMirrored.Filled.HelpOutline,
-                    contentDescription = "OAuth setup help",
+                    contentDescription = s[Str.OAUTH_SETUP_HELP],
                     modifier = Modifier.size(16.dp),
                 )
                 Spacer(Modifier.width(4.dp))
-                Text(if (showSetupHelp) "Hide setup info" else "GCP OAuth setup")
+                Text(if (showSetupHelp) s[Str.HIDE_SETUP_INFO] else s[Str.GCP_OAUTH_SETUP])
             }
         }
 
@@ -1146,7 +1154,7 @@ private fun GDriveServerForm(
             GDriveOAuthSetupHelpCard(
                 onCopy = { label, text ->
                     UiFormatters.copyToSystemClipboard(context, label, text)
-                    onCopiedMessage("Copied $label")
+                    onCopiedMessage(s.format(Str.COPIED_ITEM, label))
                 },
             )
         }
@@ -1161,7 +1169,7 @@ private fun GDriveServerForm(
                 enabled = !isBusy,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Sign in with Google Account")
+                Text(s[Str.SIGN_IN_GOOGLE_ACCOUNT])
             }
         }
 
@@ -1171,7 +1179,7 @@ private fun GDriveServerForm(
             enabled = !isBusy,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Sign in with Browser")
+            Text(s[Str.SIGN_IN_BROWSER])
         }
 
         if (expandedSection == 1) {
@@ -1187,7 +1195,7 @@ private fun GDriveServerForm(
                     OutlinedTextField(
                         value = clientId,
                         onValueChange = { clientId = it },
-                        label = { Text("OAuth Client ID (Desktop app)") },
+                        label = { Text(s[Str.OAUTH_CLIENT_ID_LABEL]) },
                         placeholder = { Text("YOUR_CLIENT_ID.apps.googleusercontent.com") },
                         singleLine = true,
                         enabled = !isBusy,
@@ -1196,7 +1204,7 @@ private fun GDriveServerForm(
                     OutlinedTextField(
                         value = clientSecret,
                         onValueChange = { clientSecret = it },
-                        label = { Text("Client secret (required for Desktop-type clients)") },
+                        label = { Text(s[Str.CLIENT_SECRET_REQUIRED_LABEL]) },
                         placeholder = { Text("YOUR_CLIENT_SECRET") },
                         singleLine = true,
                         enabled = !isBusy,
@@ -1205,7 +1213,7 @@ private fun GDriveServerForm(
                             IconButton(onClick = { showSecret = !showSecret }) {
                                 Icon(
                                     if (showSecret) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                    contentDescription = "Toggle client secret visibility",
+                                    contentDescription = s[Str.TOGGLE_CLIENT_SECRET_VISIBILITY],
                                 )
                             }
                         },
@@ -1218,7 +1226,7 @@ private fun GDriveServerForm(
                         enabled = !isBusy,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Open Browser & Sign In")
+                        Text(s[Str.OPEN_BROWSER_SIGN_IN])
                     }
                 }
             }
@@ -1230,7 +1238,7 @@ private fun GDriveServerForm(
             enabled = !isBusy,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Paste Token / JSON")
+            Text(s[Str.PASTE_TOKEN_JSON])
         }
 
         if (expandedSection == 2) {
@@ -1244,14 +1252,14 @@ private fun GDriveServerForm(
                     modifier = Modifier.padding(12.dp),
                 ) {
                     Text(
-                        text = "Paste JSON from 'minifile gdrive-auth' or 'rclone authorize \"drive\"', an rclone.conf block, or a bare access token.",
+                        text = s[Str.PASTE_TOKEN_HINT],
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     OutlinedTextField(
                         value = pastedText,
                         onValueChange = { pastedText = it },
-                        label = { Text("Token or JSON") },
+                        label = { Text(s[Str.TOKEN_OR_JSON]) },
                         minLines = 3,
                         maxLines = 6,
                         enabled = !isBusy,
@@ -1259,7 +1267,7 @@ private fun GDriveServerForm(
                     )
                     if (parsedPastePreview != null && parsedPastePreview.refreshToken.isBlank()) {
                         Text(
-                            text = "No refresh token — expires in about an hour.",
+                            text = s[Str.NO_REFRESH_TOKEN_WARN],
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.tertiary,
                         )
@@ -1267,7 +1275,7 @@ private fun GDriveServerForm(
                     OutlinedTextField(
                         value = pasteClientId,
                         onValueChange = { pasteClientId = it },
-                        label = { Text("Client ID (optional, enables refresh)") },
+                        label = { Text(s[Str.CLIENT_ID_OPTIONAL_LABEL]) },
                         placeholder = { Text("YOUR_CLIENT_ID.apps.googleusercontent.com") },
                         singleLine = true,
                         enabled = !isBusy,
@@ -1276,7 +1284,7 @@ private fun GDriveServerForm(
                     OutlinedTextField(
                         value = pasteClientSecret,
                         onValueChange = { pasteClientSecret = it },
-                        label = { Text("Client secret (optional)") },
+                        label = { Text(s[Str.CLIENT_SECRET_OPTIONAL_LABEL]) },
                         placeholder = { Text("YOUR_CLIENT_SECRET") },
                         singleLine = true,
                         enabled = !isBusy,
@@ -1285,7 +1293,7 @@ private fun GDriveServerForm(
                             IconButton(onClick = { showPasteSecret = !showPasteSecret }) {
                                 Icon(
                                     if (showPasteSecret) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                    contentDescription = "Toggle client secret visibility",
+                                    contentDescription = s[Str.TOGGLE_CLIENT_SECRET_VISIBILITY],
                                 )
                             }
                         },
@@ -1304,7 +1312,7 @@ private fun GDriveServerForm(
                         enabled = !isBusy && pastedText.isNotBlank(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Verify & Connect")
+                        Text(s[Str.VERIFY_AND_CONNECT])
                     }
                 }
             }
@@ -1328,27 +1336,27 @@ private fun GDriveServerForm(
                             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(10.dp))
                             Text(
-                                text = "Waiting for browser…",
+                                text = s[Str.WAITING_FOR_BROWSER],
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Medium,
                             )
                         }
                         Text(
-                            text = "Complete sign-in in a browser on this device (redirect targets 127.0.0.1).",
+                            text = s[Str.COMPLETE_SIGN_IN_BROWSER_HINT],
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
                                 onClick = {
-                                    UiFormatters.copyToSystemClipboard(context, "Google Sign-In URL", signInState.authUrl)
-                                    onCopiedMessage("Copied sign-in link")
+                                    UiFormatters.copyToSystemClipboard(context, s[Str.GOOGLE_SIGN_IN_URL], signInState.authUrl)
+                                    onCopiedMessage(s[Str.COPIED_SIGN_IN_LINK])
                                 },
                             ) {
-                                Text("Copy link")
+                                Text(s[Str.COPY_LINK])
                             }
                             TextButton(onClick = onCancelSignIn) {
-                                Text("Cancel")
+                                Text(s[Str.CANCEL])
                             }
                         }
                     }
@@ -1367,7 +1375,7 @@ private fun GDriveServerForm(
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(10.dp))
-                        Text("Verifying with Google…", style = MaterialTheme.typography.bodyMedium)
+                        Text(s[Str.VERIFYING_WITH_GOOGLE], style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
@@ -1394,7 +1402,7 @@ private fun GDriveServerForm(
                                         onStartBrowserSignIn(clientId, clientSecret, displayName, startFolder)
                                     },
                                 ) {
-                                    Text("Try again")
+                                    Text(s[Str.TRY_AGAIN])
                                 }
                             }
                             if (signInState.authUrl != null) {
@@ -1402,13 +1410,13 @@ private fun GDriveServerForm(
                                     onClick = {
                                         UiFormatters.copyToSystemClipboard(
                                             context,
-                                            "Google Sign-In URL",
+                                            s[Str.GOOGLE_SIGN_IN_URL],
                                             signInState.authUrl,
                                         )
-                                        onCopiedMessage("Copied sign-in link")
+                                        onCopiedMessage(s[Str.COPIED_SIGN_IN_LINK])
                                     },
                                 ) {
-                                    Text("Copy link")
+                                    Text(s[Str.COPY_LINK])
                                 }
                             }
                         }
@@ -1425,6 +1433,7 @@ private fun GDriveServerForm(
 private fun GDriveOAuthSetupHelpCard(
     onCopy: (label: String, value: String) -> Unit,
 ) {
+    val s = LocalAppStrings.current
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
@@ -1435,30 +1444,30 @@ private fun GDriveOAuthSetupHelpCard(
             modifier = Modifier.padding(12.dp),
         ) {
             Text(
-                text = "Google Cloud Console Setup (Drive API enabled)",
+                text = s[Str.GCP_SETUP_TITLE],
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = "1. For 1-tap 'Sign in with Google Account': create an Android OAuth client in GCP with this APK's package name and signing SHA-1:",
+                text = s[Str.GCP_SETUP_STEP_1],
                 style = MaterialTheme.typography.bodySmall,
             )
             CopyableMonoField(
-                label = "Package name",
+                label = s[Str.PACKAGE_NAME],
                 value = MINIFILE_APK_PACKAGE,
-                onCopy = { onCopy("Package name", MINIFILE_APK_PACKAGE) },
+                onCopy = { onCopy(s[Str.PACKAGE_NAME], MINIFILE_APK_PACKAGE) },
             )
             CopyableMonoField(
-                label = "Certificate SHA-1",
+                label = s[Str.CERTIFICATE_SHA1],
                 value = MINIFILE_SIGNING_SHA1,
-                onCopy = { onCopy("SHA-1 fingerprint", MINIFILE_SIGNING_SHA1) },
+                onCopy = { onCopy(s[Str.SHA1_FINGERPRINT], MINIFILE_SIGNING_SHA1) },
             )
             Text(
-                text = "2. For 'Sign in with Browser' or 'minifile gdrive-auth': publish the OAuth consent screen 'In production' (Testing mode expires refresh tokens after 7 days) and create a Desktop app OAuth client.",
+                text = s[Str.GCP_SETUP_STEP_2],
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
-                text = "Note: Self-built APKs signed with another key or devices without Play Services should use Sign in with Browser or Paste Token.",
+                text = s[Str.GCP_SETUP_NOTE],
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1472,6 +1481,7 @@ private fun CopyableMonoField(
     value: String,
     onCopy: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -1494,7 +1504,7 @@ private fun CopyableMonoField(
         IconButton(onClick = onCopy, modifier = Modifier.size(28.dp)) {
             Icon(
                 Icons.Filled.ContentCopy,
-                contentDescription = "Copy $label",
+                contentDescription = s.format(Str.COPY_LABEL, label),
                 modifier = Modifier.size(16.dp),
             )
         }
@@ -1515,6 +1525,7 @@ private fun FtpServerForm(
         initialPath: String,
     ) -> Unit,
 ) {
+    val s = LocalAppStrings.current
     var name by remember(existing?.id) { mutableStateOf(existing?.name ?: "") }
     var host by remember(existing?.id) { mutableStateOf(existing?.host ?: "") }
     var portText by remember(existing?.id) { mutableStateOf((existing?.port ?: 21).toString()) }
@@ -1534,16 +1545,16 @@ private fun FtpServerForm(
             .substringBefore('/')
             .substringBefore(':')
         if (cleanHost.isEmpty()) {
-            errorMsg = "Enter a valid host or IP address"
+            errorMsg = s[Str.ERR_ENTER_VALID_HOST]
             return@LaunchedEffect
         }
         val parsedPort = portText.trim().toIntOrNull()
         if (parsedPort == null || parsedPort !in 1..65535) {
-            errorMsg = "Port must be between 1 and 65535"
+            errorMsg = s[Str.ERR_PORT_RANGE_1_65535]
             return@LaunchedEffect
         }
         if (!anonymous && username.trim().isEmpty()) {
-            errorMsg = "Enter a username or enable Anonymous login"
+            errorMsg = s[Str.ERR_ENTER_USER_OR_ANON]
             return@LaunchedEffect
         }
         val cleanName = name.trim().ifEmpty { cleanHost }
@@ -1555,8 +1566,8 @@ private fun FtpServerForm(
         OutlinedTextField(
             value = name,
             onValueChange = { name = it },
-            label = { Text("Name (optional)") },
-            placeholder = { Text("My NAS / PC") },
+            label = { Text(s[Str.NAME_OPTIONAL]) },
+            placeholder = { Text(s[Str.MY_NAS_PC]) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -1566,7 +1577,7 @@ private fun FtpServerForm(
                 host = it
                 errorMsg = null
             },
-            label = { Text("Host / IP") },
+            label = { Text(s[Str.HOST_IP]) },
             placeholder = { Text("192.168.1.100") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
@@ -1577,7 +1588,7 @@ private fun FtpServerForm(
                 portText = it
                 errorMsg = null
             },
-            label = { Text("Port") },
+            label = { Text(s[Str.PORT]) },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
@@ -1585,7 +1596,7 @@ private fun FtpServerForm(
         OutlinedTextField(
             value = initialPath,
             onValueChange = { initialPath = it },
-            label = { Text("Remote path") },
+            label = { Text(s[Str.REMOTE_PATH]) },
             placeholder = { Text("/") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
@@ -1597,7 +1608,7 @@ private fun FtpServerForm(
                 .fillMaxWidth()
                 .clickable { anonymous = !anonymous },
         ) {
-            Text("Anonymous login")
+            Text(s[Str.ANONYMOUS_LOGIN])
             Switch(checked = anonymous, onCheckedChange = { anonymous = it })
         }
         if (!anonymous) {
@@ -1607,21 +1618,21 @@ private fun FtpServerForm(
                     username = it
                     errorMsg = null
                 },
-                label = { Text("Username") },
+                label = { Text(s[Str.USERNAME]) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
                 value = password,
                 onValueChange = { password = it },
-                label = { Text("Password") },
+                label = { Text(s[Str.PASSWORD]) },
                 singleLine = true,
                 visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                 trailingIcon = {
                     IconButton(onClick = { showPassword = !showPassword }) {
                         Icon(
                             if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                            contentDescription = "Toggle password visibility",
+                            contentDescription = s[Str.TOGGLE_PASSWORD_VISIBILITY],
                         )
                     }
                 },
@@ -1652,10 +1663,11 @@ fun AddEditFtpServerDialog(
     ) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     var saveTrigger by remember { mutableIntStateOf(0) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (existing == null) "Add FTP Server" else "Edit FTP Server") },
+        title = { Text(if (existing == null) s[Str.ADD_FTP_SERVER] else s[Str.EDIT_FTP_SERVER]) },
         text = {
             Column(
                 modifier = Modifier
@@ -1671,11 +1683,11 @@ fun AddEditFtpServerDialog(
         },
         confirmButton = {
             Button(onClick = { saveTrigger++ }) {
-                Text("Save")
+                Text(s[Str.SAVE])
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(s[Str.CANCEL]) }
         },
     )
 }
@@ -1699,9 +1711,11 @@ private fun VolumeRow(
     onClick: () -> Unit,
     onMountClick: (() -> Unit)?,
 ) {
+    val s = LocalAppStrings.current
     val hasSpace = volume.totalBytes > 0L && volume.freeBytes >= 0L
     val usedBytes = (volume.totalBytes - volume.freeBytes).coerceAtLeast(0L)
     val usedRatio = if (hasSpace) (usedBytes.toFloat() / volume.totalBytes.toFloat()).coerceIn(0f, 1f) else 0f
+    val displayVolumeName = if (volume.kind == VolumeKind.PRIMARY) s[Str.INTERNAL_STORAGE] else volume.name
 
     Column(
         modifier = Modifier
@@ -1718,11 +1732,11 @@ private fun VolumeRow(
             )
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(volume.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                Text(displayVolumeName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                 val spaceText = if (hasSpace) {
-                    "${UiFormatters.formatSize(context, volume.freeBytes)} free of ${UiFormatters.formatSize(context, volume.totalBytes)}"
+                    s.format(Str.SPACE_FREE_OF, UiFormatters.formatSize(context, volume.freeBytes), UiFormatters.formatSize(context, volume.totalBytes))
                 } else {
-                    volume.subtitle ?: "Tap to browse"
+                    volume.subtitle ?: s[Str.TAP_TO_BROWSE]
                 }
                 Text(
                     text = spaceText,
@@ -1732,7 +1746,7 @@ private fun VolumeRow(
             }
             if (onMountClick != null) {
                 OutlinedButton(onClick = onMountClick) {
-                    Text("Mount")
+                    Text(s[Str.MOUNT])
                 }
             }
         }

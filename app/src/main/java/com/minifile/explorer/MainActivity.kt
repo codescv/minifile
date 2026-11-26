@@ -57,8 +57,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -70,10 +72,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.GDriveServerBookmark
 import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.vfs.PathUtils
@@ -96,6 +101,7 @@ import com.minifile.explorer.ui.components.ConflictDialog
 import com.minifile.explorer.ui.components.HotspotLinkDialog
 import com.minifile.explorer.ui.components.PeerConsentDialog
 import com.minifile.explorer.ui.components.SaveSharedFilesSheet
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.screens.ArchivePreviewScreen
 import com.minifile.explorer.ui.screens.BrowserScreen
 import com.minifile.explorer.ui.screens.EditGDriveServerDialog
@@ -107,6 +113,7 @@ import com.minifile.explorer.ui.screens.WirelessScreen
 import com.minifile.explorer.ui.theme.MiniFileTheme
 import com.minifile.explorer.ui.util.NearbyPermissions
 import com.minifile.explorer.ui.util.UiFormatters
+import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -164,17 +171,31 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            MiniFileTheme(
-                themeMode = settings.themeMode,
-                dynamicColor = settings.dynamicColor,
-            ) {
-                MiniFileRoot(
-                    viewModel = viewModel,
-                    hasAllFilesAccess = hasAllFilesAccess,
-                    onRefreshStoragePermission = {
-                        hasAllFilesAccess = AndroidVolumeProvider.hasAllFilesAccess(this@MainActivity)
-                    },
-                )
+            val config = LocalConfiguration.current
+            val systemLocale = config.locales[0] ?: Locale.getDefault()
+            val resolvedLanguage = remember(settings.appLanguage, systemLocale) {
+                AppI18n.resolve(settings.appLanguage, systemLocale)
+            }
+            SideEffect {
+                AppI18n.setResolved(settings.appLanguage, resolvedLanguage)
+            }
+            val appStrings = remember(resolvedLanguage) {
+                AppI18n.stringsFor(resolvedLanguage)
+            }
+
+            CompositionLocalProvider(LocalAppStrings provides appStrings) {
+                MiniFileTheme(
+                    themeMode = settings.themeMode,
+                    dynamicColor = settings.dynamicColor,
+                ) {
+                    MiniFileRoot(
+                        viewModel = viewModel,
+                        hasAllFilesAccess = hasAllFilesAccess,
+                        onRefreshStoragePermission = {
+                            hasAllFilesAccess = AndroidVolumeProvider.hasAllFilesAccess(this@MainActivity)
+                        },
+                    )
+                }
             }
         }
     }
@@ -298,6 +319,7 @@ private fun MiniFileRoot(
     onRefreshStoragePermission: () -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val container = viewModel.container
 
     val activeTab by viewModel.activeTab.collectAsState()
@@ -441,10 +463,11 @@ private fun MiniFileRoot(
             val reauthServerId = event.reauthGDriveServerId
             val dest = event.destinationToOpen
             val canRetry = event.error != null && container.operationRegistry.canRetry(event.id)
+            val curStrings = AppI18n.current()
             val actionLabel = when {
-                reauthServerId != null -> "Sign in"
+                reauthServerId != null -> curStrings[Str.SIGN_IN]
                 dest != null -> event.openLabel
-                canRetry -> "Retry"
+                canRetry -> curStrings[Str.RETRY]
                 else -> null
             }
             val result = snackbarHostState.showSnackbar(
@@ -478,7 +501,7 @@ private fun MiniFileRoot(
             viewModel.dismissReauthGDriveDialog()
             viewModel.resetGDriveSignIn()
             viewModel.clearShareSaveError()
-            viewModel.emitSimpleMessage("Signed in to Google Drive '${success.bookmark.name}'")
+            viewModel.emitSimpleMessage(AppI18n.current().format(Str.SIGNED_IN_GDRIVE, success.bookmark.name))
             if (browser.currentDir != null) {
                 viewModel.reloadCurrentDirectory(silent = false)
             }
@@ -488,9 +511,10 @@ private fun MiniFileRoot(
     // Silent startup update notice (DESIGN.md §7.1 / ARCHITECTURE.md §10.2)
     LaunchedEffect(Unit) {
         container.updateManager.silentAvailablePrompt.collect { release ->
+            val curStrings = AppI18n.current()
             val result = snackbarHostState.showSnackbar(
-                message = "MiniFile ${release.tagName} is available",
-                actionLabel = "View",
+                message = curStrings.format(Str.UPDATE_AVAILABLE_SNACKBAR, release.tagName),
+                actionLabel = curStrings[Str.VIEW],
                 duration = SnackbarDuration.Long,
             )
             when (result) {
@@ -630,8 +654,8 @@ private fun MiniFileRoot(
                         NavigationBarItem(
                             selected = selectedTab == MainTab.BROWSE,
                             onClick = { viewModel.selectTab(MainTab.BROWSE) },
-                            icon = { Icon(Icons.Filled.Folder, contentDescription = "Browse") },
-                            label = { Text("Browse") },
+                            icon = { Icon(Icons.Filled.Folder, contentDescription = s[Str.TAB_BROWSE]) },
+                            label = { Text(s[Str.TAB_BROWSE]) },
                         )
                         NavigationBarItem(
                             selected = selectedTab == MainTab.WIRELESS,
@@ -644,10 +668,10 @@ private fun MiniFileRoot(
                                         }
                                     },
                                 ) {
-                                    Icon(Icons.Filled.Wifi, contentDescription = MainTab.WIRELESS.label)
+                                    Icon(Icons.Filled.Wifi, contentDescription = s[Str.TAB_TRANSFER])
                                 }
                             },
-                            label = { Text(MainTab.WIRELESS.label) },
+                            label = { Text(s[Str.TAB_TRANSFER]) },
                         )
                         NavigationBarItem(
                             selected = selectedTab == MainTab.TOOLS,
@@ -660,10 +684,10 @@ private fun MiniFileRoot(
                                         }
                                     },
                                 ) {
-                                    Icon(Icons.Filled.Settings, contentDescription = MainTab.TOOLS.label)
+                                    Icon(Icons.Filled.Settings, contentDescription = s[Str.TAB_SETTINGS])
                                 }
                             },
-                            label = { Text(MainTab.TOOLS.label) },
+                            label = { Text(s[Str.TAB_SETTINGS]) },
                         )
                     }
                 }
@@ -733,7 +757,9 @@ private fun MiniFileRoot(
                                             )
                                         }.onFailure { e ->
                                             pendingSafMount = null
-                                            viewModel.emitSimpleMessage("Could not open system folder picker: ${e.message}")
+                                            viewModel.emitSimpleMessage(
+                                                AppI18n.current().format(Str.COULD_NOT_OPEN_FOLDER_PICKER, e.message ?: ""),
+                                            )
                                         }
                                     },
                                     onPickGoogleAccount = pickGoogleAccount,
@@ -754,12 +780,15 @@ private fun MiniFileRoot(
                                         runCatching { context.startActivity(intent) }
                                             .onSuccess {
                                                 viewModel.emitSimpleMessage(
-                                                    "Allow 'Install unknown apps' for Files, then return to install the update automatically",
+                                                    AppI18n.current()[Str.ALLOW_INSTALL_UNKNOWN_APPS_HINT],
                                                 )
                                             }
                                             .onFailure { e ->
                                                 viewModel.emitSimpleMessage(
-                                                    "Could not open install permission settings: ${e.message ?: e.javaClass.simpleName}",
+                                                    AppI18n.current().format(
+                                                        Str.COULD_NOT_OPEN_INSTALL_SETTINGS,
+                                                        e.message ?: e.javaClass.simpleName,
+                                                    ),
                                                 )
                                             }
                                     },
@@ -958,6 +987,7 @@ private fun ActiveOperationPill(
     count: Int,
     onClick: () -> Unit,
 ) {
+    val s = LocalAppStrings.current
     Surface(
         shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
         color = MaterialTheme.colorScheme.secondaryContainer,
@@ -983,7 +1013,7 @@ private fun ActiveOperationPill(
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    text = if (count > 1) "$title (+${count - 1} more)" else title,
+                    text = if (count > 1) s.format(Str.ACTIVE_OP_MORE, title, count - 1) else title,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
@@ -992,7 +1022,7 @@ private fun ActiveOperationPill(
             }
             Spacer(Modifier.width(8.dp))
             Text(
-                text = "Details",
+                text = s[Str.DETAILS],
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary,
             )

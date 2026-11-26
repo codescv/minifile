@@ -17,6 +17,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,6 +46,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -85,11 +88,15 @@ import com.minifile.explorer.core.feedback.FeedbackEmailTargetResolver
 import com.minifile.explorer.core.feedback.FeedbackMetadata
 import com.minifile.explorer.core.feedback.FeedbackSendIntentSpec
 import com.minifile.explorer.core.feedback.ResolvedEmailActivity
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.AppLanguage
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.data.AndroidVolumeProvider
 import com.minifile.explorer.data.update.InstallLaunchResult
 import com.minifile.explorer.data.update.UpdateUiState
 import com.minifile.explorer.ui.MainViewModel
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
@@ -104,7 +111,7 @@ private data class StagedScreenshot(
     val mimeType: String,
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ToolsScreen(
     viewModel: MainViewModel,
@@ -112,6 +119,7 @@ fun ToolsScreen(
     onRequestUnknownSourcesPermission: (Intent) -> Unit,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val scope = rememberCoroutineScope()
 
     val settings by viewModel.settings.collectAsState()
@@ -160,7 +168,7 @@ fun ToolsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Settings", fontWeight = FontWeight.SemiBold) },
+                title = { Text(s[Str.TAB_SETTINGS], fontWeight = FontWeight.SemiBold) },
             )
         },
     ) { innerPadding ->
@@ -174,9 +182,58 @@ fun ToolsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
+            // 0. Language (System Default / 中文 / English / 日本語 — applies immediately)
+            item(key = "language") {
+                SectionLabel(s[Str.SETTINGS_SECTION_LANGUAGE])
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                    ) {
+                        val subtitle = if (settings.appLanguage == AppLanguage.SYSTEM) {
+                            s.format(Str.LANGUAGE_FOLLOWING_SYSTEM, s.language.nativeName)
+                        } else {
+                            s[Str.LANGUAGE_CURRENT_HINT]
+                        }
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        val options = listOf(
+                            AppLanguage.SYSTEM to s[Str.LANGUAGE_SYSTEM_DEFAULT],
+                            AppLanguage.ZH to s[Str.LANGUAGE_ZH],
+                            AppLanguage.EN to s[Str.LANGUAGE_EN],
+                            AppLanguage.JA to s[Str.LANGUAGE_JA],
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            for ((langOption, label) in options) {
+                                FilterChip(
+                                    selected = settings.appLanguage == langOption,
+                                    onClick = {
+                                        viewModel.container.settingsRepository.setAppLanguage(langOption)
+                                    },
+                                    label = { Text(label, maxLines = 1, softWrap = false) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // 1. Storage Access (All-files access only)
             item(key = "storage-access") {
-                SectionLabel("Storage access")
+                SectionLabel(s[Str.STORAGE_ACCESS])
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -185,13 +242,13 @@ fun ToolsScreen(
                     Column(modifier = Modifier.fillMaxWidth()) {
                         ListItem(
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text("All-files access") },
+                            headlineContent = { Text(s[Str.ALL_FILES_ACCESS]) },
                             supportingContent = {
-                                Text(if (hasAllFiles) "Granted" else "Not granted")
+                                Text(if (hasAllFiles) s[Str.GRANTED] else s[Str.NOT_GRANTED])
                             },
                             trailingContent = {
                                 OutlinedButton(onClick = onGrantAllFilesAccess) {
-                                    Text(if (hasAllFiles) "Manage" else "Grant")
+                                    Text(if (hasAllFiles) s[Str.MANAGE] else s[Str.GRANT])
                                 }
                             },
                         )
@@ -201,7 +258,7 @@ fun ToolsScreen(
 
             // 2. Utilities (.nomedia Overview only)
             item(key = "utilities") {
-                SectionLabel("Utilities")
+                SectionLabel(s[Str.UTILITIES])
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -210,17 +267,17 @@ fun ToolsScreen(
                     Column(modifier = Modifier.fillMaxWidth()) {
                         ListItem(
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text(".nomedia Overview") },
-                            supportingContent = { Text("Scan folders hidden from gallery and toggle in bulk") },
+                            headlineContent = { Text(s[Str.NOMEDIA_OVERVIEW]) },
+                            supportingContent = { Text(s[Str.NOMEDIA_OVERVIEW_DESC]) },
                             modifier = Modifier.clickable { showNomediaScanner = true },
                         )
                     }
                 }
             }
 
-            // 3. Agent Feedback (反馈给 Agent)
+            // 3. Agent Feedback (unified single-language UI)
             item(key = "agent-feedback") {
-                SectionLabel("Agent Feedback · 反馈给 Agent")
+                SectionLabel(s[Str.AGENT_FEEDBACK_SECTION])
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -228,13 +285,13 @@ fun ToolsScreen(
                 ) {
                     ListItem(
                         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        headlineContent = { Text("反馈给 Agent") },
+                        headlineContent = { Text(s[Str.AGENT_FEEDBACK_TITLE]) },
                         supportingContent = {
                             Text(
                                 if (settings.agentFeedbackEmail.isNotEmpty()) {
-                                    "已配置邮箱：${settings.agentFeedbackEmail}"
+                                    s.format(Str.AGENT_FEEDBACK_CONFIGURED, settings.agentFeedbackEmail)
                                 } else {
-                                    "一键发送带版本与设备信息的反馈邮件"
+                                    s[Str.AGENT_FEEDBACK_SUBTITLE]
                                 },
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
@@ -248,7 +305,7 @@ fun ToolsScreen(
                                     modifier = Modifier.size(18.dp),
                                 )
                                 Spacer(Modifier.width(6.dp))
-                                Text("撰写反馈", maxLines = 1, softWrap = false)
+                                Text(s[Str.AGENT_FEEDBACK_COMPOSE], maxLines = 1, softWrap = false)
                             }
                         },
                         modifier = Modifier.clickable { showFeedbackDialog = true },
@@ -258,7 +315,7 @@ fun ToolsScreen(
 
             // 4. Diagnostics (toggleable rolling transfer / network log with copy, export and clear)
             item(key = "diagnostics") {
-                SectionLabel("Diagnostics")
+                SectionLabel(s[Str.DIAGNOSTICS])
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -268,10 +325,10 @@ fun ToolsScreen(
                         val logBytes = diagStats.totalBytes
                         ListItem(
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text("Diagnostic Logging") },
+                            headlineContent = { Text(s[Str.DIAGNOSTIC_LOGGING]) },
                             supportingContent = {
                                 Text(
-                                    DiagnosticExport.statusLine(settings.diagnosticLoggingEnabled, logBytes),
+                                    DiagnosticExport.statusLine(settings.diagnosticLoggingEnabled, logBytes, s),
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -300,10 +357,10 @@ fun ToolsScreen(
                                             val text = diagnostics.clipboardText()
                                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                                             val copied = cm != null && runCatching {
-                                                cm.setPrimaryClip(ClipData.newPlainText("MiniFile diagnostic logs", text))
+                                                cm.setPrimaryClip(ClipData.newPlainText(s[Str.DIAG_CLIPBOARD_LABEL], text))
                                             }.isSuccess
                                             viewModel.emitSimpleMessage(
-                                                if (copied) "Diagnostic logs copied" else "Could not copy diagnostic logs",
+                                                if (copied) s[Str.DIAG_LOGS_COPIED] else s[Str.DIAG_LOGS_COPY_FAILED],
                                             )
                                         } finally {
                                             diagBusy = false
@@ -312,7 +369,7 @@ fun ToolsScreen(
                                 },
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                             ) {
-                                Text("Copy Logs", maxLines = 1, softWrap = false)
+                                Text(s[Str.COPY_LOGS], maxLines = 1, softWrap = false)
                             }
                             OutlinedButton(
                                 enabled = canExport,
@@ -323,12 +380,12 @@ fun ToolsScreen(
                                             val file = diagnostics.writeExportFile()
                                             val chooser = diagnostics.shareIntent(file)
                                             if (!context.tryStartActivity(chooser)) {
-                                                viewModel.emitSimpleMessage("No app available to share diagnostic logs")
+                                                viewModel.emitSimpleMessage(s[Str.DIAG_NO_SHARE_APP])
                                             }
                                         } catch (e: IOException) {
-                                            viewModel.emitSimpleMessage("Could not export diagnostic logs: ${e.message}")
+                                            viewModel.emitSimpleMessage(s.format(Str.DIAG_EXPORT_FAILED, e.message ?: ""))
                                         } catch (e: IllegalArgumentException) {
-                                            viewModel.emitSimpleMessage("Could not export diagnostic logs: ${e.message}")
+                                            viewModel.emitSimpleMessage(s.format(Str.DIAG_EXPORT_FAILED, e.message ?: ""))
                                         } finally {
                                             diagBusy = false
                                         }
@@ -336,7 +393,7 @@ fun ToolsScreen(
                                 },
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                             ) {
-                                Text("Export Logs", maxLines = 1, softWrap = false)
+                                Text(s[Str.EXPORT_LOGS], maxLines = 1, softWrap = false)
                             }
                             TextButton(
                                 enabled = !diagBusy && logBytes > 0L,
@@ -345,7 +402,7 @@ fun ToolsScreen(
                                     scope.launch {
                                         try {
                                             diagnostics.clear()
-                                            viewModel.emitSimpleMessage("Diagnostic logs cleared")
+                                            viewModel.emitSimpleMessage(s[Str.DIAG_LOGS_CLEARED])
                                         } finally {
                                             diagBusy = false
                                         }
@@ -353,7 +410,7 @@ fun ToolsScreen(
                                 },
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                             ) {
-                                Text("Clear", maxLines = 1, softWrap = false)
+                                Text(s[Str.CLEAR], maxLines = 1, softWrap = false)
                             }
                         }
                     }
@@ -362,7 +419,7 @@ fun ToolsScreen(
 
             // 5. About (with integrated Update check & install)
             item(key = "about") {
-                SectionLabel("About")
+                SectionLabel(s[Str.ABOUT])
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
@@ -373,12 +430,12 @@ fun ToolsScreen(
                         modifier = Modifier.padding(16.dp),
                     ) {
                         Text(
-                            "Files ${BuildConfig.VERSION_NAME}",
+                            "${s[Str.APP_NAME]} ${BuildConfig.VERSION_NAME}",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            "Minimalist file manager with wireless HTTP/FTP transfer, PDF viewer, and PC Companion.",
+                            s[Str.ABOUT_DESCRIPTION],
                             style = MaterialTheme.typography.bodySmall,
                         )
                         TextButton(
@@ -401,13 +458,13 @@ fun ToolsScreen(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                     Spacer(Modifier.width(8.dp))
-                                    Text("Checking…", style = MaterialTheme.typography.bodySmall)
+                                    Text(s[Str.CHECKING], style = MaterialTheme.typography.bodySmall)
                                 }
                             }
 
                             is UpdateUiState.UpToDate -> {
                                 Text(
-                                    "Up to date",
+                                    s[Str.UP_TO_DATE],
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.primary,
                                     fontWeight = FontWeight.Medium,
@@ -418,7 +475,7 @@ fun ToolsScreen(
                                 val rawTag = st.release.tagName.trim()
                                 val tagLabel = if (rawTag.startsWith("v", ignoreCase = true)) rawTag else "v$rawTag"
                                 Text(
-                                    "New version $tagLabel available",
+                                    s.format(Str.NEW_VERSION_AVAILABLE, tagLabel),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.primary,
                                     fontWeight = FontWeight.SemiBold,
@@ -433,7 +490,7 @@ fun ToolsScreen(
                                 }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("Downloading…", style = MaterialTheme.typography.bodySmall)
+                                        Text(s[Str.DOWNLOADING], style = MaterialTheme.typography.bodySmall)
                                         Spacer(Modifier.height(4.dp))
                                         if (frac != null) {
                                             LinearProgressIndicator(progress = { frac }, modifier = Modifier.fillMaxWidth())
@@ -442,7 +499,7 @@ fun ToolsScreen(
                                         }
                                     }
                                     IconButton(onClick = { viewModel.container.updateManager.cancel() }) {
-                                        Icon(Icons.Filled.Close, contentDescription = "Cancel download")
+                                        Icon(Icons.Filled.Close, contentDescription = s[Str.CANCEL_DOWNLOAD])
                                     }
                                 }
                             }
@@ -451,7 +508,7 @@ fun ToolsScreen(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                     Spacer(Modifier.width(8.dp))
-                                    Text("Verifying…", style = MaterialTheme.typography.bodySmall)
+                                    Text(s[Str.VERIFYING], style = MaterialTheme.typography.bodySmall)
                                 }
                             }
 
@@ -459,13 +516,13 @@ fun ToolsScreen(
                                 val rawTag = st.release.tagName.trim()
                                 val tagLabel = if (rawTag.startsWith("v", ignoreCase = true)) rawTag else "v$rawTag"
                                 Text(
-                                    "New version $tagLabel verified and ready to install",
+                                    s.format(Str.NEW_VERSION_READY, tagLabel),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.primary,
                                     fontWeight = FontWeight.SemiBold,
                                 )
                                 Text(
-                                    "SHA-256 + signature verified. If the system installer was dismissed, tap Install update.",
+                                    s[Str.UPDATE_READY_HINT],
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -490,7 +547,7 @@ fun ToolsScreen(
                                     updateState !is UpdateUiState.Downloading &&
                                     updateState !is UpdateUiState.Verifying,
                             ) {
-                                Text("Check for updates", maxLines = 1, softWrap = false)
+                                Text(s[Str.CHECK_FOR_UPDATES], maxLines = 1, softWrap = false)
                             }
 
                             if (updateState is UpdateUiState.Available || updateState is UpdateUiState.Ready) {
@@ -508,7 +565,7 @@ fun ToolsScreen(
                                     },
                                 ) {
                                     Text(
-                                        if (updateState is UpdateUiState.Ready) "Install update" else "Download & Install",
+                                        if (updateState is UpdateUiState.Ready) s[Str.INSTALL_UPDATE] else s[Str.DOWNLOAD_AND_INSTALL],
                                         maxLines = 1,
                                         softWrap = false,
                                     )
@@ -524,7 +581,7 @@ fun ToolsScreen(
     if (showFeedbackDialog) {
         AlertDialog(
             onDismissRequest = { if (!sendingFeedback) showFeedbackDialog = false },
-            title = { Text("反馈给 Agent") },
+            title = { Text(s[Str.AGENT_FEEDBACK_TITLE]) },
             text = {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -533,7 +590,7 @@ fun ToolsScreen(
                         .verticalScroll(rememberScrollState()),
                 ) {
                     Text(
-                        "配置本地 Agent 反馈邮箱后，可一键发送带版本与设备信息的任务邮件（主题自动附加 ${AgentFeedbackBuilder.PROJECT_PREFIX}: [$versionTag] 前缀）。",
+                        s.format(Str.AGENT_FEEDBACK_DIALOG_DESC, AgentFeedbackBuilder.PROJECT_PREFIX, versionTag),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -541,7 +598,7 @@ fun ToolsScreen(
                     OutlinedTextField(
                         value = emailDraft,
                         onValueChange = { emailDraft = it },
-                        label = { Text("Agent 反馈邮箱") },
+                        label = { Text(s[Str.AGENT_FEEDBACK_EMAIL_LABEL]) },
                         placeholder = { Text(AgentFeedbackBuilder.EMAIL_PLACEHOLDER) },
                         singleLine = true,
                         isError = normalizedDraftEmail.isNotEmpty() && !isEmailValid,
@@ -556,30 +613,30 @@ fun ToolsScreen(
                                         viewModel.container.settingsRepository.setAgentFeedbackEmail(normalizedDraftEmail)
                                         viewModel.emitSimpleMessage(
                                             if (normalizedDraftEmail.isEmpty()) {
-                                                "已清除 Agent 反馈邮箱"
+                                                s[Str.AGENT_FEEDBACK_EMAIL_CLEARED]
                                             } else {
-                                                "Agent 反馈邮箱已保存"
+                                                s[Str.AGENT_FEEDBACK_EMAIL_SAVED]
                                             },
                                         )
                                     },
                                 ) {
-                                    Text("保存")
+                                    Text(s[Str.SAVE])
                                 }
                             }
                         },
                         supportingText = {
                             when {
                                 normalizedDraftEmail.isNotEmpty() && !isEmailValid -> {
-                                    Text("请输入有效的邮箱地址（如 ${AgentFeedbackBuilder.EMAIL_PLACEHOLDER}）")
+                                    Text(s.format(Str.AGENT_FEEDBACK_EMAIL_INVALID_HINT, AgentFeedbackBuilder.EMAIL_PLACEHOLDER))
                                 }
                                 isEmailDirty -> {
-                                    Text("点击右侧“保存”或直接发送反馈时会自动保存在本机")
+                                    Text(s[Str.AGENT_FEEDBACK_EMAIL_DIRTY_HINT])
                                 }
                                 settings.agentFeedbackEmail.isNotEmpty() -> {
-                                    Text("仅保存在本机 SharedPreferences")
+                                    Text(s[Str.AGENT_FEEDBACK_EMAIL_SAVED_HINT])
                                 }
                                 else -> {
-                                    Text("未设置，仅保存在本机 SharedPreferences")
+                                    Text(s[Str.AGENT_FEEDBACK_EMAIL_UNSET_HINT])
                                 }
                             }
                         },
@@ -589,8 +646,8 @@ fun ToolsScreen(
                     OutlinedTextField(
                         value = feedbackTitle,
                         onValueChange = { feedbackTitle = it },
-                        label = { Text("标题") },
-                        placeholder = { Text("简短概括问题或需求标题") },
+                        label = { Text(s[Str.AGENT_FEEDBACK_TITLE_LABEL]) },
+                        placeholder = { Text(s[Str.AGENT_FEEDBACK_TITLE_PLACEHOLDER]) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                         modifier = Modifier.fillMaxWidth(),
@@ -599,8 +656,8 @@ fun ToolsScreen(
                     OutlinedTextField(
                         value = feedbackText,
                         onValueChange = { feedbackText = it },
-                        label = { Text("问题描述") },
-                        placeholder = { Text("详细描述复现步骤、期望行为或改进建议") },
+                        label = { Text(s[Str.AGENT_FEEDBACK_DESC_LABEL]) },
+                        placeholder = { Text(s[Str.AGENT_FEEDBACK_DESC_PLACEHOLDER]) },
                         minLines = 3,
                         maxLines = 6,
                         modifier = Modifier.fillMaxWidth(),
@@ -639,7 +696,7 @@ fun ToolsScreen(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Filled.Close,
-                                        contentDescription = "移除图片",
+                                        contentDescription = s[Str.AGENT_FEEDBACK_REMOVE_IMAGE],
                                         modifier = Modifier.size(18.dp),
                                     )
                                 }
@@ -658,7 +715,7 @@ fun ToolsScreen(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            if (attachedImageUri == null) "增加图片" else "更换图片",
+                            if (attachedImageUri == null) s[Str.AGENT_FEEDBACK_ADD_IMAGE] else s[Str.AGENT_FEEDBACK_CHANGE_IMAGE],
                             maxLines = 1,
                             softWrap = false,
                         )
@@ -670,7 +727,7 @@ fun ToolsScreen(
                     onClick = {
                         val targetEmail = AgentFeedbackBuilder.normalizeEmail(emailDraft)
                         if (!AgentFeedbackBuilder.isValidEmail(targetEmail)) {
-                            viewModel.emitSimpleMessage("请先填写有效的 Agent 反馈邮箱")
+                            viewModel.emitSimpleMessage(s[Str.AGENT_FEEDBACK_ENTER_VALID_EMAIL])
                             return@Button
                         }
                         viewModel.container.settingsRepository.setAgentFeedbackEmail(targetEmail)
@@ -708,6 +765,7 @@ fun ToolsScreen(
                                     metadata = metadata,
                                     screenshotName = staged?.displayName,
                                     title = currentTitle,
+                                    strings = s,
                                 )
                                 launchFeedbackEmailIntent(
                                     context = context,
@@ -724,7 +782,10 @@ fun ToolsScreen(
                                 showFeedbackDialog = false
                             }.onFailure { err ->
                                 viewModel.emitSimpleMessage(
-                                    "无法打开邮件应用：${err.message ?: "未找到可用的邮件客户端"}",
+                                    s.format(
+                                        Str.AGENT_FEEDBACK_OPEN_EMAIL_FAILED,
+                                        err.message ?: s[Str.AGENT_FEEDBACK_NO_EMAIL_CLIENT],
+                                    ),
                                 )
                             }
                         }
@@ -746,7 +807,7 @@ fun ToolsScreen(
                         )
                     }
                     Spacer(Modifier.width(6.dp))
-                    Text("发送反馈给 Agent", maxLines = 1, softWrap = false)
+                    Text(s[Str.AGENT_FEEDBACK_SEND_BTN], maxLines = 1, softWrap = false)
                 }
             },
             dismissButton = {
@@ -754,7 +815,7 @@ fun ToolsScreen(
                     onClick = { showFeedbackDialog = false },
                     enabled = !sendingFeedback,
                 ) {
-                    Text("取消")
+                    Text(s[Str.CANCEL])
                 }
             },
         )
@@ -775,16 +836,16 @@ fun ToolsScreen(
 
         AlertDialog(
             onDismissRequest = { showNomediaScanner = false },
-            title = { Text(".nomedia Overview") },
+            title = { Text(s[Str.NOMEDIA_OVERVIEW]) },
             text = {
                 if (scanning) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(10.dp))
-                        Text("Scanning storage for .nomedia folders…")
+                        Text(s[Str.SCANNING_NOMEDIA])
                     }
                 } else if (foundDirs.isEmpty()) {
-                    Text("No folders with .nomedia found.")
+                    Text(s[Str.NO_NOMEDIA_FOUND])
                 } else {
                     LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
                         items(foundDirs, key = { it.serialize() }) { dirPath ->
@@ -804,7 +865,7 @@ fun ToolsScreen(
                                             }
                                         },
                                     ) {
-                                        Text("Unhide")
+                                        Text(s[Str.UNHIDE])
                                     }
                                 },
                             )
@@ -813,7 +874,7 @@ fun ToolsScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showNomediaScanner = false }) { Text("Close") }
+                TextButton(onClick = { showNomediaScanner = false }) { Text(s[Str.CLOSE]) }
             },
         )
     }
@@ -859,7 +920,7 @@ private fun stageScreenshotForShare(
         ?: "image/*"
 
     val input = context.contentResolver.openInputStream(sourceUri)
-        ?: throw IOException("无法读取所选截图")
+        ?: throw IOException(AppI18n.current()[Str.AGENT_FEEDBACK_READ_IMAGE_FAILED])
     input.use { ins ->
         target.outputStream().use { outs ->
             val buf = ByteArray(64 * 1024)
@@ -872,7 +933,7 @@ private fun stageScreenshotForShare(
                 if (total > MAX_FEEDBACK_ATTACHMENT_BYTES) {
                     outs.close()
                     target.delete()
-                    throw IOException("截图文件超过 25 MB 限制")
+                    throw IOException(AppI18n.current()[Str.AGENT_FEEDBACK_IMAGE_TOO_LARGE])
                 }
                 outs.write(buf, 0, n)
             }
@@ -947,7 +1008,7 @@ private fun launchFeedbackEmailIntent(
             putExtra(Intent.EXTRA_TEXT, built.body)
         }
         context.startActivity(
-            Intent.createChooser(fallback, "发送反馈给 Agent")
+            Intent.createChooser(fallback, AppI18n.current()[Str.AGENT_FEEDBACK_CHOOSER_TITLE])
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
         return
@@ -991,7 +1052,7 @@ private fun launchFeedbackEmailIntent(
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     context.startActivity(
-        Intent.createChooser(fallbackSend, "发送反馈给 Agent")
+        Intent.createChooser(fallbackSend, AppI18n.current()[Str.AGENT_FEEDBACK_CHOOSER_TITLE])
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
     )
 }

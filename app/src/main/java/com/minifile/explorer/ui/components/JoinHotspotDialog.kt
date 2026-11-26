@@ -21,8 +21,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.peer.PeerInfo
 import com.minifile.explorer.ui.JoinUiState
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.SystemWifiJoin
 
 /**
@@ -37,8 +39,10 @@ fun JoinHotspotDialog(
     onSend: (PeerInfo) -> Unit,
     onCancel: () -> Unit,
     onClose: () -> Unit,
-    sendLabel: String = "Send files",
+    sendLabel: String? = null,
 ) {
+    val s = LocalAppStrings.current
+    val effectiveSendLabel = sendLabel ?: s[Str.SEND_FILES]
     val busy = state is JoinUiState.Joining || state is JoinUiState.FindingHost
     val context = LocalContext.current
     val fallback = (state as? JoinUiState.Failed)?.wifiFallback
@@ -53,15 +57,15 @@ fun JoinHotspotDialog(
         },
         properties = DialogProperties(dismissOnBackPress = !busy, dismissOnClickOutside = false),
         icon = { Icon(Icons.Filled.QrCodeScanner, contentDescription = null) },
-        title = { Text("Scan QR to Join") },
+        title = { Text(s[Str.SCAN_QR_TO_JOIN]) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (state) {
-                    is JoinUiState.Joining -> ProgressLine("Joining Wi-Fi “${state.ssid}”… tap Connect if Android asks")
-                    is JoinUiState.FindingHost -> ProgressLine("Finding the Files device on ${state.label}…")
+                    is JoinUiState.Joining -> ProgressLine(s.format(Str.JOINING_WIFI_FMT, state.ssid))
+                    is JoinUiState.FindingHost -> ProgressLine(s.format(Str.FINDING_DEVICE_FMT, state.label))
                     is JoinUiState.Found -> {
                         Text(
-                            text = "Connected to ${state.peer.name}",
+                            text = s.format(Str.CONNECTED_TO_FMT, state.peer.name),
                             style = MaterialTheme.typography.titleSmall,
                         )
                         Text(
@@ -78,14 +82,13 @@ fun JoinHotspotDialog(
                         )
                         if (fallback != null) {
                             Text(
-                                text = "Join “${fallback.ssid}” in system Wi-Fi instead (or scan the QR with the Camera), " +
-                                    "then return to Files — the device appears automatically.",
+                                text = s.format(Str.JOIN_FALLBACK_HINT, fallback.ssid),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             if (fallback.password.isNotEmpty()) {
                                 TextButton(onClick = { SystemWifiJoin.copyPassword(context, fallback.password) }) {
-                                    Text("Copy password")
+                                    Text(s[Str.COPY_PASSWORD])
                                 }
                             }
                         }
@@ -95,25 +98,25 @@ fun JoinHotspotDialog(
         },
         confirmButton = {
             when (state) {
-                is JoinUiState.Found -> Button(onClick = { onSend(state.peer) }) { Text(sendLabel) }
+                is JoinUiState.Found -> Button(onClick = { onSend(state.peer) }) { Text(effectiveSendLabel) }
                 is JoinUiState.Failed -> if (fallback != null) {
                     Button(
                         onClick = {
                             SystemWifiJoin.launch(context, fallback.ssid, fallback.password, fallback.sec)
                             onClose()
                         },
-                    ) { Text(if (SystemWifiJoin.isAddNetworkSupported) "Join via System Wi-Fi" else "Open Wi-Fi settings") }
+                    ) { Text(if (SystemWifiJoin.isAddNetworkSupported) s[Str.JOIN_VIA_SYSTEM_WIFI] else s[Str.OPEN_WIFI_SETTINGS]) }
                 } else {
-                    TextButton(onClick = onClose) { Text("Close") }
+                    TextButton(onClick = onClose) { Text(s[Str.CLOSE]) }
                 }
                 else -> Unit
             }
         },
         dismissButton = {
             when (state) {
-                is JoinUiState.Found -> TextButton(onClick = onCancel) { Text("Disconnect") }
-                is JoinUiState.Failed -> if (fallback != null) TextButton(onClick = onClose) { Text("Close") }
-                else -> TextButton(onClick = onCancel) { Text("Cancel") }
+                is JoinUiState.Found -> TextButton(onClick = onCancel) { Text(s[Str.DISCONNECT]) }
+                is JoinUiState.Failed -> if (fallback != null) TextButton(onClick = onClose) { Text(s[Str.CLOSE]) }
+                else -> TextButton(onClick = onCancel) { Text(s[Str.CANCEL]) }
             }
         },
     )

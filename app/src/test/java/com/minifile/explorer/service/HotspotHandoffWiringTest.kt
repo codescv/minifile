@@ -1,5 +1,9 @@
 package com.minifile.explorer.service
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.ResolvedLanguage
+import com.minifile.explorer.core.i18n.Str
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -49,7 +53,11 @@ class HotspotHandoffWiringTest {
     fun lohsS_copy_isAccurateAndEnglishOnly() {
         val body = lohsS()
         assertFalse("Accept already happened on the iPhone", body.contains("tap Accept"))
-        assertTrue(body.contains("Scan this QR with the iPhone Camera to join, then return to Files on the iPhone"))
+        assertTrue(body.contains("Str.BLE_QR_SCAN_IPHONE"))
+        assertEquals(
+            "Scan this QR with the iPhone Camera to join, then return to Files on the iPhone",
+            AppI18n.stringsFor(ResolvedLanguage.EN)[Str.BLE_QR_SCAN_IPHONE],
+        )
     }
 
     @Test

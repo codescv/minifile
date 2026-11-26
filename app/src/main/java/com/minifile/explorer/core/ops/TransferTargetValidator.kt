@@ -1,5 +1,8 @@
 package com.minifile.explorer.core.ops
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.AppStrings
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.TransferMode
 import com.minifile.explorer.core.vfs.FileSystem
 import com.minifile.explorer.core.vfs.PathUtils
@@ -15,11 +18,11 @@ sealed interface TargetValidation {
     val isAllowed: Boolean
         get() = this is Allowed
 
-    fun disabledReasonLabel(): String? = when (this) {
+    fun disabledReasonLabel(strings: AppStrings = AppI18n.current()): String? = when (this) {
         Allowed -> null
-        SameDirectory -> "Same folder"
-        InsideSource -> "Can't transfer a folder into itself"
-        ReadOnlyTarget -> "Read-only folder"
+        SameDirectory -> strings[Str.SAME_FOLDER]
+        InsideSource -> strings[Str.CANT_TRANSFER_INTO_SELF]
+        ReadOnlyTarget -> strings[Str.READ_ONLY_FOLDER]
         is TargetUnavailable -> reason
     }
 }
@@ -32,13 +35,14 @@ object TransferTargetValidator {
         mode: TransferMode,
         target: VfsPath,
     ): TargetValidation {
+        val s = AppI18n.current()
         if (!fs.supports(target)) {
-            return TargetValidation.TargetUnavailable("Unavailable")
+            return TargetValidation.TargetUnavailable(s[Str.UNAVAILABLE])
         }
         val targetNode = runCatching { fs.stat(target) }.getOrNull()
-            ?: return TargetValidation.TargetUnavailable("Unavailable or unmounted")
+            ?: return TargetValidation.TargetUnavailable(s[Str.UNAVAILABLE_OR_UNMOUNTED])
         if (!targetNode.isDirectory) {
-            return TargetValidation.TargetUnavailable("Not a folder")
+            return TargetValidation.TargetUnavailable(s[Str.NOT_A_FOLDER])
         }
         if (!targetNode.canWrite) {
             return TargetValidation.ReadOnlyTarget

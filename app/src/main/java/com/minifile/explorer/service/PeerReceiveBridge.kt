@@ -3,6 +3,8 @@ package com.minifile.explorer.service
 import android.content.Context
 import com.minifile.explorer.core.http.HttpEvent
 import com.minifile.explorer.core.http.HttpFileServerEngine
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.model.OperationProgress
 import com.minifile.explorer.core.ops.ProgressSink
@@ -43,7 +45,7 @@ class PeerReceiveBridge(
                     totalBytes = event.totalBytes,
                 )
                 sessions[event.sessionId] = rec
-                val title = "Receiving from ${event.deviceName}"
+                val title = AppI18n.current().format(Str.RECEIVING_FROM, event.deviceName)
 
                 operationRegistry.enqueue(
                     context = context,
@@ -69,35 +71,36 @@ class PeerReceiveBridge(
                     )
 
                     val end = rec.doneDeferred.await()
-                    val countLabel = if (end.files == 1) "1 file" else "${end.files} files"
+                    val s = AppI18n.current()
+                    val countLabel = s.filesCount(end.files)
                     val sizeLabel = PathUtils.formatBytes(end.bytes)
                     when {
                         end.ok -> {
                             val inboxDir = resolveInboxPathOrNull(engine)
                             OperationRunOutcome(
-                                message = "Received $countLabel ($sizeLabel) from ${end.deviceName}",
+                                message = s.format(Str.RECEIVED_FROM_FMT, countLabel, sizeLabel, end.deviceName),
                                 destinationToOpen = inboxDir,
-                                openLabel = "Open",
+                                openLabel = s[Str.OPEN],
                             )
                         }
 
                         sink.isCancelled() -> {
                             OperationRunOutcome(
-                                message = "Rejected transfer from ${end.deviceName}",
+                                message = s.format(Str.REJECTED_TRANSFER_FROM, end.deviceName),
                             )
                         }
 
                         end.cancelled -> {
                             OperationRunOutcome(
-                                message = "${end.deviceName} cancelled transfer",
-                                errorSummary = "Cancelled by sender",
+                                message = s.format(Str.PEER_CANCELLED_TRANSFER, end.deviceName),
+                                errorSummary = s[Str.CANCELLED_BY_SENDER],
                             )
                         }
 
                         else -> {
-                            val err = end.error ?: "Transfer failed"
+                            val err = end.error ?: s[Str.TRANSFER_FAILED]
                             OperationRunOutcome(
-                                message = "Receive from ${end.deviceName} failed: $err",
+                                message = s.format(Str.RECEIVE_FAILED_FROM, end.deviceName, err),
                                 errorSummary = err,
                             )
                         }
@@ -112,7 +115,7 @@ class PeerReceiveBridge(
                     OperationProgress(
                         id = "",
                         kind = OperationKind.RECEIVE,
-                        title = "Receiving from ${rec.deviceName}",
+                        title = AppI18n.current().format(Str.RECEIVING_FROM, rec.deviceName),
                         currentItem = event.currentItem,
                         processedItems = event.processedFiles,
                         totalItems = event.totalFiles,
@@ -134,6 +137,7 @@ class PeerReceiveBridge(
     fun cancelAndClearAll() {
         val snapshot = sessions.values.toList()
         sessions.clear()
+        val stoppedMsg = AppI18n.current()[Str.SERVER_STOPPED]
         for (rec in snapshot) {
             rec.doneDeferred.complete(
                 HttpEvent.PeerSessionEnd(
@@ -145,7 +149,7 @@ class PeerReceiveBridge(
                     durationMs = 1L,
                     ok = false,
                     cancelled = true,
-                    error = "Server stopped",
+                    error = stoppedMsg,
                 ),
             )
         }

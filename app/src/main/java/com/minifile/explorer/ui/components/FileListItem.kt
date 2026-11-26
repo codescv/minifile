@@ -52,8 +52,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.minifile.explorer.BuildConfig
+import com.minifile.explorer.core.i18n.AppStrings
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.data.SafFileSystem
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.UiFormatters
 
 enum class RowAction {
@@ -90,6 +93,7 @@ fun FileListRow(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     var menuExpanded by remember { mutableStateOf(false) }
     var thumbnail by remember(node.path, node.lastModified, showThumbnails) { mutableStateOf<Bitmap?>(null) }
 
@@ -105,7 +109,7 @@ fun FileListRow(
         else -> 1f
     }
 
-    val supportingText = subtitleOverride ?: buildSupportingLine(context, node)
+    val supportingText = subtitleOverride ?: buildSupportingLine(context, node, s)
 
     ListItem(
         colors = ListItemDefaults.colors(
@@ -145,7 +149,7 @@ fun FileListRow(
                 } else {
                     Icon(
                         imageVector = UiFormatters.iconForNode(node),
-                        contentDescription = if (node.isDirectory) "Folder" else "File",
+                        contentDescription = if (node.isDirectory) s[Str.FOLDER] else s[Str.FILE],
                         tint = if (node.isDirectory) {
                             MaterialTheme.colorScheme.onPrimaryContainer
                         } else {
@@ -178,7 +182,7 @@ fun FileListRow(
                 if (node.hasNomedia) {
                     Icon(
                         imageVector = Icons.Filled.VisibilityOff,
-                        contentDescription = "Hidden from gallery",
+                        contentDescription = s[Str.HIDDEN_FROM_GALLERY],
                         tint = MaterialTheme.colorScheme.tertiary,
                         modifier = Modifier
                             .padding(horizontal = 3.dp)
@@ -188,7 +192,7 @@ fun FileListRow(
                 if (isFavorite) {
                     Icon(
                         imageVector = Icons.Filled.Star,
-                        contentDescription = "Favorite",
+                        contentDescription = s[Str.FAVORITE],
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier
                             .padding(horizontal = 3.dp)
@@ -198,7 +202,7 @@ fun FileListRow(
                 if (!node.canWrite) {
                     Icon(
                         imageVector = Icons.Filled.Lock,
-                        contentDescription = "Read-only",
+                        contentDescription = s[Str.READ_ONLY],
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
                             .padding(horizontal = 3.dp)
@@ -209,7 +213,7 @@ fun FileListRow(
                     IconButton(onClick = { menuExpanded = true }) {
                         Icon(
                             imageVector = Icons.Filled.MoreVert,
-                            contentDescription = "More actions for ${node.name}",
+                            contentDescription = s.format(Str.MORE_ACTIONS_FOR, node.name),
                         )
                     }
                     NodeContextMenu(
@@ -250,6 +254,7 @@ fun FileGridCell(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     var menuExpanded by remember { mutableStateOf(false) }
     var thumbnail by remember(node.path, node.lastModified, showThumbnails) { mutableStateOf<Bitmap?>(null) }
 
@@ -313,7 +318,7 @@ fun FileGridCell(
                     } else {
                         Icon(
                             imageVector = UiFormatters.iconForNode(node),
-                            contentDescription = if (node.isDirectory) "Folder" else "File",
+                            contentDescription = if (node.isDirectory) s[Str.FOLDER] else s[Str.FILE],
                             tint = if (node.isDirectory) {
                                 MaterialTheme.colorScheme.onPrimaryContainer
                             } else {
@@ -336,7 +341,7 @@ fun FileGridCell(
                 Spacer(Modifier.height(2.dp))
                 Text(
                     text = if (node.isDirectory) {
-                        if (node.childCount >= 0) "${node.childCount} items" else "Folder"
+                        if (node.childCount >= 0) s.itemsCount(node.childCount) else s[Str.FOLDER]
                     } else {
                         UiFormatters.formatSize(context, node.size)
                     },
@@ -358,7 +363,7 @@ fun FileGridCell(
                 if (selected) {
                     Icon(
                         imageVector = Icons.Filled.CheckCircle,
-                        contentDescription = "Selected",
+                        contentDescription = s[Str.SELECTED],
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(18.dp),
                     )
@@ -366,7 +371,7 @@ fun FileGridCell(
                     if (isFavorite) {
                         Icon(
                             imageVector = Icons.Filled.Star,
-                            contentDescription = "Favorite",
+                            contentDescription = s[Str.FAVORITE],
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(14.dp),
                         )
@@ -374,7 +379,7 @@ fun FileGridCell(
                     if (node.hasNomedia) {
                         Icon(
                             imageVector = Icons.Filled.VisibilityOff,
-                            contentDescription = "Hidden from gallery",
+                            contentDescription = s[Str.HIDDEN_FROM_GALLERY],
                             tint = MaterialTheme.colorScheme.tertiary,
                             modifier = Modifier.size(14.dp),
                         )
@@ -382,7 +387,7 @@ fun FileGridCell(
                     if (!node.canWrite) {
                         Icon(
                             imageVector = Icons.Filled.Lock,
-                            contentDescription = "Read-only",
+                            contentDescription = s[Str.READ_ONLY],
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(13.dp),
                         )
@@ -398,7 +403,7 @@ fun FileGridCell(
             ) {
                 Icon(
                     imageVector = Icons.Filled.MoreVert,
-                    contentDescription = "More actions for ${node.name}",
+                    contentDescription = s.format(Str.MORE_ACTIONS_FOR, node.name),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
                         .size(18.dp)
@@ -427,59 +432,60 @@ private fun NodeContextMenu(
     onDismiss: () -> Unit,
     onAction: (RowAction) -> Unit,
 ) {
+    val s = LocalAppStrings.current
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
     ) {
         if (!node.isDirectory) {
             DropdownMenuItem(
-                text = { Text("Open with…") },
+                text = { Text(s[Str.OPEN_WITH]) },
                 onClick = { onAction(RowAction.OPEN_WITH) },
             )
             DropdownMenuItem(
-                text = { Text("Open as text") },
+                text = { Text(s[Str.OPEN_AS_TEXT]) },
                 onClick = { onAction(RowAction.OPEN_AS_TEXT) },
             )
             HorizontalDivider()
         }
         DropdownMenuItem(
-            text = { Text("Rename") },
+            text = { Text(s[Str.RENAME]) },
             onClick = { onAction(RowAction.RENAME) },
         )
         DropdownMenuItem(
-            text = { Text("Copy") },
+            text = { Text(s[Str.COPY]) },
             onClick = { onAction(RowAction.COPY) },
         )
         DropdownMenuItem(
-            text = { Text("Cut") },
+            text = { Text(s[Str.CUT]) },
             onClick = { onAction(RowAction.CUT) },
         )
         DropdownMenuItem(
-            text = { Text("Copy to…") },
+            text = { Text(s[Str.COPY_TO]) },
             onClick = { onAction(RowAction.COPY_TO_FAVORITE) },
         )
         DropdownMenuItem(
-            text = { Text("Move to…") },
+            text = { Text(s[Str.MOVE_TO]) },
             onClick = { onAction(RowAction.MOVE_TO_FAVORITE) },
         )
         DropdownMenuItem(
-            text = { Text("Compress to ZIP") },
+            text = { Text(s[Str.COMPRESS_TO_ZIP]) },
             onClick = { onAction(RowAction.COMPRESS_ZIP) },
         )
         DropdownMenuItem(
-            text = { Text("Send to device…") },
+            text = { Text(s[Str.SEND_TO_DEVICE]) },
             onClick = { onAction(RowAction.SEND_TO_DEVICE) },
         )
         HorizontalDivider()
         DropdownMenuItem(
-            text = { Text(if (isFavorite) "Remove from Favorites" else "Add to Favorites") },
+            text = { Text(if (isFavorite) s[Str.REMOVE_FROM_FAVORITES] else s[Str.ADD_TO_FAVORITES]) },
             onClick = { onAction(RowAction.TOGGLE_FAVORITE) },
         )
         if (node.isDirectory) {
             DropdownMenuItem(
                 text = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Hide from gallery")
+                        Text(s[Str.HIDE_FROM_GALLERY])
                         Spacer(Modifier.width(8.dp))
                         if (node.hasNomedia) {
                             Text("✓", color = MaterialTheme.colorScheme.primary)
@@ -491,24 +497,20 @@ private fun NodeContextMenu(
         }
         HorizontalDivider()
         DropdownMenuItem(
-            text = { Text("Properties") },
+            text = { Text(s[Str.PROPERTIES]) },
             onClick = { onAction(RowAction.PROPERTIES) },
         )
         DropdownMenuItem(
-            text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+            text = { Text(s[Str.DELETE], color = MaterialTheme.colorScheme.error) },
             onClick = { onAction(RowAction.DELETE) },
         )
     }
 }
 
-private fun buildSupportingLine(context: android.content.Context, node: VfsNode): String {
+private fun buildSupportingLine(context: android.content.Context, node: VfsNode, s: AppStrings): String {
     val datePart = UiFormatters.formatShortDate(node.lastModified)
     return if (node.isDirectory) {
-        val countPart = when {
-            node.childCount < 0 -> "—"
-            node.childCount == 1 -> "1 item"
-            else -> "${node.childCount} items"
-        }
+        val countPart = if (node.childCount < 0) "—" else s.itemsCount(node.childCount)
         "$countPart · $datePart"
     } else {
         "${UiFormatters.formatSize(context, node.size)} · $datePart"

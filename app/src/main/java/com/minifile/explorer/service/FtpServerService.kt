@@ -26,6 +26,8 @@ import com.minifile.explorer.core.ftp.FtpConfig
 import com.minifile.explorer.core.ftp.FtpServerEngine
 import com.minifile.explorer.core.http.HttpConfig
 import com.minifile.explorer.core.http.HttpFileServerEngine
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.vfs.VfsPath
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -111,6 +113,7 @@ class FtpServerService : Service() {
     private var httpClientsJob: Job? = null
 
     private var networkJob: Job? = null
+    private var languageJob: Job? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -120,6 +123,12 @@ class FtpServerService : Service() {
     override fun onCreate() {
         super.onCreate()
         ensureChannel()
+        languageJob = scope.launch {
+            AppI18n.currentLanguage.collect {
+                ensureChannel(updateExisting = true)
+                refreshRunningNotification()
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -157,9 +166,10 @@ class FtpServerService : Service() {
             }
 
             ACTION_HTTP_START -> {
+                val s = AppI18n.current()
                 startForegroundCompat(
                     currentRunningNotificationOrNull()
-                        ?: buildRunningNotification("Starting HTTP Share…", "Preparing listener"),
+                        ?: buildRunningNotification(s[Str.SVC_STARTING_HTTP], s[Str.SVC_PREPARING_LISTENER]),
                 )
                 if (httpEngine != null && HttpServerHolder.state.value.isRunning) {
                     refreshRunningNotification()
@@ -170,9 +180,10 @@ class FtpServerService : Service() {
             }
 
             ACTION_START, null -> {
+                val s = AppI18n.current()
                 startForegroundCompat(
                     currentRunningNotificationOrNull()
-                        ?: buildRunningNotification("Starting FTP server…", "Preparing listener"),
+                        ?: buildRunningNotification(s[Str.SVC_STARTING_FTP], s[Str.SVC_PREPARING_LISTENER]),
                 )
                 if (ftpEngine != null && FtpServerHolder.state.value.isRunning) {
                     refreshRunningNotification()
@@ -196,7 +207,7 @@ class FtpServerService : Service() {
     private fun handleSystemTimeout() {
         Diag.log(Diag.APP) { "FtpServerService foreground-service timeout -> shutting down" }
         shutdownAll(
-            errorMessage = "Stopped by Android foreground service timeout",
+            errorMessage = AppI18n.current()[Str.SVC_STOPPED_BY_TIMEOUT],
             removeNotification = true,
         )
         postStoppedBySystemNotification()
@@ -267,7 +278,8 @@ class FtpServerService : Service() {
                 runCatching { srv.stop() }
             } catch (e: Exception) {
                 runCatching { srv.stop() }
-                val msg = "Could not start FTP server: ${e.message ?: "unknown error"}"
+                val s = AppI18n.current()
+                val msg = s.format(Str.SVC_FTP_START_FAILED, e.message ?: s[Str.SVC_UNKNOWN_ERROR])
                 shutdownFtp(errorMessage = msg)
                 if (!isAnyServerActive) {
                     teardownServiceResources(removeNotification = true)
@@ -281,7 +293,8 @@ class FtpServerService : Service() {
 
         val srv = startedSrv
         if (srv == null) {
-            val msg = "Could not bind FTP server port: ${lastBindError?.message ?: "all ports busy"}"
+            val s = AppI18n.current()
+            val msg = s.format(Str.SVC_FTP_BIND_FAILED, lastBindError?.message ?: s[Str.SVC_ALL_PORTS_BUSY])
             shutdownFtp(errorMessage = msg)
             if (!isAnyServerActive) {
                 teardownServiceResources(removeNotification = true)
@@ -368,7 +381,8 @@ class FtpServerService : Service() {
                 runCatching { srv.stop() }
             } catch (e: Exception) {
                 runCatching { srv.stop() }
-                val msg = "Could not start HTTP server: ${e.message ?: "unknown error"}"
+                val s = AppI18n.current()
+                val msg = s.format(Str.SVC_HTTP_START_FAILED, e.message ?: s[Str.SVC_UNKNOWN_ERROR])
                 shutdownHttp(errorMessage = msg)
                 if (!isAnyServerActive) {
                     teardownServiceResources(removeNotification = true)
@@ -382,7 +396,8 @@ class FtpServerService : Service() {
 
         val srv = startedSrv
         if (srv == null) {
-            val msg = "Could not bind HTTP server port: ${lastBindError?.message ?: "all ports busy"}"
+            val s = AppI18n.current()
+            val msg = s.format(Str.SVC_HTTP_BIND_FAILED, lastBindError?.message ?: s[Str.SVC_ALL_PORTS_BUSY])
             shutdownHttp(errorMessage = msg)
             if (!isAnyServerActive) {
                 teardownServiceResources(removeNotification = true)
@@ -551,22 +566,23 @@ class FtpServerService : Service() {
         val ftpSt = FtpServerHolder.state.value
         val httpSt = HttpServerHolder.state.value
         if (!ftpSt.isRunning && !httpSt.isRunning) return null
+        val s = AppI18n.current()
 
         return when {
             httpSt.isRunning && ftpSt.isRunning -> {
                 val httpUrl = httpSt.urls.firstOrNull() ?: "http://127.0.0.1:${httpSt.boundPort}"
                 val ftpUrl = ftpSt.urls.firstOrNull() ?: "ftp://127.0.0.1:${ftpSt.boundPort}"
                 val totalClients = httpSt.activeClients + ftpSt.activeClients
-                val clientLabel = if (totalClients == 1) "1 active connection" else "$totalClients active connections"
+                val clientLabel = s.activeConnections(totalClients)
                 buildRunningNotification(
-                    title = "Files Transfer · HTTP & FTP active",
+                    title = s[Str.SVC_NOTIF_BOTH_TITLE],
                     subtitle = "$httpUrl · $ftpUrl · $clientLabel",
                 )
             }
 
             httpSt.isRunning -> {
                 val primaryUrl = httpSt.urls.firstOrNull() ?: "http://127.0.0.1:${httpSt.boundPort}"
-                val clientLabel = if (httpSt.activeClients == 1) "1 active request" else "${httpSt.activeClients} active requests"
+                val clientLabel = s.activeRequests(httpSt.activeClients)
                 val transfers = if (httpSt.uploadsCount > 0 || httpSt.downloadsCount > 0) {
                     " · ↑ ${httpSt.uploadsCount} ↓ ${httpSt.downloadsCount}"
                 } else {
@@ -580,7 +596,7 @@ class FtpServerService : Service() {
 
             else -> {
                 val primaryUrl = ftpSt.urls.firstOrNull() ?: "ftp://127.0.0.1:${ftpSt.boundPort}"
-                val clientLabel = if (ftpSt.activeClients == 1) "1 client" else "${ftpSt.activeClients} clients"
+                val clientLabel = s.clientsCount(ftpSt.activeClients)
                 val transfers = if (ftpSt.uploadsCount > 0 || ftpSt.downloadsCount > 0) {
                     " · ↑ ${ftpSt.uploadsCount} ↓ ${ftpSt.downloadsCount}"
                 } else {
@@ -601,6 +617,7 @@ class FtpServerService : Service() {
     }
 
     private fun buildRunningNotification(title: String, subtitle: String): Notification {
+        val s = AppI18n.current()
         val openIntent = PendingIntent.getActivity(
             this,
             10,
@@ -624,11 +641,12 @@ class FtpServerService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openIntent)
-            .addAction(0, "Stop", stopIntent)
+            .addAction(0, s[Str.STOP], stopIntent)
             .build()
     }
 
     private fun postStoppedBySystemNotification() {
+        val s = AppI18n.current()
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val openIntent = PendingIntent.getActivity(
             this,
@@ -641,24 +659,25 @@ class FtpServerService : Service() {
         )
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("Wireless Transfer was stopped by the system")
-            .setContentText("Tap to open Transfer and restart")
+            .setContentTitle(s[Str.SVC_STOPPED_BY_SYSTEM_TITLE])
+            .setContentText(s[Str.SVC_STOPPED_BY_SYSTEM_TEXT])
             .setAutoCancel(true)
             .setContentIntent(openIntent)
             .build()
         nm.notify(NOTIF_ID_STOPPED_BY_SYSTEM, notif)
     }
 
-    private fun ensureChannel() {
+    private fun ensureChannel(updateExisting: Boolean = false) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            if (nm.getNotificationChannel(CHANNEL_ID) == null) {
+            if (updateExisting || nm.getNotificationChannel(CHANNEL_ID) == null) {
+                val s = AppI18n.current()
                 val ch = NotificationChannel(
                     CHANNEL_ID,
-                    "Wireless Transfer",
+                    s[Str.SVC_CHANNEL_TRANSFER_NAME],
                     NotificationManager.IMPORTANCE_LOW,
                 ).apply {
-                    description = "Active status and Stop action for Files HTTP & FTP LAN servers"
+                    description = s[Str.SVC_CHANNEL_TRANSFER_DESC]
                 }
                 nm.createNotificationChannel(ch)
             }

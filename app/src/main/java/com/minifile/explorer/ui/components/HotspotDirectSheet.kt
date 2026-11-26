@@ -56,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.peer.HostDecision
 import com.minifile.explorer.core.peer.PeerInfo
 import com.minifile.explorer.core.qr.QrPayload
@@ -63,6 +64,7 @@ import com.minifile.explorer.core.qr.QrPayloads
 import com.minifile.explorer.service.HotspotInfo
 import com.minifile.explorer.service.HotspotState
 import com.minifile.explorer.ui.MainViewModel
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.NearbyPermissions
 import com.minifile.explorer.ui.util.NearbyStatusCopy
 import com.minifile.explorer.ui.util.QrCodeGenerator
@@ -82,6 +84,7 @@ fun HotspotDirectSheet(
     onSendToPeer: ((PeerInfo) -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val state by viewModel.hotspotState.collectAsState()
     val peers by viewModel.peers.collectAsState()
     var filesOnly by rememberSaveable { mutableStateOf(false) }
@@ -99,7 +102,7 @@ fun HotspotDirectSheet(
             permissionHint = null
             viewModel.startHotspotDirect(filesOnly)
         } else {
-            permissionHint = "Permission needed to start a hotspot"
+            permissionHint = s[Str.HOTSPOT_PERM_NEEDED]
         }
     }
 
@@ -108,7 +111,7 @@ fun HotspotDirectSheet(
             !NearbyPermissions.hasHotspotPermissions(context) ->
                 permissionLauncher.launch(NearbyPermissions.hotspotPermissions())
             NearbyPermissions.needsLocationServices(context) ->
-                permissionHint = "Location must be on for Android ≤12 to start a hotspot"
+                permissionHint = s[Str.HOTSPOT_LOCATION_NEEDED]
             else -> {
                 permissionHint = null
                 viewModel.startHotspotDirect(filesOnly)
@@ -128,9 +131,9 @@ fun HotspotDirectSheet(
                 Icon(Icons.Filled.WifiTethering, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(10.dp))
                 Column {
-                    Text("Hotspot Direct", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(s[Str.HOTSPOT_DIRECT_LABEL], style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
-                        NearbyStatusCopy.HOTSPOT_DIRECT_SUBTITLE,
+                        s[Str.HOTSPOT_DIRECT_SUBTITLE],
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -142,9 +145,9 @@ fun HotspotDirectSheet(
                     HotspotCredentialsPanel(info = st.info, filesOnlyQr = filesOnly)
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.weight(1f)) {
-                            Text("Files-only QR", style = MaterialTheme.typography.bodyMedium)
+                            Text(s[Str.FILES_ONLY_QR], style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                "Adds a one-time token; only Files can scan it",
+                                s[Str.FILES_ONLY_QR_DESC],
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -165,14 +168,14 @@ fun HotspotDirectSheet(
                     }
                     HorizontalDivider()
                     Text(
-                        text = if (joined.isEmpty()) "Waiting for devices to join…" else "Joined devices",
+                        text = if (joined.isEmpty()) s[Str.WAITING_FOR_DEVICES_JOIN] else s[Str.JOINED_DEVICES],
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     for (p in joined) {
                         PeerDeviceRow(
                             peer = p,
-                            trailingActionLabel = if (onSendToPeer != null) "Send" else null,
+                            trailingActionLabel = if (onSendToPeer != null) s[Str.SEND] else null,
                             onTrailingAction = onSendToPeer?.let { cb -> { cb(p) } },
                         )
                     }
@@ -184,21 +187,20 @@ fun HotspotDirectSheet(
                         ),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Stop hotspot") }
+                    ) { Text(s[Str.STOP_HOTSPOT]) }
                 }
 
                 HotspotState.Starting -> {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 24.dp)) {
                         CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(10.dp))
-                        Text("Starting hotspot…")
+                        Text(s[Str.STARTING_HOTSPOT])
                     }
                 }
 
                 is HotspotState.Failed, HotspotState.Idle -> {
                     Text(
-                        "This phone creates a temporary Wi-Fi network. The other phone scans the QR code " +
-                            "(iPhone: Camera app) to join, then sends or browses files — even without the app.",
+                        s[Str.HOTSPOT_DIRECT_INTRO],
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -211,14 +213,14 @@ fun HotspotDirectSheet(
                                     context.startActivity(NearbyPermissions.locationSettingsIntent())
                                 } catch (_: ActivityNotFoundException) {
                                 }
-                            }) { Text("Open Location settings") }
+                            }) { Text(s[Str.OPEN_LOCATION_SETTINGS]) }
                         }
                     }
                     Button(
                         onClick = { start() },
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Start hotspot", fontWeight = FontWeight.SemiBold) }
+                    ) { Text(s[Str.START_HOTSPOT], fontWeight = FontWeight.SemiBold) }
                 }
             }
             Spacer(Modifier.height(16.dp))
@@ -234,6 +236,7 @@ fun HotspotCredentialsPanel(
     filesOnlyQr: Boolean = false,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val qrText = remember(info, filesOnlyQr) { hotspotQrText(info, filesOnlyQr) }
     Card(
         shape = RoundedCornerShape(18.dp),
@@ -254,21 +257,21 @@ fun HotspotCredentialsPanel(
                     .fillMaxWidth(0.8f),
             )
             Text(
-                text = if (filesOnlyQr) "Scan with Files on the other phone" else "Scan with Camera to join Wi-Fi (iPhone / Android)",
+                text = if (filesOnlyQr) s[Str.SCAN_WITH_FILES] else s[Str.SCAN_WITH_CAMERA],
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
-            CredentialRow(label = "Wi-Fi", value = info.ssid, onCopy = {
-                UiFormatters.copyToSystemClipboard(context, "Wi-Fi name", info.ssid)
+            CredentialRow(label = s[Str.WIFI_LABEL], value = info.ssid, onCopy = {
+                UiFormatters.copyToSystemClipboard(context, s[Str.WIFI_NAME], info.ssid)
             })
             if (info.pass.isNotEmpty()) {
-                CredentialRow(label = "Password", value = info.pass, onCopy = {
-                    UiFormatters.copyToSystemClipboard(context, "Wi-Fi password", info.pass)
+                CredentialRow(label = s[Str.PASSWORD], value = info.pass, onCopy = {
+                    UiFormatters.copyToSystemClipboard(context, s[Str.WIFI_PASSWORD], info.pass)
                 })
             }
             info.url?.let { url ->
-                CredentialRow(label = "Browser", value = url, onCopy = {
+                CredentialRow(label = s[Str.BROWSER_LABEL], value = url, onCopy = {
                     UiFormatters.copyToSystemClipboard(context, "URL", url)
                 })
             }
@@ -278,6 +281,7 @@ fun HotspotCredentialsPanel(
 
 @Composable
 private fun CredentialRow(label: String, value: String, onCopy: () -> Unit) {
+    val s = LocalAppStrings.current
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Text(
             text = label,
@@ -295,7 +299,7 @@ private fun CredentialRow(label: String, value: String, onCopy: () -> Unit) {
             modifier = Modifier.weight(1f),
         )
         IconButton(onClick = onCopy) {
-            Icon(Icons.Filled.ContentCopy, contentDescription = "Copy $label", modifier = Modifier.size(18.dp))
+            Icon(Icons.Filled.ContentCopy, contentDescription = s.format(Str.COPY_LABEL, label), modifier = Modifier.size(18.dp))
         }
     }
 }
@@ -326,6 +330,7 @@ fun hotspotQrText(info: HotspotInfo, filesOnly: Boolean): String {
 /** Renders [text] as a black-on-white QR code with a 4-module quiet zone. */
 @Composable
 fun QrMatrixView(text: String, modifier: Modifier = Modifier) {
+    val s = LocalAppStrings.current
     val matrix = remember(text) { runCatching { QrCodeGenerator.encode(text) }.getOrNull() }
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -334,7 +339,7 @@ fun QrMatrixView(text: String, modifier: Modifier = Modifier) {
         modifier = modifier.aspectRatio(1f),
     ) {
         if (matrix == null) {
-            Text("QR too long", color = Color.Black, modifier = Modifier.padding(16.dp))
+            Text(s[Str.QR_TOO_LONG], color = Color.Black, modifier = Modifier.padding(16.dp))
             return@Surface
         }
         Canvas(

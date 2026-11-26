@@ -29,8 +29,10 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.ui.BreadcrumbCrumb
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -41,6 +43,7 @@ fun BreadcrumbBar(
     onCrumbLongPress: (VfsPath) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val s = LocalAppStrings.current
     val listState = rememberLazyListState()
     val fullPathLabel = crumbs.joinToString(" › ") { it.label }
 
@@ -68,7 +71,7 @@ fun BreadcrumbBar(
             ) {
                 Icon(
                     imageVector = Icons.Filled.Home,
-                    contentDescription = "Storage Home",
+                    contentDescription = s[Str.STORAGE_HOME],
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
                 )

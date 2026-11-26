@@ -3,6 +3,8 @@ package com.minifile.explorer.service
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.ContextCompat
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.model.OperationProgress
 import com.minifile.explorer.core.ops.ProgressSink
@@ -140,6 +142,7 @@ class OperationRegistry {
                     ),
                 )
             } catch (_: CancellationException) {
+                val s = AppI18n.current()
                 val latest = _active.value.firstOrNull { it.id == opId } ?: initial
                 removeActiveAndRecordHistory(latest.copy(finished = true, cancelled = true))
                 _completions.tryEmit(
@@ -147,14 +150,15 @@ class OperationRegistry {
                         id = opId,
                         kind = kind,
                         title = title,
-                        snackbarMessage = "$title cancelled",
+                        snackbarMessage = s.format(Str.OP_CANCELLED, title),
                         cancelled = true,
                     ),
                 )
             } catch (e: Exception) {
+                val s = AppI18n.current()
                 val cancelled = entry.cancelled.get()
                 val latest = _active.value.firstOrNull { it.id == opId } ?: initial
-                val errMsg = e.message ?: "Operation failed"
+                val errMsg = e.message ?: s[Str.OP_FAILED_GENERIC]
                 removeActiveAndRecordHistory(
                     latest.copy(
                         finished = true,
@@ -167,7 +171,11 @@ class OperationRegistry {
                         id = opId,
                         kind = kind,
                         title = title,
-                        snackbarMessage = if (cancelled) "$title cancelled" else "$title failed: $errMsg",
+                        snackbarMessage = if (cancelled) {
+                            s.format(Str.OP_CANCELLED, title)
+                        } else {
+                            s.format(Str.OP_FAILED, title, errMsg)
+                        },
                         cancelled = cancelled,
                         error = if (cancelled) null else errMsg,
                     ),

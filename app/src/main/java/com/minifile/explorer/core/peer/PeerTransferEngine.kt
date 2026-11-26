@@ -1,5 +1,7 @@
 package com.minifile.explorer.core.peer
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.diag.Diag
 import com.minifile.explorer.core.ftp.FtpAccessDeniedException
 import com.minifile.explorer.core.model.JsonValue
@@ -58,7 +60,7 @@ class PeerTransferEngine(
     ): PeerSendResult = withContext(ioDispatcher) {
         val peerName = peerDisplayName(peer)
         if (peer.proto > PeerDiscoveryEngine.SUPPORTED_PROTO) {
-            throw PeerTransferException(null, "$peerName needs newer Files")
+            throw PeerTransferException(null, AppI18n.current().format(Str.PEER_ERR_NEEDS_NEWER_FMT, peerName))
         }
         if (items.isEmpty()) {
             return@withContext PeerSendResult(files = 0, bytes = 0L, skipped = 0, errors = emptyList())
@@ -84,7 +86,7 @@ class PeerTransferEngine(
                 OperationProgress(
                     id = "",
                     kind = OperationKind.SEND,
-                    title = "Sending to $peerName",
+                    title = AppI18n.current().format(Str.SENDING_TO, peerName),
                     currentItem = currentItem,
                     processedItems = processedItems,
                     totalItems = totalItems,
@@ -130,7 +132,7 @@ class PeerTransferEngine(
         }
         val beginObj = parseJsonObj(beginResp.bodyText)
         val sessionId = beginObj?.str("session")?.takeIf { it.isNotBlank() }
-            ?: throw PeerTransferException(beginResp.status, "Invalid session response from $peerName")
+            ?: throw PeerTransferException(beginResp.status, AppI18n.current().format(Str.PEER_ERR_INVALID_SESSION_FMT, peerName))
         onSessionStarted(sessionId)
 
         var sentFiles = 0
@@ -336,7 +338,7 @@ class PeerTransferEngine(
                 "skipped=$skippedFiles dirs=$sentDirs"
         }
         if (endResp != null && endResp.status == 410) {
-            throw PeerTransferException(410, "Rejected by $peerName")
+            throw PeerTransferException(410, AppI18n.current().format(Str.PEER_ERR_REJECTED_FMT, peerName))
         }
 
         PeerSendResult(
@@ -395,7 +397,7 @@ class PeerTransferEngine(
             client.postEmpty(endUrl, timeoutMs = 2_000, connectTimeoutOverrideMs = 1_500)
         }.getOrNull()
         if (endResp?.status == 410) {
-            throw PeerTransferException(410, "Rejected by ${peerDisplayName(peer)}", cause)
+            throw PeerTransferException(410, AppI18n.current().format(Str.PEER_ERR_REJECTED_FMT, peerDisplayName(peer)), cause)
         }
     }
 
@@ -514,31 +516,31 @@ class PeerTransferEngine(
             val code = errObj?.str("code")?.trim().orEmpty()
 
             val msg = when (resp.status) {
-                401 -> "$name requires a PIN — update Files"
+                401 -> AppI18n.current().format(Str.PEER_ERR_PIN_REQUIRED_FMT, name)
                 403 -> {
                     if (code == "read_only" || serverErr.contains("read-only", ignoreCase = true)) {
-                        "$name is read-only (Transfer ▸ Settings)"
+                        AppI18n.current().format(Str.PEER_IS_READ_ONLY_HINT, name)
                     } else if (code == "declined") {
-                        "Declined by $name"
+                        AppI18n.current().format(Str.PEER_ERR_DECLINED_FMT, name)
                     } else if (code == "disabled") {
-                        "$name has peer receiving off"
+                        AppI18n.current().format(Str.PEER_ERR_RECEIVING_OFF_FMT, name)
                     } else if (code == "token") {
-                        "Session expired — reconnect to $name"
+                        AppI18n.current().format(Str.PEER_ERR_SESSION_EXPIRED_FMT, name)
                     } else {
-                        "Access denied by $name${if (serverErr.isNotEmpty()) ": $serverErr" else ""}"
+                        AppI18n.current().format(Str.PEER_ERR_ACCESS_DENIED_FMT, name) + (if (serverErr.isNotEmpty()) ": $serverErr" else "")
                     }
                 }
-                404 -> "$name needs Files 1.0.6+"
-                409 -> "Conflict on $name${if (serverErr.isNotEmpty()) ": $serverErr" else ""}"
-                410 -> "Rejected by $name"
-                411 -> "Length required by $name"
-                503 -> "$name is busy — try again shortly"
-                507 -> "Not enough space on $name"
+                404 -> AppI18n.current().format(Str.PEER_ERR_NEEDS_UPDATE_FMT, name)
+                409 -> AppI18n.current().format(Str.PEER_ERR_CONFLICT_FMT, name) + (if (serverErr.isNotEmpty()) ": $serverErr" else "")
+                410 -> AppI18n.current().format(Str.PEER_ERR_REJECTED_FMT, name)
+                411 -> AppI18n.current().format(Str.PEER_ERR_LENGTH_REQUIRED_FMT, name)
+                503 -> AppI18n.current().format(Str.PEER_ERR_BUSY_FMT, name)
+                507 -> AppI18n.current().format(Str.PEER_ERR_NO_SPACE_FMT, name)
                 else -> {
                     if (serverErr.isNotEmpty()) {
                         "$name: $serverErr (HTTP ${resp.status})"
                     } else {
-                        "$name returned HTTP ${resp.status}"
+                        AppI18n.current().format(Str.PEER_ERR_HTTP_STATUS_FMT, name, resp.status)
                     }
                 }
             }
@@ -554,14 +556,14 @@ class PeerTransferEngine(
             if (cause is PeerTransferException) return cause
             val name = peerDisplayName(peer)
             if (cause is FtpAccessDeniedException) {
-                return PeerTransferException(null, "Only local network (LAN) addresses are allowed", cause, beforeSession)
+                return PeerTransferException(null, AppI18n.current()[Str.PEER_ERR_LAN_ONLY], cause, beforeSession)
             }
             val msg = if (hasCause<WriteStallException>(cause)) {
-                "$name stopped receiving — keep Files open on $name"
+                AppI18n.current().format(Str.PEER_ERR_STOPPED_RECEIVING_FMT, name)
             } else if (midTransfer) {
-                "Connection to $name lost"
+                AppI18n.current().format(Str.PEER_ERR_CONNECTION_LOST_FMT, name)
             } else {
-                "$name not reachable"
+                AppI18n.current().format(Str.PEER_ERR_NOT_REACHABLE_FMT, name)
             }
             return PeerTransferException(
                 httpStatus = null,

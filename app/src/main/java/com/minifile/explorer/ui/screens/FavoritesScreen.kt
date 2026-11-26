@@ -63,11 +63,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.Favorite
 import com.minifile.explorer.core.vfs.VfsNode
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.ui.MainViewModel
 import com.minifile.explorer.ui.components.PropertiesSheet
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -79,6 +81,7 @@ fun FavoritesScreen(
     onClose: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val scope = rememberCoroutineScope()
     val favorites by viewModel.favorites.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -109,12 +112,12 @@ fun FavoritesScreen(
                         IconButton(onClick = onClose) {
                             Icon(
                                 Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back",
+                                contentDescription = s[Str.BACK],
                             )
                         }
                     }
                 },
-                title = { Text("Favorites", fontWeight = FontWeight.SemiBold) },
+                title = { Text(s[Str.FAVORITES], fontWeight = FontWeight.SemiBold) },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -135,10 +138,10 @@ fun FavoritesScreen(
                     modifier = Modifier.size(52.dp),
                 )
                 Spacer(Modifier.height(10.dp))
-                Text("No favorites yet", style = MaterialTheme.typography.titleMedium)
+                Text(s[Str.NO_FAVORITES_YET], style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Bookmark any folder or file from Browse for one-tap access and quick transfers.",
+                    s[Str.NO_FAVORITES_HINT],
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -185,7 +188,7 @@ fun FavoritesScreen(
                                     Spacer(Modifier.width(6.dp))
                                     Icon(
                                         Icons.Filled.VisibilityOff,
-                                        contentDescription = "Hidden from gallery",
+                                        contentDescription = s[Str.HIDDEN_FROM_GALLERY],
                                         tint = MaterialTheme.colorScheme.tertiary,
                                         modifier = Modifier.size(16.dp),
                                     )
@@ -194,7 +197,7 @@ fun FavoritesScreen(
                                     Spacer(Modifier.width(6.dp))
                                     Icon(
                                         Icons.Filled.Usb,
-                                        contentDescription = "External/SAF",
+                                        contentDescription = s[Str.EXTERNAL_SAF],
                                         modifier = Modifier.size(15.dp),
                                     )
                                 }
@@ -224,7 +227,7 @@ fun FavoritesScreen(
                                 is VfsPath.GDrive -> p.serialize()
                             }
                             Text(
-                                text = if (isAvailable) sub else "Unavailable · $sub",
+                                text = if (isAvailable) sub else s.format(Str.UNAVAILABLE_PREFIX, sub),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -242,7 +245,7 @@ fun FavoritesScreen(
                                             }
                                         },
                                     ) {
-                                        Icon(Icons.Filled.ArrowUpward, contentDescription = "Move up")
+                                        Icon(Icons.Filled.ArrowUpward, contentDescription = s[Str.MOVE_UP])
                                     }
                                 }
                                 if (idx < favorites.lastIndex) {
@@ -256,19 +259,19 @@ fun FavoritesScreen(
                                             }
                                         },
                                     ) {
-                                        Icon(Icons.Filled.ArrowDownward, contentDescription = "Move down")
+                                        Icon(Icons.Filled.ArrowDownward, contentDescription = s[Str.MOVE_DOWN])
                                     }
                                 }
                                 Box {
                                     IconButton(onClick = { menuOpen = true }) {
-                                        Icon(Icons.Filled.MoreVert, contentDescription = "More actions for ${fav.name}")
+                                        Icon(Icons.Filled.MoreVert, contentDescription = s.format(Str.MORE_ACTIONS_FOR, fav.name))
                                     }
                                     DropdownMenu(
                                         expanded = menuOpen,
                                         onDismissRequest = { menuOpen = false },
                                     ) {
                                         DropdownMenuItem(
-                                            text = { Text("Rename") },
+                                            text = { Text(s[Str.RENAME]) },
                                             onClick = {
                                                 menuOpen = false
                                                 renameTarget = fav
@@ -276,7 +279,7 @@ fun FavoritesScreen(
                                         )
                                         if (node != null) {
                                             DropdownMenuItem(
-                                                text = { Text("Properties") },
+                                                text = { Text(s[Str.PROPERTIES]) },
                                                 onClick = {
                                                     menuOpen = false
                                                     propertiesNode = node
@@ -285,14 +288,14 @@ fun FavoritesScreen(
                                         }
                                         HorizontalDivider()
                                         DropdownMenuItem(
-                                            text = { Text("Remove", color = MaterialTheme.colorScheme.error) },
+                                            text = { Text(s[Str.REMOVE], color = MaterialTheme.colorScheme.error) },
                                             onClick = {
                                                 menuOpen = false
                                                 scope.launch {
                                                     viewModel.container.favoritesRepository.remove(fav.id)
                                                     val res = snackbarHostState.showSnackbar(
-                                                        message = "Removed '${fav.name}'",
-                                                        actionLabel = "Undo",
+                                                        message = s.format(Str.REMOVED_FAV_SNACKBAR, fav.name),
+                                                        actionLabel = s[Str.UNDO],
                                                         duration = SnackbarDuration.Short,
                                                     )
                                                     if (res == SnackbarResult.ActionPerformed) {
@@ -329,12 +332,12 @@ fun FavoritesScreen(
         var text by remember(fav.id) { mutableStateOf(fav.name) }
         AlertDialog(
             onDismissRequest = { renameTarget = null },
-            title = { Text("Rename Favorite") },
+            title = { Text(s[Str.RENAME_FAVORITE]) },
             text = {
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it },
-                    label = { Text("Name") },
+                    label = { Text(s[Str.NAME]) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -348,11 +351,11 @@ fun FavoritesScreen(
                         renameTarget = null
                     },
                 ) {
-                    Text("Save")
+                    Text(s[Str.SAVE])
                 }
             },
             dismissButton = {
-                TextButton(onClick = { renameTarget = null }) { Text("Cancel") }
+                TextButton(onClick = { renameTarget = null }) { Text(s[Str.CANCEL]) }
             },
         )
     }
@@ -360,10 +363,10 @@ fun FavoritesScreen(
     unavailablePrompt?.let { fav ->
         AlertDialog(
             onDismissRequest = { unavailablePrompt = null },
-            title = { Text("'${fav.name}' is unavailable") },
+            title = { Text(s.format(Str.FAV_UNAVAILABLE_TITLE, fav.name)) },
             text = {
                 Text(
-                    "This ${if (fav.isDirectory) "folder" else "file"} does not exist right now or its storage/server is unreachable.",
+                    if (fav.isDirectory) s[Str.FAV_UNAVAILABLE_FOLDER_DESC] else s[Str.FAV_UNAVAILABLE_FILE_DESC],
                 )
             },
             confirmButton = {
@@ -373,11 +376,11 @@ fun FavoritesScreen(
                         unavailablePrompt = null
                     },
                 ) {
-                    Text("Remove Favorite")
+                    Text(s[Str.REMOVE_FAVORITE])
                 }
             },
             dismissButton = {
-                TextButton(onClick = { unavailablePrompt = null }) { Text("Keep") }
+                TextButton(onClick = { unavailablePrompt = null }) { Text(s[Str.KEEP]) }
             },
         )
     }

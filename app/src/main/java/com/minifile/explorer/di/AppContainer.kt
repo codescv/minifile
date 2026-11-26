@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Environment
 import com.minifile.explorer.core.ftp.FtpClientFileSystem
+import com.minifile.explorer.core.i18n.AppI18n
 import com.minifile.explorer.core.gdrive.GoogleDriveFileSystem
 import com.minifile.explorer.core.gdrive.OAuthTokenProvider
 import com.minifile.explorer.core.model.Clock
@@ -47,7 +48,10 @@ class AppContainer(context: Context) {
     val settingsRepository = SettingsRepository(
         store = keyValueStore,
         defaultDeviceNameProvider = { Build.MODEL?.takeIf { it.isNotBlank() } ?: "Android" },
-    )
+        onLanguageChanged = { AppI18n.setSetting(it) },
+    ).also { repo ->
+        AppI18n.setSetting(repo.settings.value.appLanguage)
+    }
 
     /** Settings ▸ Diagnostics: installs the process-wide diagnostic logger and syncs it with the persisted toggle. */
     val diagnostics = DiagnosticsController(appContext, settingsRepository).also { it.start() }

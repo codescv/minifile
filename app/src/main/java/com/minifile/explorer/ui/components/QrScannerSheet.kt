@@ -85,8 +85,11 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.qr.QrDecoder
 import com.minifile.explorer.core.qr.QrPayloads
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import kotlinx.coroutines.delay
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
@@ -110,9 +113,11 @@ private const val MANUAL_HINT_DELAY_MS = 8_000L
 fun QrScannerSheet(
     onDismiss: () -> Unit,
     onResult: (String) -> Unit,
-    title: String = "Scan QR to Join",
+    title: String? = null,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
+    val effectiveTitle = title ?: s[Str.SCAN_QR_TO_JOIN]
     val haptic = LocalHapticFeedback.current
     val latestOnResult by rememberUpdatedState(onResult)
     val delivered = remember { AtomicBoolean(false) }
@@ -127,7 +132,7 @@ fun QrScannerSheet(
         )
     }
     var cameraMessage by remember {
-        mutableStateOf(if (hasCamera) null else "No camera available on this device.")
+        mutableStateOf(if (hasCamera) null else s[Str.QR_NO_CAMERA])
     }
     var manualMode by remember { mutableStateOf(!hasCamera) }
     var showManualButton by remember { mutableStateOf(false) }
@@ -139,7 +144,7 @@ fun QrScannerSheet(
     ) { granted ->
         permissionGranted = granted
         if (!granted) {
-            cameraMessage = "Camera permission denied. Enter the details manually."
+            cameraMessage = s[Str.QR_CAMERA_DENIED]
             manualMode = true
         }
     }
@@ -169,17 +174,13 @@ fun QrScannerSheet(
                 .padding(horizontal = 20.dp, vertical = 8.dp),
         ) {
             Text(
-                text = title,
+                text = effectiveTitle,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = if (manualMode) {
-                    "Enter the hotspot or the receiver's address shown on the other device"
-                } else {
-                    "Point the camera at the QR code shown on the other device"
-                },
+                text = if (manualMode) s[Str.QR_MANUAL_HINT] else s[Str.QR_CAMERA_HINT],
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -227,7 +228,7 @@ fun QrScannerSheet(
                         ) {
                             Icon(
                                 imageVector = if (torchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff,
-                                contentDescription = if (torchOn) "Turn off flashlight" else "Turn on flashlight",
+                                contentDescription = if (torchOn) s[Str.TURN_OFF_FLASHLIGHT] else s[Str.TURN_ON_FLASHLIGHT],
                             )
                         }
                     }
@@ -235,7 +236,7 @@ fun QrScannerSheet(
                 Spacer(Modifier.height(12.dp))
                 if (showManualButton) {
                     Text(
-                        text = "Having trouble scanning?",
+                        text = s[Str.HAVING_TROUBLE_SCANNING],
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -244,7 +245,7 @@ fun QrScannerSheet(
                         onClick = { manualMode = true },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Enter manually")
+                        Text(s[Str.ENTER_MANUALLY])
                     }
                 }
             } else {
@@ -263,7 +264,7 @@ fun QrScannerSheet(
                         onClick = { manualMode = false },
                         modifier = Modifier.align(Alignment.CenterHorizontally),
                     ) {
-                        Text("Back to camera")
+                        Text(s[Str.BACK_TO_CAMERA])
                     }
                 }
             }
@@ -275,6 +276,7 @@ fun QrScannerSheet(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun QrManualEntry(onSubmit: (String) -> Unit) {
+    val s = LocalAppStrings.current
     var mode by rememberSaveable { mutableIntStateOf(0) }
     var ssid by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
@@ -287,19 +289,19 @@ private fun QrManualEntry(onSubmit: (String) -> Unit) {
                 selected = mode == 0,
                 onClick = { mode = 0 },
                 shape = SegmentedButtonDefaults.itemShape(0, 2),
-            ) { Text("Wi-Fi") }
+            ) { Text(s[Str.WIFI_LABEL]) }
             SegmentedButton(
                 selected = mode == 1,
                 onClick = { mode = 1 },
                 shape = SegmentedButtonDefaults.itemShape(1, 2),
-            ) { Text("Address") }
+            ) { Text(s[Str.ADDRESS_TAB]) }
         }
 
         if (mode == 0) {
             OutlinedTextField(
                 value = ssid,
                 onValueChange = { ssid = it },
-                label = { Text("Network name (SSID)") },
+                label = { Text(s[Str.NETWORK_NAME_SSID]) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                 modifier = Modifier.fillMaxWidth(),
@@ -307,7 +309,7 @@ private fun QrManualEntry(onSubmit: (String) -> Unit) {
             OutlinedTextField(
                 value = password,
                 onValueChange = { password = it },
-                label = { Text("Password (leave empty if open)") },
+                label = { Text(s[Str.PASSWORD_OPTIONAL_OPEN]) },
                 singleLine = true,
                 visualTransformation = if (passwordVisible) {
                     VisualTransformation.None
@@ -322,7 +324,7 @@ private fun QrManualEntry(onSubmit: (String) -> Unit) {
                     IconButton(onClick = { passwordVisible = !passwordVisible }) {
                         Icon(
                             imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                            contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                            contentDescription = if (passwordVisible) s[Str.HIDE_PASSWORD] else s[Str.SHOW_PASSWORD],
                         )
                     }
                 },
@@ -341,13 +343,13 @@ private fun QrManualEntry(onSubmit: (String) -> Unit) {
                 enabled = ssid.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Join")
+                Text(s[Str.JOIN])
             }
         } else {
             OutlinedTextField(
                 value = address,
                 onValueChange = { address = it },
-                label = { Text("Address (host[:port])") },
+                label = { Text(s[Str.ADDRESS_HOST_PORT]) },
                 placeholder = { Text("192.168.43.1:8080") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
@@ -361,7 +363,7 @@ private fun QrManualEntry(onSubmit: (String) -> Unit) {
                 enabled = address.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text("Connect")
+                Text(s[Str.CONNECT])
             }
         }
     }
@@ -504,24 +506,24 @@ private class QrCameraController(
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            postError("Camera permission denied. Enter the details manually.")
+            postError(AppI18n.current()[Str.QR_CAMERA_DENIED])
             return
         }
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
         if (manager == null) {
-            postError("Camera unavailable. Enter the details manually.")
+            postError(AppI18n.current()[Str.QR_CAMERA_UNAVAILABLE])
             return
         }
         try {
             val cameraId = pickBackCamera(manager)
             if (cameraId == null) {
-                postError("No camera available on this device.")
+                postError(AppI18n.current()[Str.QR_NO_CAMERA])
                 return
             }
             val chars = manager.getCameraCharacteristics(cameraId)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             if (map == null) {
-                postError("Camera unavailable. Enter the details manually.")
+                postError(AppI18n.current()[Str.QR_CAMERA_UNAVAILABLE])
                 return
             }
             val sensor = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
@@ -535,7 +537,7 @@ private class QrCameraController(
             )
             val analysis = chooseAnalysisSize(map.getOutputSizes(ImageFormat.YUV_420_888))
             if (preview == null || analysis == null) {
-                postError("Camera unavailable. Enter the details manually.")
+                postError(AppI18n.current()[Str.QR_CAMERA_UNAVAILABLE])
                 return
             }
             val afModes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: IntArray(0)
@@ -567,13 +569,13 @@ private class QrCameraController(
             applyTransform(viewWidth, viewHeight)
             openCameraChecked(manager, cameraId)
         } catch (e: CameraAccessException) {
-            failAndClose("Camera unavailable. Enter the details manually.")
+            failAndClose(AppI18n.current()[Str.QR_CAMERA_UNAVAILABLE])
         } catch (e: SecurityException) {
-            failAndClose("Camera permission denied. Enter the details manually.")
+            failAndClose(AppI18n.current()[Str.QR_CAMERA_DENIED])
         } catch (e: IllegalArgumentException) {
-            failAndClose("Camera unavailable. Enter the details manually.")
+            failAndClose(AppI18n.current()[Str.QR_CAMERA_UNAVAILABLE])
         } catch (e: IllegalStateException) {
-            failAndClose("Camera unavailable. Enter the details manually.")
+            failAndClose(AppI18n.current()[Str.QR_CAMERA_UNAVAILABLE])
         }
     }
 
@@ -596,13 +598,13 @@ private class QrCameraController(
                     createSessionLocked(camera)
                 } catch (e: CameraAccessException) {
                     closeCameraLocked()
-                    postError("Camera unavailable. Enter the details manually.")
+                    postError(AppI18n.current()[Str.QR_CAMERA_UNAVAILABLE])
                 } catch (e: IllegalStateException) {
                     closeCameraLocked()
-                    postError("Camera unavailable. Enter the details manually.")
+                    postError(AppI18n.current()[Str.QR_CAMERA_UNAVAILABLE])
                 } catch (e: IllegalArgumentException) {
                     closeCameraLocked()
-                    postError("Camera unavailable. Enter the details manually.")
+                    postError(AppI18n.current()[Str.QR_CAMERA_UNAVAILABLE])
                 }
             }
         }
@@ -625,9 +627,9 @@ private class QrCameraController(
                 if (error == CameraDevice.StateCallback.ERROR_CAMERA_IN_USE ||
                     error == CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE
                 ) {
-                    "Camera is in use by another app. Enter the details manually."
+                    AppI18n.current()[Str.QR_CAMERA_IN_USE]
                 } else {
-                    "Camera unavailable. Enter the details manually."
+                    AppI18n.current()[Str.QR_CAMERA_UNAVAILABLE]
                 },
             )
         }
@@ -647,7 +649,7 @@ private class QrCameraController(
 
         override fun onConfigureFailed(captureSession: CameraCaptureSession) {
             synchronized(lock) { closeCameraLocked() }
-            postError("Camera unavailable. Enter the details manually.")
+            postError(AppI18n.current()[Str.QR_CAMERA_UNAVAILABLE])
         }
     }
 

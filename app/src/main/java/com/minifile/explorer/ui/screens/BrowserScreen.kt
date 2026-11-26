@@ -65,6 +65,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.GDriveServerBookmark
 import com.minifile.explorer.core.model.TransferMode
 import com.minifile.explorer.core.model.ViewMode
@@ -95,6 +96,7 @@ import com.minifile.explorer.ui.components.SelectionMoreAction
 import com.minifile.explorer.ui.components.SelectionTopBar
 import com.minifile.explorer.ui.components.SendToDeviceSheet
 import com.minifile.explorer.ui.components.SortBottomSheet
+import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.UiFormatters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -122,6 +124,7 @@ fun BrowserScreen(
     isActiveTab: Boolean = true,
 ) {
     val context = LocalContext.current
+    val s = LocalAppStrings.current
     val scope = rememberCoroutineScope()
 
     val browser by viewModel.browser.collectAsState()
@@ -194,10 +197,10 @@ fun BrowserScreen(
             onGDriveSignedInSuccess = { bookmark, isReauth ->
                 viewModel.resetGDriveSignIn()
                 if (isReauth) {
-                    viewModel.emitSimpleMessage("Signed in to Google Drive '${bookmark.name}'")
+                    viewModel.emitSimpleMessage(s.format(Str.SIGNED_IN_GDRIVE, bookmark.name))
                     viewModel.reloadCurrentDirectory(silent = false)
                 } else {
-                    viewModel.emitSimpleMessage("Added Google Drive '${bookmark.name}'")
+                    viewModel.emitSimpleMessage(s.format(Str.ADDED_GDRIVE_MSG, bookmark.name))
                     viewModel.openGDriveServer(bookmark)
                 }
             },
@@ -218,7 +221,7 @@ fun BrowserScreen(
                     if (st != null) {
                         propertiesTarget = st
                     } else {
-                        viewModel.emitSimpleMessage("'${fav.name}' is currently unavailable")
+                        viewModel.emitSimpleMessage(s.format(Str.ITEM_UNAVAILABLE_MSG, fav.name))
                     }
                 }
             },
@@ -364,7 +367,7 @@ fun BrowserScreen(
                             fs = viewModel.container.fileSystem,
                             node = node,
                         ).onFailure { err ->
-                            viewModel.emitSimpleMessage("Cannot open ${node.name}: ${err.message}")
+                            viewModel.emitSimpleMessage(s.format(Str.CANNOT_OPEN_FILE, node.name, err.message.orEmpty()))
                         }
                     }
                 }
@@ -382,7 +385,7 @@ fun BrowserScreen(
                         fs = viewModel.container.fileSystem,
                         node = node,
                         forceChooser = true,
-                    ).onFailure { viewModel.emitSimpleMessage("No app found: ${it.message}") }
+                    ).onFailure { viewModel.emitSimpleMessage(s.format(Str.NO_APP_FOUND, it.message.orEmpty())) }
                 }
             }
 
@@ -441,19 +444,19 @@ fun BrowserScreen(
                     TopAppBar(
                         navigationIcon = {
                             IconButton(onClick = { viewModel.closeSearch() }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close search")
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s[Str.CLOSE_SEARCH])
                             }
                         },
                         title = {
                             OutlinedTextField(
                                 value = browser.searchQuery,
                                 onValueChange = { viewModel.updateSearchQuery(it) },
-                                placeholder = { Text("Filter files…") },
+                                placeholder = { Text(s[Str.FILTER_FILES]) },
                                 singleLine = true,
                                 trailingIcon = {
                                     if (browser.searchQuery.isNotEmpty()) {
                                         IconButton(onClick = { viewModel.updateSearchQuery("") }) {
-                                            Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                                            Icon(Icons.Filled.Close, contentDescription = s[Str.CLEAR_SEARCH])
                                         }
                                     }
                                 },
@@ -468,7 +471,7 @@ fun BrowserScreen(
                     TopAppBar(
                         navigationIcon = {
                             IconButton(onClick = { viewModel.navigateUpOrHome() }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Navigate up")
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s[Str.NAVIGATE_UP])
                             }
                         },
                         title = {
@@ -481,16 +484,16 @@ fun BrowserScreen(
                         },
                         actions = {
                             IconButton(onClick = { viewModel.openSearch() }) {
-                                Icon(Icons.Filled.Search, contentDescription = "Search")
+                                Icon(Icons.Filled.Search, contentDescription = s[Str.SEARCH])
                             }
                             IconButton(onClick = { viewModel.toggleViewMode() }) {
                                 Icon(
                                     imageVector = if (settings.viewMode == ViewMode.LIST) Icons.Filled.GridView else Icons.AutoMirrored.Filled.ViewList,
-                                    contentDescription = "Toggle view mode",
+                                    contentDescription = s[Str.TOGGLE_VIEW_MODE],
                                 )
                             }
                             IconButton(onClick = { showSortSheet = true }) {
-                                Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
+                                Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = s[Str.SORT])
                             }
                             IconButton(
                                 onClick = {
@@ -503,7 +506,7 @@ fun BrowserScreen(
                             ) {
                                 Icon(
                                     imageVector = if (isCurrentDirFavorite) Icons.Filled.Star else Icons.Filled.StarBorder,
-                                    contentDescription = if (isCurrentDirFavorite) "Remove from Favorites" else "Add to Favorites",
+                                    contentDescription = if (isCurrentDirFavorite) s[Str.REMOVE_FROM_FAVORITES] else s[Str.ADD_TO_FAVORITES],
                                     tint = if (isCurrentDirFavorite) {
                                         MaterialTheme.colorScheme.primary
                                     } else {
@@ -513,14 +516,14 @@ fun BrowserScreen(
                             }
                             Box {
                                 IconButton(onClick = { overflowExpanded = true }) {
-                                    Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+                                    Icon(Icons.Filled.MoreVert, contentDescription = s[Str.MORE_OPTIONS])
                                 }
                                 DropdownMenu(
                                     expanded = overflowExpanded,
                                     onDismissRequest = { overflowExpanded = false },
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("Sort…") },
+                                        text = { Text(s[Str.SORT_ELLIPSIS]) },
                                         onClick = {
                                             overflowExpanded = false
                                             showSortSheet = true
@@ -528,7 +531,7 @@ fun BrowserScreen(
                                     )
                                     DropdownMenuItem(
                                         text = {
-                                            Text(if (settings.viewMode == ViewMode.LIST) "View: Grid" else "View: List")
+                                            Text(if (settings.viewMode == ViewMode.LIST) s[Str.VIEW_GRID_MENU] else s[Str.VIEW_LIST_MENU])
                                         },
                                         onClick = {
                                             overflowExpanded = false
@@ -540,7 +543,7 @@ fun BrowserScreen(
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Checkbox(checked = settings.showHidden, onCheckedChange = null)
                                                 Spacer(Modifier.width(8.dp))
-                                                Text("Show hidden files")
+                                                Text(s[Str.SHOW_HIDDEN_FILES])
                                             }
                                         },
                                         onClick = {
@@ -549,7 +552,7 @@ fun BrowserScreen(
                                         },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Select all") },
+                                        text = { Text(s[Str.SELECT_ALL]) },
                                         onClick = {
                                             overflowExpanded = false
                                             viewModel.selectAll()
@@ -557,14 +560,14 @@ fun BrowserScreen(
                                     )
                                     HorizontalDivider()
                                     DropdownMenuItem(
-                                        text = { Text("New folder") },
+                                        text = { Text(s[Str.NEW_FOLDER]) },
                                         onClick = {
                                             overflowExpanded = false
                                             showCreateFolderDialog = true
                                         },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("New file") },
+                                        text = { Text(s[Str.NEW_FILE]) },
                                         onClick = {
                                             overflowExpanded = false
                                             showCreateFileDialog = true
@@ -572,7 +575,7 @@ fun BrowserScreen(
                                     )
                                     DropdownMenuItem(
                                         text = {
-                                            Text(if (isCurrentDirFavorite) "Remove from Favorites" else "Add to Favorites")
+                                            Text(if (isCurrentDirFavorite) s[Str.REMOVE_FROM_FAVORITES] else s[Str.ADD_TO_FAVORITES])
                                         },
                                         onClick = {
                                             overflowExpanded = false
@@ -584,21 +587,21 @@ fun BrowserScreen(
                                         },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Hide from gallery (.nomedia)") },
+                                        text = { Text(s[Str.HIDE_FROM_GALLERY_NOMEDIA]) },
                                         onClick = {
                                             overflowExpanded = false
                                             viewModel.toggleNomedia(curDir)
                                         },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Properties") },
+                                        text = { Text(s[Str.PROPERTIES]) },
                                         onClick = {
                                             overflowExpanded = false
                                             browser.currentDirNode?.let { propertiesTarget = it }
                                         },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Refresh") },
+                                        text = { Text(s[Str.REFRESH]) },
                                         onClick = {
                                             overflowExpanded = false
                                             viewModel.reloadCurrentDirectory(silent = false)
@@ -617,7 +620,7 @@ fun BrowserScreen(
                     FloatingActionButton(
                         onClick = { fabMenuExpanded = true },
                     ) {
-                        Icon(Icons.Filled.Add, contentDescription = "Create")
+                        Icon(Icons.Filled.Add, contentDescription = s[Str.CREATE])
                     }
                     DropdownMenu(
                         expanded = fabMenuExpanded,
@@ -625,7 +628,7 @@ fun BrowserScreen(
                     ) {
                         DropdownMenuItem(
                             leadingIcon = { Icon(Icons.Filled.CreateNewFolder, contentDescription = null) },
-                            text = { Text("New folder") },
+                            text = { Text(s[Str.NEW_FOLDER]) },
                             onClick = {
                                 fabMenuExpanded = false
                                 showCreateFolderDialog = true
@@ -633,7 +636,7 @@ fun BrowserScreen(
                         )
                         DropdownMenuItem(
                             leadingIcon = { Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = null) },
-                            text = { Text("New file") },
+                            text = { Text(s[Str.NEW_FILE]) },
                             onClick = {
                                 fabMenuExpanded = false
                                 showCreateFileDialog = true
@@ -642,7 +645,7 @@ fun BrowserScreen(
                         if (clipboard != null) {
                             HorizontalDivider()
                             DropdownMenuItem(
-                                text = { Text("Paste here") },
+                                text = { Text(s[Str.PASTE_HERE]) },
                                 onClick = {
                                     fabMenuExpanded = false
                                     viewModel.pasteClipboardInto(context, curDir)
@@ -669,7 +672,7 @@ fun BrowserScreen(
                                     safFs = viewModel.container.safFileSystem,
                                     fs = viewModel.container.fileSystem,
                                     nodes = selectedNodes,
-                                ).onFailure { viewModel.emitSimpleMessage(it.message ?: "Cannot share selection") }
+                                ).onFailure { viewModel.emitSimpleMessage(it.message ?: s[Str.CANNOT_SHARE_SELECTION]) }
                             }
                         },
                         onMoreAction = { action ->
@@ -718,7 +721,7 @@ fun BrowserScreen(
                     ClipboardBar(
                         clipboard = clipboard!!,
                         canPasteHere = canWriteHere,
-                        disabledPasteReason = if (!canWriteHere) "Read-only folder" else null,
+                        disabledPasteReason = if (!canWriteHere) s[Str.READ_ONLY_FOLDER] else null,
                         onPasteHere = { viewModel.pasteClipboardInto(context, curDir) },
                         onPickFavorite = {
                             favoritePickerRequest = FavoriteTransferRequest(
@@ -751,8 +754,8 @@ fun BrowserScreen(
                         is VfsPath.Ftp -> target.serialize()
                         is VfsPath.GDrive -> target.serialize()
                     }
-                    UiFormatters.copyToSystemClipboard(context, "Path", raw)
-                    viewModel.emitSimpleMessage("Copied path: $raw")
+                    UiFormatters.copyToSystemClipboard(context, s[Str.PATH], raw)
+                    viewModel.emitSimpleMessage(s.format(Str.COPIED_PATH, raw))
                 },
             )
 
@@ -767,11 +770,11 @@ fun BrowserScreen(
                     FilterChip(
                         selected = browser.recursiveSearch,
                         onClick = { viewModel.toggleRecursiveSearch(!browser.recursiveSearch) },
-                        label = { Text("Search subfolders") },
+                        label = { Text(s[Str.SEARCH_SUBFOLDERS]) },
                     )
                     if (browser.recursiveSearch) {
                         Text(
-                            text = "${browser.recursiveHits.size} matches",
+                            text = s.format(Str.MATCHES_COUNT, browser.recursiveHits.size),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -804,16 +807,16 @@ fun BrowserScreen(
                             modifier = Modifier.size(48.dp),
                         )
                         Spacer(Modifier.height(12.dp))
-                        Text("Allow Files to manage storage", style = MaterialTheme.typography.titleMedium)
+                        Text(s[Str.ALLOW_MANAGE_STORAGE_TITLE], style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "Grant All-files access to browse and manage this directory.",
+                            s[Str.ALLOW_MANAGE_STORAGE_DESC],
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(Modifier.height(16.dp))
                         Button(onClick = onGrantAllFilesAccess) {
-                            Text("Grant access")
+                            Text(s[Str.GRANT_ACCESS])
                         }
                     }
                 }
@@ -829,7 +832,7 @@ fun BrowserScreen(
                         Text(browser.errorMessage!!, style = MaterialTheme.typography.bodyLarge)
                         Spacer(Modifier.height(12.dp))
                         OutlinedButton(onClick = { viewModel.reloadCurrentDirectory(silent = false) }) {
-                            Text("Retry")
+                            Text(s[Str.RETRY])
                         }
                     }
                 }
@@ -837,8 +840,8 @@ fun BrowserScreen(
                 browser.searchActive && browser.recursiveSearch -> {
                     if (browser.recursiveHits.isEmpty() && !browser.isRecursiveSearching) {
                         EmptyFolderView(
-                            title = "No matching files",
-                            subtitle = "Try another search query",
+                            title = s[Str.NO_MATCHING_FILES],
+                            subtitle = s[Str.TRY_ANOTHER_QUERY],
                         )
                     } else {
                         LazyColumn(
@@ -867,11 +870,11 @@ fun BrowserScreen(
 
                 browser.visibleEntries.isEmpty() -> {
                     EmptyFolderView(
-                        title = if (browser.searchQuery.isNotEmpty()) "No matching items" else "Nothing here yet",
+                        title = if (browser.searchQuery.isNotEmpty()) s[Str.NO_MATCHING_ITEMS] else s[Str.NOTHING_HERE_YET],
                         subtitle = if (browser.searchQuery.isNotEmpty()) {
-                            "Clear filter or search subfolders"
+                            s[Str.CLEAR_FILTER_OR_SUBFOLDERS]
                         } else {
-                            "Tap + to create a folder or file"
+                            s[Str.TAP_PLUS_TO_CREATE]
                         },
                     )
                 }

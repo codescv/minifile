@@ -1,5 +1,7 @@
 package com.minifile.explorer.core.gdrive
 
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.JsonValue
 import com.minifile.explorer.core.model.Logger
 import com.minifile.explorer.core.model.MiniJson
@@ -261,7 +263,7 @@ class DriveHttp(
                     continue
                 }
                 throw GDriveAuthException(
-                    message = "Google Drive sign-in expired — sign in again",
+                    message = AppI18n.current()[Str.GDRIVE_SIGNIN_EXPIRED_AGAIN],
                     needsInteraction = true,
                 )
             }
@@ -310,7 +312,7 @@ class DriveHttp(
                     continue
                 }
                 throw GDriveAuthException(
-                    message = "Google Drive sign-in expired — sign in again",
+                    message = AppI18n.current()[Str.GDRIVE_SIGNIN_EXPIRED_AGAIN],
                     needsInteraction = true,
                 )
             }
@@ -384,7 +386,7 @@ class DriveHttp(
                     continue
                 }
                 throw GDriveAuthException(
-                    message = "Google Drive sign-in expired — sign in again",
+                    message = AppI18n.current()[Str.GDRIVE_SIGNIN_EXPIRED_AGAIN],
                     needsInteraction = true,
                 )
             }
@@ -530,7 +532,7 @@ class DriveHttp(
                         continue
                     }
                     throw GDriveAuthException(
-                        message = "Google Drive sign-in expired — sign in again",
+                        message = AppI18n.current()[Str.GDRIVE_SIGNIN_EXPIRED_AGAIN],
                         needsInteraction = true,
                     )
                 }
@@ -617,14 +619,14 @@ class DriveHttp(
                     return DriveApiException(
                         status = 403,
                         reason = err.reason,
-                        message = "Google Doc is too large to export (10 MB limit)",
+                        message = AppI18n.current()[Str.GDRIVE_DOC_TOO_LARGE],
                     )
                 }
                 "storageQuotaExceeded" -> {
                     return DriveApiException(
                         status = 403,
                         reason = err.reason,
-                        message = "Google Drive storage is full",
+                        message = AppI18n.current()[Str.GDRIVE_STORAGE_FULL],
                     )
                 }
             }

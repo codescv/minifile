@@ -12,6 +12,8 @@ import android.os.storage.StorageManager
 import android.os.storage.StorageVolume
 import android.provider.DocumentsContract
 import androidx.core.content.ContextCompat
+import com.minifile.explorer.core.i18n.AppI18n
+import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.vfs.Volume
 import com.minifile.explorer.core.vfs.VolumeKind
@@ -40,10 +42,11 @@ class AndroidVolumeProvider(
 
         val primaryDir = Environment.getExternalStorageDirectory()
         val (primaryTotal, primaryFree) = statSpace(primaryDir)
+        val s = AppI18n.current()
         built.add(
             Volume(
                 id = "primary",
-                name = "Internal",
+                name = s[Str.INTERNAL],
                 kind = VolumeKind.PRIMARY,
                 root = VfsPath.Local(primaryDir.absolutePath),
                 totalBytes = primaryTotal,
@@ -51,7 +54,7 @@ class AndroidVolumeProvider(
                 isMounted = Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED ||
                     Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED_READ_ONLY,
                 needsSafGrant = !allFiles,
-                subtitle = "Internal Storage",
+                subtitle = s[Str.INTERNAL_STORAGE],
             ),
         )
 
@@ -65,7 +68,7 @@ class AndroidVolumeProvider(
             val uuid = sv.uuid ?: sv.getDescription(appContext)
             val key = "vol:$uuid"
             val dir = resolveStorageVolumeDir(sv)
-            val description = sv.getDescription(appContext)?.takeIf { it.isNotBlank() } ?: "External Drive"
+            val description = sv.getDescription(appContext)?.takeIf { it.isNotBlank() } ?: s[Str.EXTERNAL_DRIVE]
             val lowerDesc = description.lowercase()
             val kind = if (lowerDesc.contains("usb") || lowerDesc.contains("otg") || lowerDesc.contains("flash")) {
                 VolumeKind.USB_OTG
