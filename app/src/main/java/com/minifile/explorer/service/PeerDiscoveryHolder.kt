@@ -229,6 +229,24 @@ class PeerDiscoveryHolder(
         engine.rebindSocket()
     }
 
+    /**
+     * A LocalOnlyHotspot reservation is up (its address may still be unknown). Keeps the `MFP1` UDP socket unbound
+     * so a joined iPhone can discover this device on the hotspot even while `hostIp` is unresolved.
+     */
+    @Volatile
+    private var hostingHotspot = false
+
+    fun setHostingHotspot(active: Boolean) {
+        if (hostingHotspot == active) return
+        Diag.log(Diag.NET) { "hosting hotspot=$active" }
+        hostingHotspot = active
+        invalidateIfaceCache()
+        engine.rebindSocket()
+    }
+
+    /** Drops the cached interface table so the next socket bind sees a freshly appeared LOHS interface. */
+    fun invalidateInterfaces() = invalidateIfaceCache()
+
     // ---------------------------------------------------------------------------------------------
     // Socket binding
     // ---------------------------------------------------------------------------------------------
@@ -238,7 +256,7 @@ class PeerDiscoveryHolder(
         val active = activeWifiNetwork
         val decision = LocalSubnetRouter.decideUdp(
             hasPinnedNetwork = pinned != null,
-            hostingLocalHotspot = localHotspot != null,
+            hostingLocalHotspot = localHotspot != null || hostingHotspot,
             hasActiveWifi = active != null,
             activeWifiIfaceName = active?.let { ifaceNameOf(it) },
             trackedSubnets = trackedSubnets(),

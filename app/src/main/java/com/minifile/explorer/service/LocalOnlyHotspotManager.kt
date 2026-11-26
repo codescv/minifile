@@ -103,6 +103,10 @@ class LocalOnlyHotspotManager(
     @Volatile
     private var preLohsIps: Set<String>? = null
 
+    /** Interface names that carried an IPv4 just before the current reservation started. */
+    @Volatile
+    private var preLohsIfaces: Set<String>? = null
+
     val activeInfo: HotspotInfo?
         get() = (state.value as? HotspotState.Active)?.info
 
@@ -139,8 +143,10 @@ class LocalOnlyHotspotManager(
             _state.value = HotspotState.Starting
             // Spec §3.4: IPv4s present before LOHS so a newly appeared wireless address (OnePlus `wlan1`/`wlan2`,
             // or `wlan0` when STA is off) is recognised as the hotspot gateway.
-            val before = withContext(Dispatchers.IO) { runCatching { lanAddressResolver.snapshotLocalIpv4s() }.getOrNull() }
+            val snap = withContext(Dispatchers.IO) { runCatching { lanAddressResolver.snapshotLocalIfaces() }.getOrNull() }
+            val before = snap?.mapTo(HashSet()) { it.ipv4 }
             preLohsIps = before
+            preLohsIfaces = snap?.mapTo(HashSet()) { it.interfaceName }
             val res = try {
                 startReservation(wm)
             } catch (e: HotspotException) {
@@ -150,15 +156,16 @@ class LocalOnlyHotspotManager(
                 throw e
             }
             reservation = res
+            // Keep MFP1 discovery unbound from `wlan0` while hosting, even before the LOHS address is known.
+            peerDiscoveryHolder.setHostingHotspot(true)
             val cfg = extractConfig(res)
             Diag.log(Diag.HOTSPOT) { "reservation started ssid=${cfg.ssid} sec=${cfg.sec} passLen=${cfg.pass.length} preIps=$before" }
-            val endpoint = awaitHotspotEndpoint(before)
-            Diag.log(Diag.HOTSPOT) {
-                if (endpoint != null) {
-                    "endpoint ${endpoint.interfaceName} ${endpoint.ipv4}/${endpoint.prefixLength}"
-                } else {
-                    "endpoint not found within ${ENDPOINT_POLL_MS}ms -> background refine"
-                }
+            val endpoint = awaitHotspotEndpoint(before, preLohsIfaces)
+            if (endpoint != null) {
+                Diag.log(Diag.HOTSPOT) { "endpoint ${endpoint.interfaceName} ${endpoint.ipv4}/${endpoint.prefixLength}" }
+            } else {
+                val ifaces = withContext(Dispatchers.IO) { lanAddressResolver.describeIpv4Interfaces(before) }
+                Diag.log(Diag.HOTSPOT) { "endpoint not found within ${ENDPOINT_POLL_MS}ms -> background refine ifaces=$ifaces" }
             }
             HotspotInfo(
                 ssid = cfg.ssid,
@@ -224,10 +231,12 @@ class LocalOnlyHotspotManager(
             endpointRefineJob?.cancel()
             endpointRefineJob = null
             preLohsIps = null
+            preLohsIfaces = null
             runCatching { reservation?.close() }
             reservation = null
             gate.reset()
             peerDiscoveryHolder.setLocalHotspot(null)
+            peerDiscoveryHolder.setHostingHotspot(false)
             val stopHttp = httpStartedForHotspot
             httpStartedForHotspot = false
             if (stopHttp && !fromService) {
@@ -321,32 +330,72 @@ class LocalOnlyHotspotManager(
     }
 
     /**
-     * The hotspot address was not found within [ENDPOINT_POLL_MS] (slow DHCP server start on some OEMs): keep
-     * looking for up to [ENDPOINT_REFINE_MS] and publish it as soon as it appears so `hostIp` / the joined-device
-     * filter / interface confinement start working.
+     * The hotspot address was not found within [ENDPOINT_POLL_MS] (slow DHCP server start on some OEMs, or an
+     * interface the classifier could not place): keep looking for up to [ENDPOINT_REFINE_MS] — the whole BLE
+     * announce window — and publish it as soon as it appears so `hostIp` / the joined-device filter / interface
+     * confinement / the `hotspot` re-send start working. Logs the full interface table periodically.
      */
     private fun refineEndpointInBackground() {
         endpointRefineJob?.cancel()
         endpointRefineJob = scope.launch {
             var waited = 0L
+            var step = 500L
+            var nextDump = ENDPOINT_DUMP_FIRST_MS
             while (waited < ENDPOINT_REFINE_MS) {
-                delay(500)
-                waited += 500
+                delay(step)
+                waited += step
+                step = (step + 250L).coerceAtMost(ENDPOINT_REFINE_MAX_STEP_MS)
                 val cur = activeInfo ?: return@launch
                 if (cur.hostIp.isNotEmpty()) return@launch
                 val ep = withContext(Dispatchers.IO) {
-                    runCatching { lanAddressResolver.hotspotEndpoints(preLohsIps).firstOrNull() }.getOrNull()
-                } ?: continue
-                mutex.withLock {
-                    val latest = activeInfo ?: return@launch
-                    if (latest.hostIp.isNotEmpty()) return@launch
-                    val updated = latest.copy(hostIp = ep.ipv4, prefixLength = ep.prefixLength, ifaceName = ep.interfaceName)
-                    Diag.log(Diag.HOTSPOT) { "endpoint refined after ${waited}ms: ${ep.interfaceName} ${ep.ipv4}/${ep.prefixLength}" }
-                    applyGate(updated)
-                    _state.value = HotspotState.Active(updated)
+                    runCatching { lanAddressResolver.hotspotEndpoints(preLohsIps, preLohsIfaces).firstOrNull() }.getOrNull()
                 }
+                if (ep == null) {
+                    if (waited >= nextDump) {
+                        nextDump *= 2
+                        val ifaces = withContext(Dispatchers.IO) { lanAddressResolver.describeIpv4Interfaces(preLohsIps) }
+                        Diag.log(Diag.HOTSPOT) { "endpoint still unknown after ${waited}ms ifaces=$ifaces" }
+                    }
+                    continue
+                }
+                publishEndpoint(ep, "refined after ${waited}ms")
                 return@launch
             }
+            val ifaces = withContext(Dispatchers.IO) { lanAddressResolver.describeIpv4Interfaces(preLohsIps) }
+            Diag.log(Diag.HOTSPOT) { "endpoint refine gave up after ${waited}ms ifaces=$ifaces" }
+        }
+    }
+
+    /**
+     * A joined peer reported [peerIp] (BLE `ready`) while `hostIp` is still unknown: adopt the new local IPv4 on the
+     * peer's subnet as the hotspot endpoint (never a pre-LOHS station address). Returns the current [HotspotInfo]
+     * (updated or not); `null` when no hotspot is active.
+     */
+    suspend fun adoptEndpointForPeer(peerIp: String): HotspotInfo? {
+        val cur = activeInfo ?: return null
+        if (cur.hostIp.isNotEmpty()) return cur
+        val before = preLohsIps
+        val ep = withContext(Dispatchers.IO) {
+            runCatching { lanAddressResolver.hotspotEndpointForPeer(peerIp, before) }.getOrNull()
+                ?: runCatching { lanAddressResolver.hotspotEndpoints(before, preLohsIfaces).firstOrNull() }.getOrNull()
+        }
+        if (ep == null) {
+            val ifaces = withContext(Dispatchers.IO) { lanAddressResolver.describeIpv4Interfaces(before) }
+            Diag.log(Diag.HOTSPOT) { "no local endpoint matches peer $peerIp ifaces=$ifaces" }
+            return activeInfo
+        }
+        publishEndpoint(ep, "adopted from peer $peerIp")
+        return activeInfo
+    }
+
+    private suspend fun publishEndpoint(ep: com.minifile.explorer.data.HotspotEndpoint, reason: String) {
+        mutex.withLock {
+            val latest = activeInfo ?: return
+            if (latest.hostIp.isNotEmpty()) return
+            val updated = latest.copy(hostIp = ep.ipv4, prefixLength = ep.prefixLength, ifaceName = ep.interfaceName)
+            Diag.log(Diag.HOTSPOT) { "endpoint $reason: ${ep.interfaceName} ${ep.ipv4}/${ep.prefixLength}" }
+            applyGate(updated)
+            _state.value = HotspotState.Active(updated)
         }
     }
 
@@ -423,13 +472,13 @@ class LocalOnlyHotspotManager(
         }
     }
 
-    private suspend fun awaitHotspotEndpoint(before: Set<String>?) = withContext(Dispatchers.IO) {
-        var found = lanAddressResolver.hotspotEndpoints(before).firstOrNull()
+    private suspend fun awaitHotspotEndpoint(before: Set<String>?, beforeIfaces: Set<String>?) = withContext(Dispatchers.IO) {
+        var found = lanAddressResolver.hotspotEndpoints(before, beforeIfaces).firstOrNull()
         var waited = 0L
         while (found == null && waited < ENDPOINT_POLL_MS) {
             delay(250)
             waited += 250
-            found = lanAddressResolver.hotspotEndpoints(before).firstOrNull()
+            found = lanAddressResolver.hotspotEndpoints(before, beforeIfaces).firstOrNull()
         }
         found
     }
@@ -479,7 +528,10 @@ class LocalOnlyHotspotManager(
         private const val LOHS_START_TIMEOUT_MS = 15_000L
         private const val HTTP_START_TIMEOUT_MS = 6_000L
         private const val ENDPOINT_POLL_MS = 5_000L
-        private const val ENDPOINT_REFINE_MS = 25_000L
+        /** Matches the BLE announce window (`BlePeerCoordinator.ANNOUNCE_WAIT_MS`): an iPhone may join late. */
+        private const val ENDPOINT_REFINE_MS = 180_000L
+        private const val ENDPOINT_REFINE_MAX_STEP_MS = 2_000L
+        private const val ENDPOINT_DUMP_FIRST_MS = 5_000L
 
         fun mapFailure(reason: Int): String = when (reason) {
             WifiManager.LocalOnlyHotspotCallback.ERROR_INCOMPATIBLE_MODE ->

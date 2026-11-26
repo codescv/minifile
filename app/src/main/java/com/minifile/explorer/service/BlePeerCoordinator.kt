@@ -59,6 +59,8 @@ import com.minifile.explorer.core.peer.HotspotLinkMessage
 import com.minifile.explorer.core.peer.HotspotLinkUuids
 import com.minifile.explorer.core.peer.LinkBlocker
 import com.minifile.explorer.core.peer.LinkMode
+import com.minifile.explorer.core.peer.LohsReadyPolicy
+import com.minifile.explorer.core.peer.ReadyAction
 import com.minifile.explorer.core.peer.PeerInfo
 import com.minifile.explorer.core.peer.PeerPathPolicy
 import com.minifile.explorer.core.peer.PeerSource
@@ -1827,6 +1829,10 @@ class BlePeerCoordinator(
     /**
      * lohs-s: wait for `/api/peer/announce` (HTTP, survives BLE loss) or EVT `ready` (BLE). When the hotspot IP was
      * still unknown at credential time, the `hotspot` message is re-sent as soon as it is discovered.
+     *
+     * EVERY `ready` is handled (see [LohsReadyPolicy]) until one probe succeeds or the wait ends: iOS may first
+     * report its old station IP and only later its hotspot IP. A `ready` on an unknown subnet while `hostIp` is still
+     * unresolved adopts the matching local LOHS address (so routing binds the hotspot, never `wlan0`).
      */
     private suspend fun awaitAnnounceOrReady(
         c: GattClient,
@@ -1841,13 +1847,45 @@ class BlePeerCoordinator(
                     result.complete(announcedPeer(announced.await()))
                 }
                 val readyJob = launch {
-                    val r = c.awaitMessage(ANNOUNCE_WAIT_MS) { it is HotspotLinkMessage.Ready } as? HotspotLinkMessage.Ready
-                        ?: return@launch
-                    Diag.log(Diag.BLE) { "ready via BLE ip=${r.ip} port=${r.port} (hostIp=${info.hostIp.ifEmpty { "?" }})" }
-                    if (r.port !in 1..65535) return@launch
-                    if (info.hostIp.isNotEmpty() && !HostDecision.inSubnet(r.ip, info.hostIp, info.prefixLength)) return@launch
-                    val probed = probeWithRetries(listOf(r.ip), r.port, 5)
-                    if (probed != null) result.complete(probed)
+                    var probeJob: Job? = null
+                    var probeKey: String? = null
+                    while (isActive && !result.isCompleted) {
+                        val r = c.awaitMessage(ANNOUNCE_WAIT_MS) { it is HotspotLinkMessage.Ready } as? HotspotLinkMessage.Ready
+                            ?: break // BLE link closed / wait over: the HTTP announce path keeps running
+                        var live = hotspotManager.activeInfo ?: info
+                        if (live.hostIp.isEmpty()) {
+                            // Re-snapshot interfaces: the LOHS address may sit on the peer's subnet right now.
+                            live = hotspotManager.adoptEndpointForPeer(r.ip) ?: live
+                        }
+                        val action = LohsReadyPolicy.decide(
+                            ip = r.ip,
+                            port = r.port,
+                            hostIp = live.hostIp,
+                            prefixLength = live.prefixLength,
+                            inFlightKey = probeKey.takeIf { probeJob?.isActive == true },
+                        )
+                        Diag.log(Diag.BLE) {
+                            "ready via BLE ip=${r.ip} port=${r.port} (hostIp=${live.hostIp.ifEmpty { "?" }}) -> " +
+                                when (action) {
+                                    is ReadyAction.Probe -> "probe"
+                                    ReadyAction.AlreadyProbing -> "already probing"
+                                    ReadyAction.OffHotspotSubnet -> "ignored (off hotspot subnet)"
+                                    ReadyAction.BadEndpoint -> "ignored (bad endpoint)"
+                                }
+                        }
+                        if (action !is ReadyAction.Probe) continue
+                        probeJob?.cancel()
+                        probeKey = action.key
+                        peerDiscoveryHolder.invalidateInterfaces()
+                        probeJob = launch {
+                            val probed = probeWithRetries(listOf(action.ip), action.port, READY_PROBE_ATTEMPTS)
+                            if (probed != null) {
+                                result.complete(probed)
+                            } else {
+                                Diag.log(Diag.BLE) { "ready probe ${action.key} failed -> still waiting for ready/announce" }
+                            }
+                        }
+                    }
                 }
                 val refineJob = if (info.hostIp.isEmpty()) {
                     launch {
@@ -2163,6 +2201,9 @@ class BlePeerCoordinator(
          * `LocalOnlyHotspotManager`'s own 5 s poll). Kept short: a later-resolved IP is re-sent during the announce wait.
          */
         const val HOST_IP_WAIT_MS = 3_000L
+
+        /** Probe rounds per BLE `ready` endpoint (~2.5 s each); a newer `ready` supersedes the running probe. */
+        private const val READY_PROBE_ATTEMPTS = 8
         private const val SEEN_TTL_MS = 10_000L
         private const val RECENT_DEVICE_TTL_MS = 120_000L
         private const val L2CAP_CONNECT_TIMEOUT_MS = 8_000L
