@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddToDrive
@@ -72,6 +73,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.gallery.VideoSort
 import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.ClipboardState
 import com.minifile.explorer.core.model.Favorite
@@ -125,6 +127,11 @@ fun SelectionTopBar(
     )
 }
 
+enum class SelectionBarVariant {
+    FILES,
+    MEDIA,
+}
+
 enum class SelectionMoreAction {
     RENAME,
     COPY_TO_FAVORITE,
@@ -135,6 +142,8 @@ enum class SelectionMoreAction {
     ADD_TO_FAVORITES,
     TOGGLE_NOMEDIA,
     PROPERTIES,
+    EDIT_MEDIA,
+    CUT_MEDIA,
 }
 
 @Composable
@@ -145,6 +154,8 @@ fun SelectionBottomBar(
     onDelete: () -> Unit,
     onShare: () -> Unit,
     onMoreAction: (SelectionMoreAction) -> Unit,
+    variant: SelectionBarVariant = SelectionBarVariant.FILES,
+    onSend: (() -> Unit)? = null,
 ) {
     val s = LocalAppStrings.current
     var moreExpanded by remember { mutableStateOf(false) }
@@ -162,30 +173,58 @@ fun SelectionBottomBar(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            TextButton(onClick = onCopy) {
-                Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text(s[Str.COPY])
-            }
-            TextButton(onClick = onCut) {
-                Icon(Icons.Filled.ContentCut, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text(s[Str.CUT])
-            }
-            TextButton(onClick = onDelete) {
-                Icon(
-                    Icons.Filled.Delete,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(s[Str.DELETE], color = MaterialTheme.colorScheme.error)
-            }
-            TextButton(onClick = onShare) {
-                Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text(s[Str.SHARE])
+            if (variant == SelectionBarVariant.MEDIA) {
+                TextButton(onClick = { onSend?.invoke() ?: onMoreAction(SelectionMoreAction.SEND_TO_DEVICE) }) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(s[Str.SEND])
+                }
+                TextButton(onClick = onShare) {
+                    Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(s[Str.SHARE])
+                }
+                TextButton(onClick = onCopy) {
+                    Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(s[Str.COPY])
+                }
+                TextButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(s[Str.DELETE], color = MaterialTheme.colorScheme.error)
+                }
+            } else {
+                TextButton(onClick = onCopy) {
+                    Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(s[Str.COPY])
+                }
+                TextButton(onClick = onCut) {
+                    Icon(Icons.Filled.ContentCut, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(s[Str.CUT])
+                }
+                TextButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(s[Str.DELETE], color = MaterialTheme.colorScheme.error)
+                }
+                TextButton(onClick = onShare) {
+                    Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(s[Str.SHARE])
+                }
             }
             Box {
                 IconButton(onClick = { moreExpanded = true }) {
@@ -195,6 +234,24 @@ fun SelectionBottomBar(
                     expanded = moreExpanded,
                     onDismissRequest = { moreExpanded = false },
                 ) {
+                    if (variant == SelectionBarVariant.MEDIA) {
+                        DropdownMenuItem(
+                            text = { Text(s[Str.CUT]) },
+                            onClick = {
+                                moreExpanded = false
+                                onMoreAction(SelectionMoreAction.CUT_MEDIA)
+                            },
+                        )
+                        if (single != null) {
+                            DropdownMenuItem(
+                                text = { Text(s[Str.EDIT]) },
+                                onClick = {
+                                    moreExpanded = false
+                                    onMoreAction(SelectionMoreAction.EDIT_MEDIA)
+                                },
+                            )
+                        }
+                    }
                     if (single != null) {
                         DropdownMenuItem(
                             text = { Text(s[Str.RENAME]) },
@@ -226,13 +283,15 @@ fun SelectionBottomBar(
                             onMoreAction(SelectionMoreAction.COMPRESS_ZIP)
                         },
                     )
-                    DropdownMenuItem(
-                        text = { Text(s[Str.SEND_TO_DEVICE]) },
-                        onClick = {
-                            moreExpanded = false
-                            onMoreAction(SelectionMoreAction.SEND_TO_DEVICE)
-                        },
-                    )
+                    if (variant == SelectionBarVariant.FILES) {
+                        DropdownMenuItem(
+                            text = { Text(s[Str.SEND_TO_DEVICE]) },
+                            onClick = {
+                                moreExpanded = false
+                                onMoreAction(SelectionMoreAction.SEND_TO_DEVICE)
+                            },
+                        )
+                    }
                     if (singleIsZip) {
                         DropdownMenuItem(
                             text = { Text(s[Str.EXTRACT_ELLIPSIS]) },
@@ -242,7 +301,7 @@ fun SelectionBottomBar(
                             },
                         )
                     }
-                    if (single != null) {
+                    if (single != null && variant == SelectionBarVariant.FILES) {
                         DropdownMenuItem(
                             text = { Text(s[Str.ADD_TO_FAVORITES]) },
                             onClick = {
@@ -394,6 +453,8 @@ fun SortBottomSheet(
     onToggleViewMode: () -> Unit,
     onToggleShowHidden: () -> Unit,
     onDismiss: () -> Unit,
+    videoSortMode: VideoSort? = null,
+    onSelectVideoSort: ((VideoSort) -> Unit)? = null,
 ) {
     val s = LocalAppStrings.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -402,6 +463,40 @@ fun SortBottomSheet(
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 8.dp),
         ) {
+            if (videoSortMode != null && onSelectVideoSort != null) {
+                Text(s[Str.SORT], style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(12.dp))
+                val vOptions = listOf(
+                    VideoSort.RECENT to s[Str.GALLERY_VIDEO_SORT_RECENT],
+                    VideoSort.LARGEST to s[Str.GALLERY_VIDEO_SORT_LARGEST],
+                    VideoSort.LONGEST to s[Str.GALLERY_VIDEO_SORT_LONGEST],
+                )
+                for ((opt, label) in vOptions) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onSelectVideoSort(opt)
+                                onDismiss()
+                            }
+                            .padding(vertical = 6.dp),
+                    ) {
+                        RadioButton(
+                            selected = videoSortMode == opt,
+                            onClick = {
+                                onSelectVideoSort(opt)
+                                onDismiss()
+                            },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(label, style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
+                return@ModalBottomSheet
+            }
+
             Text(s[Str.SORT_AND_VIEW], style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(12.dp))
 

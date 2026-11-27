@@ -12,6 +12,12 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
+import com.minifile.explorer.core.gallery.BrowseLens
+import com.minifile.explorer.core.gallery.FolderLensOverride
+import com.minifile.explorer.core.gallery.GalleryMutation
+import com.minifile.explorer.core.gallery.GalleryRepository
+import com.minifile.explorer.core.gallery.GalleryScope
+import com.minifile.explorer.core.gallery.GalleryScopePolicy
 import com.minifile.explorer.core.gdrive.GDriveAuthException
 import com.minifile.explorer.core.gdrive.revokeOAuthTokenBestEffort
 import com.minifile.explorer.core.i18n.AppI18n
@@ -21,10 +27,12 @@ import com.minifile.explorer.core.model.Favorite
 import com.minifile.explorer.core.model.FtpServerBookmark
 import com.minifile.explorer.core.model.GDriveAuthMode
 import com.minifile.explorer.core.model.GDriveServerBookmark
+import com.minifile.explorer.core.model.MediaScanNotifier
 import com.minifile.explorer.core.model.OperationKind
 import com.minifile.explorer.core.model.SortSpec
 import com.minifile.explorer.core.model.TransferMode
 import com.minifile.explorer.core.model.ViewMode
+import com.minifile.explorer.ui.gallery.GalleryController
 import com.minifile.explorer.core.ops.ConflictResolution
 import com.minifile.explorer.core.ops.ConflictResolver
 import com.minifile.explorer.core.ops.FileOperations
@@ -115,6 +123,8 @@ sealed interface OverlayScreen {
     data class TextEditor(val path: VfsPath, val forceEdit: Boolean = false) : OverlayScreen
     data class ArchivePreview(val path: VfsPath) : OverlayScreen
     data class PdfViewer(val path: VfsPath) : OverlayScreen
+    data class MediaViewer(val scope: GalleryScope, val startPath: VfsPath) : OverlayScreen
+    data class MediaEditor(val path: VfsPath) : OverlayScreen
 }
 
 data class BreadcrumbCrumb(
@@ -146,8 +156,12 @@ data class BrowserUiState(
     val recursiveHits: List<SearchHit> = emptyList(),
     val selectedPaths: Set<VfsPath> = emptySet(),
     val lastToggledPath: VfsPath? = null,
+    val lens: BrowseLens = BrowseLens.FILES,
+    val galleryScope: GalleryScope? = null,
+    val isMediaRootCandidate: Boolean = false,
 ) {
     val isSelectionMode: Boolean get() = selectedPaths.isNotEmpty()
+    val isGalleryLens: Boolean get() = lens == BrowseLens.GALLERY && galleryScope != null
 }
 
 private data class BrowserBackEntry(
@@ -207,6 +221,8 @@ internal class MainViewModelDependencies(
         Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
     },
     val shareImportEngine: ShareImportEngine = ShareImportEngine(fileSystem),
+    val mediaScanNotifier: MediaScanNotifier = MediaScanNotifier.NOOP,
+    val galleryRepository: GalleryRepository = GalleryRepository(fileSystem, mediaScanNotifier = mediaScanNotifier),
 ) {
     companion object {
         fun fromContainer(container: AppContainer): MainViewModelDependencies =
@@ -252,6 +268,8 @@ internal class MainViewModelDependencies(
                 linkPhase = { container.blePeerCoordinator.updateSenderPhase(it) },
                 isVpnActive = { container.peerDiscoveryHolder.isVpnActive() },
                 shareImportEngine = container.shareImportEngine,
+                mediaScanNotifier = container.mediaScanNotifier,
+                galleryRepository = container.galleryRepository,
             )
     }
 }
@@ -284,6 +302,8 @@ class MainViewModel internal constructor(
         private const val STATE_DIR = "saved_dir"
         private const val STATE_ROOT_NAME = "saved_root_name"
         private const val STATE_ROOT_BASE = "saved_root_base"
+        private const val STATE_LENS = "saved_lens"
+        private const val STATE_GALLERY_SCOPE = "saved_gallery_scope"
 
         fun factory(container: AppContainer): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
@@ -315,6 +335,19 @@ class MainViewModel internal constructor(
 
     val settings: StateFlow<AppSettings> = deps.settingsRepository.settings
     val favorites: StateFlow<List<Favorite>> = deps.favoritesRepository.favorites
+
+    val galleryController: GalleryController by lazy {
+        GalleryController(
+            scope = vmScope,
+            settingsRepository = deps.settingsRepository,
+            repository = deps.galleryRepository,
+            mediaStoreIndexSource = _container?.mediaStoreIndexSource,
+            mediaStoreObserver = _container?.mediaStoreObserver,
+            geoIndexStore = _container?.geoIndexStore,
+            exifGeoReader = _container?.exifGeoReader,
+            ioDispatcher = ioDispatcher,
+        )
+    }
     val ftpServers: StateFlow<List<FtpServerBookmark>> = deps.ftpServersRepository.servers
     val gdriveServers: StateFlow<List<GDriveServerBookmark>> = deps.gdriveServersRepository.servers
     val gdriveSignInState: StateFlow<GDriveSignInState> = deps.gdriveSignInState
@@ -390,17 +423,33 @@ class MainViewModel internal constructor(
         vmScope.launch {
             deps.operationRegistry.completions.collect { event ->
                 _snackbarMessages.tryEmit(event)
-                if (_browser.value.currentDir != null) {
+                val b = _browser.value
+                if (b.isGalleryLens) {
+                    val sc = b.galleryScope
+                    if (sc != null) {
+                        galleryController.openScope(
+                            galleryScope = sc,
+                            isMediaRootAggregate = galleryController.state.value.isMediaRootAggregate,
+                            preserveFilter = true,
+                            silent = true,
+                        )
+                    }
+                } else if (b.currentDir != null) {
                     reloadCurrentDirectory(silent = true)
                 }
+                galleryController.refreshRecentHome()
                 deps.refreshVolumesAction()
             }
         }
 
-        // Restore directory from SavedStateHandle (process death E15) or rememberLastFolder setting
+        // Restore directory or Library gallery scope from SavedStateHandle (process death E15) or rememberLastFolder
+        val savedLensRaw = savedStateHandle.get<String>(STATE_LENS)
+        val savedGalleryScope = GalleryScope.parse(savedStateHandle.get<String>(STATE_GALLERY_SCOPE))
         val savedDirRaw = savedStateHandle.get<String>(STATE_DIR)
             ?: settings.value.takeIf { it.rememberLastFolder }?.lastFolder
-        if (savedDirRaw != null) {
+        if (savedLensRaw == BrowseLens.GALLERY.name && savedGalleryScope is GalleryScope.Library) {
+            openGalleryLibrary(recordHistory = false)
+        } else if (savedDirRaw != null) {
             val parsed = runCatching { VfsPath.parse(savedDirRaw) }.getOrNull()
             val rootName = savedStateHandle.get<String>(STATE_ROOT_NAME) ?: inferRootName(parsed)
             val rootBase = savedStateHandle.get<String>(STATE_ROOT_BASE)
@@ -415,6 +464,7 @@ class MainViewModel internal constructor(
                 )
             }
         }
+        galleryController.refreshRecentHome()
     }
 
     private fun restoreInitialTab(): MainTab {
@@ -486,14 +536,300 @@ class MainViewModel internal constructor(
         }
         directoryLoadJob?.cancel()
         recursiveSearchJob?.cancel()
-        val hadSelection = _browser.value.selectedPaths.isNotEmpty()
+        val hadSelection = _browser.value.selectedPaths.isNotEmpty() || galleryController.state.value.isSelectionMode
+        galleryController.clearScope()
         _browser.value = BrowserUiState()
         savedStateHandle.remove<String>(STATE_DIR)
         savedStateHandle.remove<String>(STATE_ROOT_NAME)
         savedStateHandle.remove<String>(STATE_ROOT_BASE)
+        savedStateHandle.remove<String>(STATE_LENS)
+        savedStateHandle.remove<String>(STATE_GALLERY_SCOPE)
         if (hadSelection) {
             emitSimpleMessage(AppI18n.current()[Str.SELECTION_CLEARED])
         }
+    }
+
+    // --- Gallery Lens navigation & actions ---
+
+    fun openGalleryLibrary(recordHistory: Boolean = true) {
+        if (recordHistory) {
+            browserBackStack.clear()
+        }
+        directoryLoadJob?.cancel()
+        recursiveSearchJob?.cancel()
+        overlayBackStack.clear()
+        _overlay.value = null
+        _activeTab.value = MainTab.BROWSE
+        savedStateHandle[STATE_TAB] = MainTab.BROWSE.name
+        savedStateHandle.remove<String>(STATE_DIR)
+        savedStateHandle[STATE_LENS] = BrowseLens.GALLERY.name
+        savedStateHandle[STATE_GALLERY_SCOPE] = GalleryScope.Library.serialize()
+
+        _browser.value = BrowserUiState(
+            currentDir = null,
+            lens = BrowseLens.GALLERY,
+            galleryScope = GalleryScope.Library,
+        )
+        galleryController.openScope(GalleryScope.Library, isMediaRootAggregate = false)
+    }
+
+    fun switchBrowseLens(target: BrowseLens) {
+        val b = _browser.value
+        val dir = b.currentDir ?: return
+        galleryController.clearSelection()
+        clearSelection()
+        if (target == BrowseLens.FILES) {
+            galleryController.recordFolderMode(dir, FolderLensOverride.FILES)
+            galleryController.clearScope()
+            savedStateHandle[STATE_LENS] = BrowseLens.FILES.name
+            savedStateHandle.remove<String>(STATE_GALLERY_SCOPE)
+            _browser.value = b.copy(lens = BrowseLens.FILES, galleryScope = null)
+            // R2-2: Refresh raw directory entries so deletes/moves/edits performed in Gallery lens show immediately
+            reloadCurrentDirectory(silent = true)
+        } else {
+            galleryController.recordFolderMode(dir, FolderLensOverride.GALLERY)
+            val volRoots = knownVolumeRoots()
+            val isRootAgg = GalleryScopePolicy.isMediaRoot(dir, volRoots)
+            val folderScope = GalleryScope.Folder(dir = dir, includeSubtree = true)
+            savedStateHandle[STATE_LENS] = BrowseLens.GALLERY.name
+            savedStateHandle[STATE_GALLERY_SCOPE] = folderScope.serialize()
+            _browser.value = b.copy(
+                lens = BrowseLens.GALLERY,
+                galleryScope = folderScope,
+                searchActive = false,
+                searchQuery = "",
+            )
+            galleryController.openScope(folderScope, isMediaRootAggregate = isRootAgg)
+        }
+    }
+
+    fun alwaysOpenCurrentFolderAsFiles() {
+        val dir = _browser.value.currentDir ?: return
+        galleryController.recordFolderMode(dir, FolderLensOverride.FILES, alwaysFiles = true)
+        galleryController.clearSelection()
+        galleryController.clearScope()
+        savedStateHandle[STATE_LENS] = BrowseLens.FILES.name
+        savedStateHandle.remove<String>(STATE_GALLERY_SCOPE)
+        _browser.value = _browser.value.copy(lens = BrowseLens.FILES, galleryScope = null)
+        reloadCurrentDirectory(silent = true)
+    }
+
+    fun openMediaViewer(scope: GalleryScope, startPath: VfsPath) {
+        openOverlay(OverlayScreen.MediaViewer(scope = scope, startPath = startPath))
+    }
+
+    fun openMediaEditor(path: VfsPath) {
+        openOverlay(OverlayScreen.MediaEditor(path = path))
+    }
+
+    fun showMediaInFolder(path: VfsPath) {
+        vmScope.launch {
+            val parent = withContext(ioDispatcher) { runCatching { deps.fileSystem.parent(path) }.getOrNull() }
+                ?: return@launch
+            overlayBackStack.clear()
+            _overlay.value = null
+            _activeTab.value = MainTab.BROWSE
+            savedStateHandle[STATE_TAB] = MainTab.BROWSE.name
+            // Open directly in Files lens so the user sees the physical file in its folder
+            galleryController.recordFolderMode(parent, FolderLensOverride.FILES)
+            navigateToDirectory(parent)
+        }
+    }
+
+    /**
+     * Prepares media according to user export options (`Original` / `Most compatible` + `Remove location`)
+     * via `OperationRegistry` (`OperationKind.EXPORT`) so exact file sizes exist on disk before
+     * invoking [sendToPeer], with OOM / Throwable protection and LOHS network release on failure (H7/M5).
+     */
+    fun sendMediaToPeer(
+        context: Context,
+        peer: PeerInfo,
+        paths: List<VfsPath>,
+    ) {
+        if (paths.isEmpty()) {
+            releaseJoinedNetworkIfTarget(peer, immediate = true)
+            return
+        }
+        val s = settings.value
+        val engine = _container?.imageEditorEngine
+        if (engine == null || (s.galleryExportFormat == com.minifile.explorer.core.gallery.MediaExportFormat.ORIGINAL && !s.galleryRemoveLocationOnExport)) {
+            sendToPeer(context, peer, paths)
+            return
+        }
+        galleryController.clearSelection()
+        val appContext = context.applicationContext ?: context
+        val sStart = AppI18n.current()
+        deps.operationRegistry.enqueue(
+            context = appContext,
+            kind = OperationKind.EXPORT,
+            title = sStart[Str.GALLERY_PREPARING_EXPORT],
+        ) { _, sink ->
+            try {
+                val (preparedPaths, _) = engine.prepareForExport(
+                    paths = paths,
+                    format = s.galleryExportFormat,
+                    removeLocation = s.galleryRemoveLocationOnExport,
+                )
+                if (sink.isCancelled()) {
+                    releaseJoinedNetworkIfTarget(peer, immediate = true)
+                    OperationRunOutcome(message = AppI18n.current().format(Str.SENDING_CANCELLED, peer.name))
+                } else {
+                    sendToPeer(appContext, peer, preparedPaths)
+                    OperationRunOutcome(message = AppI18n.current().format(Str.SENDING_TO_ELLIPSIS, peer.name))
+                }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                releaseJoinedNetworkIfTarget(peer, immediate = true)
+                val sEnd = AppI18n.current()
+                val msg = sEnd.format(Str.GALLERY_EXPORT_FAILED_FMT, localizeMediaEditError(t, sEnd))
+                OperationRunOutcome(message = msg, errorSummary = msg)
+            }
+        }
+    }
+
+    /**
+     * Persists an image edit via `OperationRegistry` (`OperationKind.EDIT`) so saves survive
+     * editor screen disposal, refresh thumbnails/SAF/.nomedia snapshots immediately, and report status (M5).
+     */
+    fun saveImageEdit(
+        context: Context,
+        sourcePath: VfsPath,
+        recipe: com.minifile.explorer.core.gallery.EditRecipe,
+        replaceOriginal: Boolean,
+        onComplete: (Boolean) -> Unit = {},
+    ) {
+        val c = _container ?: return
+        val appContext = context.applicationContext ?: context
+        deps.operationRegistry.enqueue(
+            context = appContext,
+            kind = OperationKind.EDIT,
+            title = AppI18n.current()[Str.SAVING],
+        ) { _, _ ->
+            val res = c.imageEditorEngine.applyEdit(
+                sourcePath = sourcePath,
+                recipe = recipe,
+                replaceOriginal = replaceOriginal,
+            )
+            val sEnd = AppI18n.current()
+            res.fold(
+                onSuccess = { out ->
+                    if (out.replacedOriginal) {
+                        c.galleryThumbnailCache.clearMemoryCache()
+                    }
+                    val stat = runCatching { deps.fileSystem.stat(out.savedPath) }.getOrNull()
+                    if (stat != null) {
+                        val item = com.minifile.explorer.core.gallery.MediaItem(
+                            path = stat.path,
+                            name = stat.name,
+                            kind = com.minifile.explorer.core.gallery.MediaKind.IMAGE,
+                            mime = stat.resolvedMimeType,
+                            sizeBytes = stat.size.coerceAtLeast(0L),
+                            bestDateMs = stat.lastModified,
+                            modifiedMs = stat.lastModified,
+                        )
+                        galleryController.onMutation(GalleryMutation.Upserted(listOf(item)))
+                    }
+                    val msg = when {
+                        out.reducedResolution -> sEnd.format(Str.GALLERY_SAVED_REDUCED_RES_FMT, out.fileName)
+                        out.replacedOriginal -> sEnd.format(Str.GALLERY_REPLACED_ORIGINAL_FMT, out.fileName)
+                        else -> sEnd.format(Str.GALLERY_SAVED_COPY_FMT, out.fileName)
+                    }
+                    onComplete(true)
+                    OperationRunOutcome(message = msg)
+                },
+                onFailure = { err ->
+                    val msg = sEnd.format(Str.GALLERY_EDIT_FAILED_FMT, localizeMediaEditError(err, sEnd))
+                    onComplete(false)
+                    OperationRunOutcome(message = msg, errorSummary = msg)
+                },
+            )
+        }
+    }
+
+    /**
+     * Persists a lossless video remux edit via `OperationRegistry` (`OperationKind.EDIT`) (M5).
+     */
+    fun saveVideoEdit(
+        context: Context,
+        sourcePath: VfsPath,
+        recipe: com.minifile.explorer.core.gallery.EditRecipe,
+        probe: com.minifile.explorer.data.media.VideoProbeInfo?,
+        replaceOriginal: Boolean,
+        onComplete: (Boolean) -> Unit = {},
+    ) {
+        val c = _container ?: return
+        val appContext = context.applicationContext ?: context
+        deps.operationRegistry.enqueue(
+            context = appContext,
+            kind = OperationKind.EDIT,
+            title = AppI18n.current()[Str.SAVING],
+        ) { _, _ ->
+            val res = c.losslessMp4Remuxer.applyEdit(
+                sourcePath = sourcePath,
+                recipe = recipe,
+                probe = probe,
+                replaceOriginal = replaceOriginal,
+            )
+            val sEnd = AppI18n.current()
+            res.fold(
+                onSuccess = { out ->
+                    if (out.replacedOriginal) {
+                        c.galleryThumbnailCache.clearMemoryCache()
+                    }
+                    val stat = runCatching { deps.fileSystem.stat(out.savedPath) }.getOrNull()
+                    if (stat != null) {
+                        val item = com.minifile.explorer.core.gallery.MediaItem(
+                            path = stat.path,
+                            name = stat.name,
+                            kind = com.minifile.explorer.core.gallery.MediaKind.VIDEO,
+                            mime = stat.resolvedMimeType,
+                            sizeBytes = stat.size.coerceAtLeast(0L),
+                            bestDateMs = stat.lastModified,
+                            modifiedMs = stat.lastModified,
+                            durationMs = out.outputDurationMs,
+                        )
+                        galleryController.onMutation(GalleryMutation.Upserted(listOf(item)))
+                    }
+                    val msg = if (out.replacedOriginal) {
+                        sEnd.format(Str.GALLERY_REPLACED_ORIGINAL_FMT, out.fileName)
+                    } else {
+                        sEnd.format(Str.GALLERY_SAVED_COPY_FMT, out.fileName)
+                    }
+                    onComplete(true)
+                    OperationRunOutcome(message = msg)
+                },
+                onFailure = { err ->
+                    val msg = sEnd.format(Str.GALLERY_EDIT_FAILED_FMT, localizeMediaEditError(err, sEnd))
+                    onComplete(false)
+                    OperationRunOutcome(message = msg, errorSummary = msg)
+                },
+            )
+        }
+    }
+
+    private fun localizeMediaEditError(err: Throwable, s: com.minifile.explorer.core.i18n.AppStrings): String {
+        val code = (err as? com.minifile.explorer.core.gallery.MediaEditException)?.code
+            ?: (err.cause as? com.minifile.explorer.core.gallery.MediaEditException)?.code
+        return when (code) {
+            com.minifile.explorer.core.gallery.MediaEditErrorCode.NO_EDITS -> s[Str.GALLERY_ERR_NO_EDITS]
+            com.minifile.explorer.core.gallery.MediaEditErrorCode.UNSUPPORTED_FORMAT -> s[Str.GALLERY_ERR_UNSUPPORTED_FORMAT]
+            com.minifile.explorer.core.gallery.MediaEditErrorCode.CLIP_TOO_SHORT -> s[Str.GALLERY_CLIP_TOO_SHORT_LOSSLESS]
+            com.minifile.explorer.core.gallery.MediaEditErrorCode.INSUFFICIENT_SPACE -> s[Str.GALLERY_ERR_INSUFFICIENT_SPACE]
+            com.minifile.explorer.core.gallery.MediaEditErrorCode.READ_FAILED -> s[Str.GALLERY_ERR_READ_FAILED]
+            com.minifile.explorer.core.gallery.MediaEditErrorCode.WRITE_FAILED -> s[Str.GALLERY_ERR_WRITE_FAILED]
+            null -> when (err) {
+                is java.io.IOException -> s[Str.GALLERY_ERR_WRITE_FAILED]
+                else -> s[Str.OP_FAILED_GENERIC]
+            }
+        }
+    }
+
+    private fun knownVolumeRoots(): List<VfsPath> {
+        val list = ArrayList<VfsPath>()
+        volumes.value.mapNotNullTo(list) { it.root }
+        val primary = VfsPath.Local(deps.primaryStoragePathProvider())
+        if (primary !in list) list.add(primary)
+        return list
     }
 
     fun openVolume(volume: Volume) {
@@ -718,6 +1054,7 @@ class MainViewModel internal constructor(
     }
 
     override fun onCleared() {
+        galleryController.stop()
         deps.cancelGDriveSignIn()
         shareResolveJob?.cancel()
         shareSaveCancelled.set(true)
@@ -849,7 +1186,12 @@ class MainViewModel internal constructor(
             if (s.rememberLastFolder) s.copy(lastFolder = dir.serialize()) else s
         }
 
+        val volRoots = knownVolumeRoots()
+        val isMediaCandidate = GalleryScopePolicy.isInsideMediaRoot(dir, volRoots) ||
+            galleryController.folderModePreferences().resolveNearestAncestor(dir)?.second?.mode == FolderLensOverride.GALLERY
+
         recursiveSearchJob?.cancel()
+        galleryController.clearSelection()
         _browser.value = prev.copy(
             currentDir = dir,
             rootVolumeName = effectiveRootName,
@@ -865,6 +1207,9 @@ class MainViewModel internal constructor(
             recursiveHits = emptyList(),
             selectedPaths = if (prev.currentDir == dir) prev.selectedPaths else emptySet(),
             lastToggledPath = null,
+            lens = if (prev.currentDir == dir) prev.lens else BrowseLens.FILES,
+            galleryScope = if (prev.currentDir == dir) prev.galleryScope else null,
+            isMediaRootCandidate = isMediaCandidate,
         )
 
         if (hadSelection) {
@@ -897,6 +1242,54 @@ class MainViewModel internal constructor(
                     st to list
                 }
                 val validSelected = _browser.value.selectedPaths.intersect(allChildren.map { it.path }.toSet())
+
+                // Evaluate GalleryScopePolicy (automatic DCIM / Pictures lens for Local & SAF)
+                val volRoots = knownVolumeRoots()
+                val overrides = galleryController.folderModePreferences()
+                val mediaRoot = GalleryScopePolicy.mediaRootFor(dir, volRoots)
+                val isCandidate = mediaRoot != null ||
+                    overrides.resolveNearestAncestor(dir)?.second?.mode == FolderLensOverride.GALLERY
+                val hasNomedia = if (isCandidate) {
+                    withContext(ioDispatcher) {
+                        deps.galleryRepository.vfsSource.hasNomediaUpTo(dir, mediaRoot)
+                    }
+                } else {
+                    false
+                }
+                val directOrSubMediaCount = if (isCandidate) {
+                    val hasAny = withContext(ioDispatcher) {
+                        deps.galleryRepository.vfsSource.hasAnyMedia(
+                            dir = dir,
+                            preloadedRootEntries = allChildren,
+                            includeSubtree = true,
+                            includeHidden = settings.value.showHidden,
+                        )
+                    }
+                    if (hasAny) 1 else 0
+                } else {
+                    0
+                }
+                if (overrides.resolveNearestAncestor(dir) != null) {
+                    galleryController.touchFolderMode(dir)
+                }
+                val decision = GalleryScopePolicy.decide(
+                    dir = dir,
+                    volumeRoots = volRoots,
+                    autoOpenMediaFolders = settings.value.galleryAutoOpenMediaFolders,
+                    overrides = overrides,
+                    hasNomediaInDirOrAncestorToMediaRoot = hasNomedia,
+                    mediaCountInSubtree = directOrSubMediaCount,
+                )
+                val effectiveLens = if (_browser.value.searchActive) BrowseLens.FILES else decision.lens
+                val effectiveScope = if (effectiveLens == BrowseLens.GALLERY) decision.scope else null
+
+                savedStateHandle[STATE_LENS] = effectiveLens.name
+                if (effectiveScope != null) {
+                    savedStateHandle[STATE_GALLERY_SCOPE] = effectiveScope.serialize()
+                } else {
+                    savedStateHandle.remove<String>(STATE_GALLERY_SCOPE)
+                }
+
                 _browser.value = _browser.value.copy(
                     currentDirNode = dirStat,
                     rawEntries = allChildren,
@@ -904,8 +1297,26 @@ class MainViewModel internal constructor(
                     errorMessage = null,
                     permissionRequired = false,
                     selectedPaths = validSelected,
+                    lens = effectiveLens,
+                    galleryScope = effectiveScope,
+                    isMediaRootCandidate = isCandidate,
                 )
                 recomputeVisibleEntries(settings.value)
+
+                if (effectiveScope != null) {
+                    galleryController.openScope(
+                        galleryScope = effectiveScope,
+                        isMediaRootAggregate = decision.isMediaRootAggregate,
+                        preserveFilter = !showSpinner,
+                        silent = !showSpinner,
+                    )
+                    if (decision.isAutoActivated && !settings.value.galleryAutoEntryHintShown) {
+                        deps.settingsRepository.update { it.copy(galleryAutoEntryHintShown = true) }
+                        emitSimpleMessage(AppI18n.current().format(Str.GALLERY_AUTO_SNACKBAR_FMT, dir.displayName))
+                    }
+                } else {
+                    galleryController.clearScope()
+                }
             } catch (e: Exception) {
                 val str = AppI18n.current()
                 val msg = e.message ?: str[Str.UNABLE_READ_FOLDER]
@@ -1067,8 +1478,10 @@ class MainViewModel internal constructor(
         if (_overlay.value != null) return true
         if (_activeTab.value == MainTab.BROWSE) {
             val b = _browser.value
+            if (galleryController.state.value.isSelectionMode) return true
             if (b.isSelectionMode) return true
             if (b.searchActive) return true
+            if (b.galleryScope is GalleryScope.Library) return true
             if (b.currentDir != null) return true
         } else {
             return true
@@ -1087,8 +1500,10 @@ class MainViewModel internal constructor(
         }
         val b = _browser.value
         when {
+            galleryController.state.value.isSelectionMode -> galleryController.clearSelection()
             b.isSelectionMode -> clearSelection()
             b.searchActive -> closeSearch()
+            b.galleryScope is GalleryScope.Library -> navigateToStorageHome()
             b.currentDir != null -> navigateUpOrHome()
         }
     }
@@ -1133,7 +1548,13 @@ class MainViewModel internal constructor(
 
     // --- Search ---
     fun openSearch() {
-        _browser.value = _browser.value.copy(searchActive = true)
+        val b = _browser.value
+        if (b.lens == BrowseLens.GALLERY && b.currentDir != null) {
+            galleryController.clearSelection()
+            _browser.value = b.copy(lens = BrowseLens.FILES, galleryScope = null, searchActive = true)
+        } else {
+            _browser.value = b.copy(searchActive = true)
+        }
     }
 
     fun closeSearch() {
@@ -1339,6 +1760,18 @@ class MainViewModel internal constructor(
             } else {
                 deps.fileOperations.move(items, destinationDir, resolver, sink)
             }
+            // Rescan destination (and source items on move) so MediaStore stays in sync
+            val scanTargets = buildList {
+                add(destinationDir)
+                for (item in items) {
+                    if (mode == TransferMode.MOVE) add(item)
+                    runCatching { deps.fileSystem.child(destinationDir, item.displayName) }.getOrNull()?.let(::add)
+                }
+            }
+            deps.mediaScanNotifier.rescanFiles(scanTargets)
+            if (mode == TransferMode.MOVE && res.succeeded > 0) {
+                galleryController.onMutation(GalleryMutation.Removed(items))
+            }
             if (clearClipboardOnComplete && !res.cancelled && res.failed.isEmpty()) {
                 ClipboardHolder.clear()
             } else if (clearClipboardOnComplete && mode == TransferMode.COPY) {
@@ -1461,9 +1894,11 @@ class MainViewModel internal constructor(
         }
         vmScope.launch {
             try {
-                withContext(ioDispatcher) {
+                val renamed = withContext(ioDispatcher) {
                     deps.fileOperations.rename(item, newName.trim())
                 }
+                deps.mediaScanNotifier.rescanFiles(listOf(item, renamed))
+                galleryController.onMutation(GalleryMutation.Renamed(item, renamed, newName.trim()))
                 clearSelection()
                 reloadCurrentDirectory(silent = true)
                 onSuccess()
@@ -1485,6 +1920,10 @@ class MainViewModel internal constructor(
             title = if (allGDrive) sStart.format(Str.MOVING_TO_TRASH, label) else sStart.format(Str.DELETING_ITEMS, label),
         ) { _, sink ->
             val res = deps.fileOperations.delete(items, sink)
+            deps.mediaScanNotifier.rescanFiles(items)
+            if (res.succeeded > 0) {
+                galleryController.onMutation(GalleryMutation.Removed(items))
+            }
             val firstFailed = res.failed.firstOrNull()
             val expiredServerId = if ((firstFailed != null && AppI18n.isSignInExpiredMessage(firstFailed.second))) {
                 (firstFailed.first as? VfsPath.GDrive)?.serverId
@@ -1586,6 +2025,7 @@ class MainViewModel internal constructor(
                 allowLargeArchive = allowBombOverride,
                 sink = sink,
             )
+            deps.mediaScanNotifier.rescanFiles(listOf(actualDest))
             val sEnd = AppI18n.current()
             val unsafeNote = when (res.unsafeEntriesSkipped) {
                 0 -> ""

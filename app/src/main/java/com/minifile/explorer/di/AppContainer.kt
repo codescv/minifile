@@ -4,6 +4,8 @@ import android.content.Context
 import android.os.Build
 import android.os.Environment
 import com.minifile.explorer.core.ftp.FtpClientFileSystem
+import com.minifile.explorer.core.gallery.GalleryRepository
+import com.minifile.explorer.core.gallery.VfsListingIndexSource
 import com.minifile.explorer.core.i18n.AppI18n
 import com.minifile.explorer.core.gdrive.GoogleDriveFileSystem
 import com.minifile.explorer.core.gdrive.OAuthTokenProvider
@@ -16,6 +18,7 @@ import com.minifile.explorer.core.ops.ZipArchiver
 import com.minifile.explorer.core.share.ShareImportEngine
 import com.minifile.explorer.core.vfs.FileSystemRepository
 import com.minifile.explorer.core.vfs.LocalFileSystem
+import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.data.AndroidMediaScanNotifier
 import com.minifile.explorer.data.DiagnosticsController
 import com.minifile.explorer.data.AndroidVolumeProvider
@@ -30,8 +33,16 @@ import com.minifile.explorer.data.PersistedTreeStore
 import com.minifile.explorer.data.SafFileSystem
 import com.minifile.explorer.data.SettingsRepository
 import com.minifile.explorer.data.SharedPrefsKeyValueStore
+import com.minifile.explorer.data.gallery.ExifGeoReader
+import com.minifile.explorer.data.gallery.GalleryThumbnailCache
+import com.minifile.explorer.data.gallery.GeoIndexStore
+import com.minifile.explorer.data.gallery.MediaStoreIndexSource
+import com.minifile.explorer.data.gallery.MediaStoreObserver
 import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
 import com.minifile.explorer.data.gdrive.GDriveSignInController
+import com.minifile.explorer.data.media.ImageEditorEngine
+import com.minifile.explorer.data.media.LosslessMp4Remuxer
+import com.minifile.explorer.data.media.VideoTranscoder
 import com.minifile.explorer.data.update.UpdateManager
 import com.minifile.explorer.service.BlePeerCoordinator
 import com.minifile.explorer.service.LocalOnlyHotspotManager
@@ -125,6 +136,38 @@ class AppContainer(context: Context) {
     val shareImportEngine = ShareImportEngine(fileSystem, mediaScanNotifier)
     val zipArchiver = ZipArchiver(fileSystem)
     val checksumCalculator = ChecksumCalculator(fileSystem)
+
+    // Gallery / Photos infrastructure
+    val mediaStoreIndexSource = MediaStoreIndexSource(appContext)
+    val mediaStoreObserver = MediaStoreObserver(appContext)
+    val galleryThumbnailCache = GalleryThumbnailCache(appContext, safFileSystem)
+    val geoIndexStore = GeoIndexStore(appContext)
+    val exifGeoReader = ExifGeoReader(appContext, safFileSystem, geoIndexStore)
+    val losslessMp4Remuxer = LosslessMp4Remuxer(appContext, fileSystem, mediaScanNotifier, safFileSystem)
+    val videoTranscoder: VideoTranscoder = VideoTranscoder.UNAVAILABLE
+    val imageEditorEngine = ImageEditorEngine(
+        context = appContext,
+        fs = fileSystem,
+        mediaScanNotifier = mediaScanNotifier,
+        losslessMp4Remuxer = losslessMp4Remuxer,
+    ).also { it.cleanupStaleTempFiles() }
+    val galleryRepository = GalleryRepository(
+        fs = fileSystem,
+        primaryIndexSource = mediaStoreIndexSource,
+        mediaScanNotifier = mediaScanNotifier,
+        vfsSource = VfsListingIndexSource(
+            fs = fileSystem,
+            libraryRootsProvider = {
+                val base = Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
+                listOf(
+                    VfsPath.Local("$base/DCIM"),
+                    VfsPath.Local("$base/Pictures"),
+                    VfsPath.Local("$base/Movies"),
+                    VfsPath.Local("$base/Download"),
+                )
+            },
+        ),
+    )
     val lanAddressResolver = LanAddressResolver(appContext)
     val updateManager = UpdateManager(appContext, settingsRepository)
     val operationRegistry = OperationRegistry.instance

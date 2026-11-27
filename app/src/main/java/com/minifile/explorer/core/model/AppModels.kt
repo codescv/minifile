@@ -1,5 +1,8 @@
 package com.minifile.explorer.core.model
 
+import com.minifile.explorer.core.gallery.GalleryGroupBy
+import com.minifile.explorer.core.gallery.GridDensity
+import com.minifile.explorer.core.gallery.MediaExportFormat
 import com.minifile.explorer.core.i18n.AppLanguage
 import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsNode
@@ -321,6 +324,16 @@ data class AppSettings(
     val gdriveLastClientSecret: String = "",
     val agentFeedbackEmail: String = "",
     val appLanguage: AppLanguage = AppLanguage.SYSTEM,
+    // Gallery / Photos settings
+    val galleryAutoOpenMediaFolders: Boolean = true,
+    val galleryShowRecentOnHome: Boolean = true,
+    val galleryGroupBy: GalleryGroupBy = GalleryGroupBy.DAY,
+    val galleryGridDensity: GridDensity = GridDensity.MEDIUM,
+    val galleryExportFormat: MediaExportFormat = MediaExportFormat.ORIGINAL,
+    val galleryRemoveLocationOnExport: Boolean = false,
+    val galleryOnlinePlaceNames: Boolean = false,
+    val galleryFolderModesJson: String = "{}",
+    val galleryAutoEntryHintShown: Boolean = false,
 )
 
 enum class OperationKind {
@@ -332,6 +345,8 @@ enum class OperationKind {
     COMPUTE_SIZE,
     SEND,
     RECEIVE,
+    EDIT,
+    EXPORT,
 }
 
 data class OperationProgress(

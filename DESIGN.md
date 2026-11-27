@@ -26,8 +26,9 @@
 - Developers copying logs/configs between PC and phone over Wi-Fi without a cable or vendor app.
 - Minimalists who want a 3 MB file manager with a text editor and zip support, nothing else.
 
-### 0.3 Non-Goals (v1.0)
-- Cloud providers (Drive, SMB, WebDAV client), root access, media players, image editing, dark-pattern "cleaners".
+### 0.3 Non-Goals
+- Lightweight built-in image/video viewing, basic image crop/rotate/flip, and lossless video trim/single-cut/mute/rotate are in scope when they directly serve media browsing and transfer.
+- Explicitly out of scope: filters, color grading, stickers/text markup, AI erasure, face/pet/object clustering, memories, cloud photo sync, proprietary trash bins, multi-track video editors, transitions, PiP, straightening rulers, playback speed controls, grid video autoplay, standalone 4th Gallery tab, root access, dark-pattern "cleaners".
 - Multi-window drag-and-drop between two in-app panes on phone (we use clipboard bar + Favorites picker instead).
 
 ---
@@ -75,12 +76,15 @@ Material 3 cards/list sections:
    - `Internal Storage` (primary) — linear progress bar "58.2 GB free of 128 GB".
    - `SD Card` / `USB Drive (SanDisk)` — removable volumes; show `Mount` button if SAF access not yet granted (see §6).
    - Unmounted/ejected volumes disappear automatically (`ACTION_MEDIA_MOUNTED/UNMOUNTED` receiver).
-2. **App Data** — `Android/data`, `Android/obb` (SAF tree entries, with a lock badge until granted) and **Installed Apps** (Apps Inspector, §6.3).
+2. **Photos & Videos** — recent media thumbnail strip (pre-warmed via `head.json`, tapping opens the built-in immersive viewer, `See all` opens the `Library` gallery lens; toggleable in Settings ▸ Photos).
+3. **App Data** — `Android/data`, `Android/obb` (SAF tree entries, with a lock badge until granted) and **Installed Apps** (Apps Inspector, §6.3).
 3. **Mounted folders** — every SAF tree the user has granted via **"Mount a folder…"** (generic `ACTION_OPEN_DOCUMENT_TREE`; any folder the system picker allows becomes a browsable volume with full read/write). This is the **fallback when All-files access is denied** on API 30+ (the picker refuses the primary root and `Download` root, but allows e.g. `Documents`, `Pictures/MyFolder`, or an SD/USB root). Rows show display name, provider, and an *Unmount* (revoke) action in the row menu.
 4. **Quick Access** — `Download`, `DCIM`, `Pictures`, `Documents`, `Movies`, `Music` (standard public dirs).
 5. **Recent Favorites** — up to 4 most recently used favorites (chips), "See all →" to Favorites tab.
 
 ### 1.3 Directory Browser
+
+Entering `DCIM` or `Pictures` (on Local or SAF volumes) automatically switches the Directory Browser to the **Gallery Lens** (timeline grid with `All / Photos / Videos` filter, `Day / Month / Year / Place / Folder` grouping, independent density, Videos `Recent / Largest / Longest` sorting, drift-free timeline scrubber, drag-to-select, and a footer row for non-media items). The top-bar view-toggle slot serves as a one-tap `View as files ↔ View as gallery` escape hatch (remembered per nearest ancestor with LRU 64 and `Always open as Files`).
 
 **TopAppBar**
 - Title = current folder name (Storage Home shows "MiniFile").

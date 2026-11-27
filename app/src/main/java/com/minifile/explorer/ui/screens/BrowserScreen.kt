@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
@@ -65,6 +66,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.gallery.BrowseLens
+import com.minifile.explorer.core.gallery.GalleryGroupBy
+import com.minifile.explorer.core.gallery.GalleryScope
+import com.minifile.explorer.core.gallery.MediaExtensionRegistry
+import com.minifile.explorer.core.gallery.MediaFilter
 import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.GDriveServerBookmark
 import com.minifile.explorer.core.model.TransferMode
@@ -91,6 +97,7 @@ import com.minifile.explorer.ui.components.FileListRow
 import com.minifile.explorer.ui.components.PropertiesSheet
 import com.minifile.explorer.ui.components.RenameDialog
 import com.minifile.explorer.ui.components.RowAction
+import com.minifile.explorer.ui.components.SelectionBarVariant
 import com.minifile.explorer.ui.components.SelectionBottomBar
 import com.minifile.explorer.ui.components.SelectionMoreAction
 import com.minifile.explorer.ui.components.SelectionTopBar
@@ -121,6 +128,7 @@ fun BrowserScreen(
     onGrantAllFilesAccess: () -> Unit,
     onMountVolumeSaf: (Volume) -> Unit,
     onPickGoogleAccount: (String, String, GDriveServerBookmark?) -> Unit = { _, _, _ -> },
+    onRequestMediaLocationPermission: () -> Unit = {},
     isActiveTab: Boolean = true,
 ) {
     val context = LocalContext.current
@@ -128,6 +136,8 @@ fun BrowserScreen(
     val scope = rememberCoroutineScope()
 
     val browser by viewModel.browser.collectAsState()
+    val galleryState by viewModel.galleryController.state.collectAsState()
+    val recentMediaItems by viewModel.galleryController.recentHomeItems.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
     val ftpServers by viewModel.ftpServers.collectAsState()
@@ -145,6 +155,7 @@ fun BrowserScreen(
     var addFavoriteTarget by remember { mutableStateOf<PendingFavorite?>(null) }
     var compressTargets by remember { mutableStateOf<List<VfsNode>?>(null) }
     var sendToDeviceTargets by remember { mutableStateOf<List<VfsNode>?>(null) }
+    var sendTargetsFromGallery by remember { mutableStateOf(false) }
     var extractTarget by remember { mutableStateOf<VfsPath?>(null) }
     var favoritePickerRequest by remember { mutableStateOf<FavoriteTransferRequest?>(null) }
 
@@ -152,14 +163,21 @@ fun BrowserScreen(
     // user swipes to Transfer/Settings; it must never hijack Back there (MiniFileRoot's BackHandler
     // + MainViewModel.handleBack() return to Browse with the folder/search/selection preserved).
     BackHandler(
-        enabled = isActiveTab && (browser.isSelectionMode || browser.searchActive || browser.currentDir != null),
+        enabled = isActiveTab && (
+            galleryState.isSelectionMode ||
+                browser.isSelectionMode ||
+                browser.searchActive ||
+                browser.galleryScope is GalleryScope.Library ||
+                browser.currentDir != null
+            ),
     ) {
         viewModel.handleBack()
     }
 
-    // Storage Home mode when currentDir == null
+    // Storage Home mode when currentDir == null and not in Gallery Library scope
     val curDir = browser.currentDir
-    if (curDir == null) {
+    val isLibraryGallery = curDir == null && browser.galleryScope is GalleryScope.Library
+    if (curDir == null && !isLibraryGallery) {
         StorageHomeScreen(
             volumes = volumes,
             favorites = favorites,
@@ -234,6 +252,13 @@ fun BrowserScreen(
                 )
             },
             onClearClipboard = { ClipboardHolder.clear() },
+            recentMediaItems = recentMediaItems,
+            showRecentMedia = settings.galleryShowRecentOnHome && settings.showThumbnails,
+            thumbnailCache = viewModel.container.galleryThumbnailCache,
+            onOpenRecentMedia = { item ->
+                viewModel.openMediaViewer(GalleryScope.Library, item.path)
+            },
+            onSeeAllMedia = { viewModel.openGalleryLibrary() },
         )
 
         val homeFavoritePaths = remember(favorites) { favorites.map { it.path }.toSet() }
@@ -319,17 +344,30 @@ fun BrowserScreen(
         return
     }
 
-    // Directory Browser mode
+    // Directory Browser / Gallery Lens mode
+    val isGalleryMode = browser.isGalleryLens || isLibraryGallery
+    val isAnySelectionMode = if (isGalleryMode) galleryState.isSelectionMode else browser.isSelectionMode
     var overflowExpanded by remember { mutableStateOf(false) }
     var fabMenuExpanded by remember { mutableStateOf(false) }
 
     val favoritePaths = remember(favorites) { favorites.map { it.path }.toSet() }
-    val isCurrentDirFavorite = curDir in favoritePaths
+    val isCurrentDirFavorite = curDir != null && curDir in favoritePaths
     val cutSet = remember(clipboard) {
         if (clipboard?.mode == TransferMode.MOVE) clipboard!!.items.toSet() else emptySet()
     }
     val existingNames = remember(browser.rawEntries) { browser.rawEntries.map { it.name }.toSet() }
-    val canWriteHere = browser.currentDirNode?.canWrite != false
+    val canWriteHere = curDir != null && browser.currentDirNode?.canWrite != false
+
+    fun gallerySelectedNodes(): List<VfsNode> = viewModel.galleryController.selectedItems().map { item ->
+        VfsNode(
+            path = item.path,
+            name = item.name,
+            isDirectory = false,
+            size = item.sizeBytes,
+            lastModified = item.modifiedMs,
+            mimeType = item.mime,
+        )
+    }
 
     fun handleNodeTap(node: VfsNode) {
         if (browser.isSelectionMode) {
@@ -342,6 +380,13 @@ fun BrowserScreen(
         }
         val ext = PathUtils.extensionOf(node.name)
         when {
+            MediaExtensionRegistry.isMedia(node.name, node.mimeType) && curDir != null -> {
+                viewModel.openMediaViewer(
+                    scope = GalleryScope.Folder(curDir, includeSubtree = false),
+                    startPath = node.path,
+                )
+            }
+
             ext == "pdf" -> {
                 viewModel.openOverlay(OverlayScreen.PdfViewer(node.path))
             }
@@ -431,12 +476,18 @@ fun BrowserScreen(
     Scaffold(
         topBar = {
             when {
-                browser.isSelectionMode -> {
+                isAnySelectionMode -> {
                     SelectionTopBar(
-                        selectedCount = browser.selectedPaths.size,
-                        onExitSelection = { viewModel.clearSelection() },
-                        onSelectAll = { viewModel.selectAll() },
-                        onInvertSelection = { viewModel.invertSelection() },
+                        selectedCount = if (isGalleryMode) galleryState.selectedPaths.size else browser.selectedPaths.size,
+                        onExitSelection = {
+                            if (isGalleryMode) viewModel.galleryController.clearSelection() else viewModel.clearSelection()
+                        },
+                        onSelectAll = {
+                            if (isGalleryMode) viewModel.galleryController.selectAll() else viewModel.selectAll()
+                        },
+                        onInvertSelection = {
+                            if (isGalleryMode) viewModel.galleryController.invertSelection() else viewModel.invertSelection()
+                        },
                     )
                 }
 
@@ -467,10 +518,18 @@ fun BrowserScreen(
                 }
 
                 else -> {
-                    val titleLabel = browser.breadcrumbs.lastOrNull()?.label ?: curDir.displayName
+                    val titleLabel = if (isLibraryGallery) {
+                        s[Str.GALLERY_PHOTOS_AND_VIDEOS]
+                    } else {
+                        browser.breadcrumbs.lastOrNull()?.label ?: curDir!!.displayName
+                    }
                     TopAppBar(
                         navigationIcon = {
-                            IconButton(onClick = { viewModel.navigateUpOrHome() }) {
+                            IconButton(
+                                onClick = {
+                                    if (isLibraryGallery) viewModel.navigateToStorageHome() else viewModel.navigateUpOrHome()
+                                },
+                            ) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = s[Str.NAVIGATE_UP])
                             }
                         },
@@ -483,36 +542,61 @@ fun BrowserScreen(
                             )
                         },
                         actions = {
-                            IconButton(onClick = { viewModel.openSearch() }) {
-                                Icon(Icons.Filled.Search, contentDescription = s[Str.SEARCH])
+                            if (!isLibraryGallery) {
+                                IconButton(onClick = { viewModel.openSearch() }) {
+                                    Icon(Icons.Filled.Search, contentDescription = s[Str.SEARCH])
+                                }
                             }
-                            IconButton(onClick = { viewModel.toggleViewMode() }) {
-                                Icon(
-                                    imageVector = if (settings.viewMode == ViewMode.LIST) Icons.Filled.GridView else Icons.AutoMirrored.Filled.ViewList,
-                                    contentDescription = s[Str.TOGGLE_VIEW_MODE],
-                                )
-                            }
-                            IconButton(onClick = { showSortSheet = true }) {
-                                Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = s[Str.SORT])
-                            }
-                            IconButton(
-                                onClick = {
-                                    if (isCurrentDirFavorite) {
-                                        viewModel.removeFavoriteByPath(curDir)
-                                    } else {
-                                        addFavoriteTarget = PendingFavorite(titleLabel, curDir, true)
+                            // Reuse the existing top-bar view-toggle slot as View as files <-> View as gallery escape hatch (spec §3.3)
+                            if (curDir != null) {
+                                if (isGalleryMode) {
+                                    IconButton(onClick = { viewModel.switchBrowseLens(BrowseLens.FILES) }) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ViewList,
+                                            contentDescription = s[Str.GALLERY_VIEW_AS_FILES],
+                                        )
                                     }
-                                },
-                            ) {
-                                Icon(
-                                    imageVector = if (isCurrentDirFavorite) Icons.Filled.Star else Icons.Filled.StarBorder,
-                                    contentDescription = if (isCurrentDirFavorite) s[Str.REMOVE_FROM_FAVORITES] else s[Str.ADD_TO_FAVORITES],
-                                    tint = if (isCurrentDirFavorite) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                } else if (browser.isMediaRootCandidate) {
+                                    IconButton(onClick = { viewModel.switchBrowseLens(BrowseLens.GALLERY) }) {
+                                        Icon(
+                                            imageVector = Icons.Filled.PhotoLibrary,
+                                            contentDescription = s[Str.GALLERY_VIEW_AS_GALLERY],
+                                        )
+                                    }
+                                } else {
+                                    IconButton(onClick = { viewModel.toggleViewMode() }) {
+                                        Icon(
+                                            imageVector = if (settings.viewMode == ViewMode.LIST) Icons.Filled.GridView else Icons.AutoMirrored.Filled.ViewList,
+                                            contentDescription = s[Str.TOGGLE_VIEW_MODE],
+                                        )
+                                    }
+                                }
+                            }
+                            if (!isGalleryMode || galleryState.filter == MediaFilter.VIDEOS) {
+                                IconButton(onClick = { showSortSheet = true }) {
+                                    Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = s[Str.SORT])
+                                }
+                            }
+                            if (curDir != null) {
+                                IconButton(
+                                    onClick = {
+                                        if (isCurrentDirFavorite) {
+                                            viewModel.removeFavoriteByPath(curDir)
+                                        } else {
+                                            addFavoriteTarget = PendingFavorite(titleLabel, curDir, true)
+                                        }
                                     },
-                                )
+                                ) {
+                                    Icon(
+                                        imageVector = if (isCurrentDirFavorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                                        contentDescription = if (isCurrentDirFavorite) s[Str.REMOVE_FROM_FAVORITES] else s[Str.ADD_TO_FAVORITES],
+                                        tint = if (isCurrentDirFavorite) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                    )
+                                }
                             }
                             Box {
                                 IconButton(onClick = { overflowExpanded = true }) {
@@ -522,91 +606,160 @@ fun BrowserScreen(
                                     expanded = overflowExpanded,
                                     onDismissRequest = { overflowExpanded = false },
                                 ) {
-                                    DropdownMenuItem(
-                                        text = { Text(s[Str.SORT_ELLIPSIS]) },
-                                        onClick = {
-                                            overflowExpanded = false
-                                            showSortSheet = true
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(if (settings.viewMode == ViewMode.LIST) s[Str.VIEW_GRID_MENU] else s[Str.VIEW_LIST_MENU])
-                                        },
-                                        onClick = {
-                                            overflowExpanded = false
-                                            viewModel.toggleViewMode()
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Checkbox(checked = settings.showHidden, onCheckedChange = null)
-                                                Spacer(Modifier.width(8.dp))
-                                                Text(s[Str.SHOW_HIDDEN_FILES])
-                                            }
-                                        },
-                                        onClick = {
-                                            overflowExpanded = false
-                                            viewModel.toggleShowHidden()
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text(s[Str.SELECT_ALL]) },
-                                        onClick = {
-                                            overflowExpanded = false
-                                            viewModel.selectAll()
-                                        },
-                                    )
-                                    HorizontalDivider()
-                                    DropdownMenuItem(
-                                        text = { Text(s[Str.NEW_FOLDER]) },
-                                        onClick = {
-                                            overflowExpanded = false
-                                            showCreateFolderDialog = true
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text(s[Str.NEW_FILE]) },
-                                        onClick = {
-                                            overflowExpanded = false
-                                            showCreateFileDialog = true
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(if (isCurrentDirFavorite) s[Str.REMOVE_FROM_FAVORITES] else s[Str.ADD_TO_FAVORITES])
-                                        },
-                                        onClick = {
-                                            overflowExpanded = false
-                                            if (isCurrentDirFavorite) {
-                                                viewModel.removeFavoriteByPath(curDir)
-                                            } else {
-                                                addFavoriteTarget = PendingFavorite(titleLabel, curDir, true)
-                                            }
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text(s[Str.HIDE_FROM_GALLERY_NOMEDIA]) },
-                                        onClick = {
-                                            overflowExpanded = false
-                                            viewModel.toggleNomedia(curDir)
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text(s[Str.PROPERTIES]) },
-                                        onClick = {
-                                            overflowExpanded = false
-                                            browser.currentDirNode?.let { propertiesTarget = it }
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text(s[Str.REFRESH]) },
-                                        onClick = {
-                                            overflowExpanded = false
-                                            viewModel.reloadCurrentDirectory(silent = false)
-                                        },
-                                    )
+                                    if (isGalleryMode) {
+                                        if (curDir != null) {
+                                            DropdownMenuItem(
+                                                text = { Text(s[Str.GALLERY_VIEW_AS_FILES]) },
+                                                onClick = {
+                                                    overflowExpanded = false
+                                                    viewModel.switchBrowseLens(BrowseLens.FILES)
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(s[Str.GALLERY_ALWAYS_OPEN_AS_FILES]) },
+                                                onClick = {
+                                                    overflowExpanded = false
+                                                    viewModel.alwaysOpenCurrentFolderAsFiles()
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(s[Str.SEARCH]) },
+                                                onClick = {
+                                                    overflowExpanded = false
+                                                    viewModel.openSearch()
+                                                },
+                                            )
+                                        }
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Checkbox(checked = settings.showHidden, onCheckedChange = null)
+                                                    Spacer(Modifier.width(8.dp))
+                                                    Text(s[Str.SHOW_HIDDEN_FILES])
+                                                }
+                                            },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                viewModel.toggleShowHidden()
+                                            },
+                                        )
+                                        if (curDir != null) {
+                                            DropdownMenuItem(
+                                                text = { Text(s[Str.PROPERTIES]) },
+                                                onClick = {
+                                                    overflowExpanded = false
+                                                    browser.currentDirNode?.let { propertiesTarget = it }
+                                                },
+                                            )
+                                        }
+                                        DropdownMenuItem(
+                                            text = { Text(s[Str.REFRESH]) },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                val sc = browser.galleryScope
+                                                if (sc != null) {
+                                                    viewModel.galleryController.openScope(
+                                                        sc,
+                                                        isMediaRootAggregate = galleryState.isMediaRootAggregate,
+                                                        preserveFilter = true,
+                                                    )
+                                                }
+                                            },
+                                        )
+                                    } else if (curDir != null) {
+                                        DropdownMenuItem(
+                                            text = { Text(s[Str.SORT_ELLIPSIS]) },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                showSortSheet = true
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(if (settings.viewMode == ViewMode.LIST) s[Str.VIEW_GRID_MENU] else s[Str.VIEW_LIST_MENU])
+                                            },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                viewModel.toggleViewMode()
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(s[Str.GALLERY_VIEW_AS_GALLERY]) },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                viewModel.switchBrowseLens(BrowseLens.GALLERY)
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Checkbox(checked = settings.showHidden, onCheckedChange = null)
+                                                    Spacer(Modifier.width(8.dp))
+                                                    Text(s[Str.SHOW_HIDDEN_FILES])
+                                                }
+                                            },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                viewModel.toggleShowHidden()
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(s[Str.SELECT_ALL]) },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                viewModel.selectAll()
+                                            },
+                                        )
+                                        HorizontalDivider()
+                                        DropdownMenuItem(
+                                            text = { Text(s[Str.NEW_FOLDER]) },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                showCreateFolderDialog = true
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(s[Str.NEW_FILE]) },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                showCreateFileDialog = true
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(if (isCurrentDirFavorite) s[Str.REMOVE_FROM_FAVORITES] else s[Str.ADD_TO_FAVORITES])
+                                            },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                if (isCurrentDirFavorite) {
+                                                    viewModel.removeFavoriteByPath(curDir)
+                                                } else {
+                                                    addFavoriteTarget = PendingFavorite(titleLabel, curDir, true)
+                                                }
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(s[Str.HIDE_FROM_GALLERY_NOMEDIA]) },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                viewModel.toggleNomedia(curDir)
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(s[Str.PROPERTIES]) },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                browser.currentDirNode?.let { propertiesTarget = it }
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text(s[Str.REFRESH]) },
+                                            onClick = {
+                                                overflowExpanded = false
+                                                viewModel.reloadCurrentDirectory(silent = false)
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         },
@@ -615,7 +768,7 @@ fun BrowserScreen(
             }
         },
         floatingActionButton = {
-            if (!browser.isSelectionMode && canWriteHere && !browser.permissionRequired) {
+            if (!isGalleryMode && !browser.isSelectionMode && canWriteHere && !browser.permissionRequired && curDir != null) {
                 Box {
                     FloatingActionButton(
                         onClick = { fabMenuExpanded = true },
@@ -658,6 +811,85 @@ fun BrowserScreen(
         },
         bottomBar = {
             when {
+                isGalleryMode && galleryState.isSelectionMode -> {
+                    val selectedNodes = gallerySelectedNodes()
+                    SelectionBottomBar(
+                        selectedNodes = selectedNodes,
+                        variant = SelectionBarVariant.MEDIA,
+                        onSend = {
+                            sendTargetsFromGallery = true
+                            sendToDeviceTargets = selectedNodes
+                        },
+                        onCopy = {
+                            viewModel.copyPathsToClipboard(selectedNodes.map { it.path }, TransferMode.COPY)
+                            viewModel.galleryController.clearSelection()
+                        },
+                        onCut = {
+                            viewModel.copyPathsToClipboard(selectedNodes.map { it.path }, TransferMode.MOVE)
+                            viewModel.galleryController.clearSelection()
+                        },
+                        onDelete = { deleteTargets = selectedNodes },
+                        onShare = {
+                            scope.launch {
+                                val paths = if (settings.galleryExportFormat != com.minifile.explorer.core.gallery.MediaExportFormat.ORIGINAL || settings.galleryRemoveLocationOnExport) {
+                                    viewModel.container.imageEditorEngine.prepareForExport(
+                                        paths = selectedNodes.map { it.path },
+                                        format = settings.galleryExportFormat,
+                                        removeLocation = settings.galleryRemoveLocationOnExport,
+                                    ).first
+                                } else {
+                                    selectedNodes.map { it.path }
+                                }
+                                val shareNodes = withContext(Dispatchers.IO) {
+                                    paths.mapNotNull { p -> runCatching { viewModel.container.fileSystem.stat(p) }.getOrNull() }
+                                }.ifEmpty { selectedNodes }
+                                UiFormatters.shareItemsAsync(
+                                    context = context,
+                                    safFs = viewModel.container.safFileSystem,
+                                    fs = viewModel.container.fileSystem,
+                                    nodes = shareNodes,
+                                ).onFailure { viewModel.emitSimpleMessage(it.message ?: s[Str.CANNOT_SHARE_SELECTION]) }
+                            }
+                        },
+                        onMoreAction = { action ->
+                            when (action) {
+                                SelectionMoreAction.CUT_MEDIA -> {
+                                    viewModel.copyPathsToClipboard(selectedNodes.map { it.path }, TransferMode.MOVE)
+                                    viewModel.galleryController.clearSelection()
+                                }
+                                SelectionMoreAction.EDIT_MEDIA -> {
+                                    selectedNodes.singleOrNull()?.let {
+                                        viewModel.galleryController.clearSelection()
+                                        viewModel.openMediaEditor(it.path)
+                                    }
+                                }
+                                SelectionMoreAction.RENAME -> selectedNodes.singleOrNull()?.let { renameTarget = it }
+                                SelectionMoreAction.COPY_TO_FAVORITE -> {
+                                    favoritePickerRequest = FavoriteTransferRequest(
+                                        items = selectedNodes.map { it.path },
+                                        initialMode = TransferMode.COPY,
+                                        fromClipboard = false,
+                                    )
+                                }
+                                SelectionMoreAction.MOVE_TO_FAVORITE -> {
+                                    favoritePickerRequest = FavoriteTransferRequest(
+                                        items = selectedNodes.map { it.path },
+                                        initialMode = TransferMode.MOVE,
+                                        fromClipboard = false,
+                                    )
+                                }
+                                SelectionMoreAction.COMPRESS_ZIP -> compressTargets = selectedNodes
+                                SelectionMoreAction.SEND_TO_DEVICE -> {
+                                    sendTargetsFromGallery = true
+                                    sendToDeviceTargets = selectedNodes
+                                }
+                                SelectionMoreAction.PROPERTIES -> selectedNodes.singleOrNull()?.let { propertiesTarget = it }
+                                else -> Unit
+                            }
+                        },
+                    )
+                }
+
                 browser.isSelectionMode -> {
                     val selectedNodes = viewModel.selectedNodes()
                     SelectionBottomBar(
@@ -695,7 +927,10 @@ fun BrowserScreen(
                                 }
 
                                 SelectionMoreAction.COMPRESS_ZIP -> compressTargets = selectedNodes
-                                SelectionMoreAction.SEND_TO_DEVICE -> sendToDeviceTargets = selectedNodes
+                                SelectionMoreAction.SEND_TO_DEVICE -> {
+                                    sendTargetsFromGallery = false
+                                    sendToDeviceTargets = selectedNodes
+                                }
                                 SelectionMoreAction.EXTRACT_ZIP -> selectedNodes.singleOrNull()?.let { extractTarget = it.path }
                                 SelectionMoreAction.ADD_TO_FAVORITES -> selectedNodes.singleOrNull()?.let {
                                     if (it.path in favoritePaths) {
@@ -712,6 +947,8 @@ fun BrowserScreen(
                                 }
 
                                 SelectionMoreAction.PROPERTIES -> selectedNodes.singleOrNull()?.let { propertiesTarget = it }
+                                SelectionMoreAction.EDIT_MEDIA -> selectedNodes.singleOrNull()?.let { viewModel.openMediaEditor(it.path) }
+                                SelectionMoreAction.CUT_MEDIA -> viewModel.copyPathsToClipboard(selectedNodes.map { it.path }, TransferMode.MOVE)
                             }
                         },
                     )
@@ -720,9 +957,9 @@ fun BrowserScreen(
                 clipboard != null -> {
                     ClipboardBar(
                         clipboard = clipboard!!,
-                        canPasteHere = canWriteHere,
-                        disabledPasteReason = if (!canWriteHere) s[Str.READ_ONLY_FOLDER] else null,
-                        onPasteHere = { viewModel.pasteClipboardInto(context, curDir) },
+                        canPasteHere = canWriteHere && curDir != null,
+                        disabledPasteReason = if (curDir == null) s[Str.OPEN_FOLDER_TO_PASTE] else if (!canWriteHere) s[Str.READ_ONLY_FOLDER] else null,
+                        onPasteHere = { curDir?.let { viewModel.pasteClipboardInto(context, it) } },
                         onPickFavorite = {
                             favoritePickerRequest = FavoriteTransferRequest(
                                 items = clipboard!!.items,
@@ -741,23 +978,55 @@ fun BrowserScreen(
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            BreadcrumbBar(
-                crumbs = browser.breadcrumbs,
-                onHomeClick = { viewModel.navigateToStorageHome() },
-                onCrumbClick = { target ->
-                    if (target != curDir) viewModel.navigateToDirectory(target)
-                },
-                onCrumbLongPress = { target ->
-                    val raw = when (target) {
-                        is VfsPath.Local -> target.normalized
-                        is VfsPath.Saf -> target.documentId
-                        is VfsPath.Ftp -> target.serialize()
-                        is VfsPath.GDrive -> target.serialize()
-                    }
-                    UiFormatters.copyToSystemClipboard(context, s[Str.PATH], raw)
-                    viewModel.emitSimpleMessage(s.format(Str.COPIED_PATH, raw))
-                },
-            )
+            if (curDir != null) {
+                BreadcrumbBar(
+                    crumbs = browser.breadcrumbs,
+                    onHomeClick = { viewModel.navigateToStorageHome() },
+                    onCrumbClick = { target ->
+                        if (target != curDir) viewModel.navigateToDirectory(target)
+                    },
+                    onCrumbLongPress = { target ->
+                        val raw = when (target) {
+                            is VfsPath.Local -> target.normalized
+                            is VfsPath.Saf -> target.documentId
+                            is VfsPath.Ftp -> target.serialize()
+                            is VfsPath.GDrive -> target.serialize()
+                        }
+                        UiFormatters.copyToSystemClipboard(context, s[Str.PATH], raw)
+                        viewModel.emitSimpleMessage(s.format(Str.COPIED_PATH, raw))
+                    },
+                )
+            }
+
+            if (isGalleryMode) {
+                GalleryLensContent(
+                    state = galleryState,
+                    exportFormat = settings.galleryExportFormat,
+                    removeLocationOnExport = settings.galleryRemoveLocationOnExport,
+                    thumbnailCache = viewModel.container.galleryThumbnailCache,
+                    onSelectFilter = { viewModel.galleryController.setFilter(it) },
+                    onSelectGroupBy = { groupBy ->
+                        if (groupBy == GalleryGroupBy.PLACE) {
+                            onRequestMediaLocationPermission()
+                        }
+                        viewModel.galleryController.setGroupBy(groupBy)
+                    },
+                    onSelectDensity = { viewModel.galleryController.setDensity(it) },
+                    onSelectExportFormat = { viewModel.galleryController.setExportFormat(it) },
+                    onToggleRemoveLocation = { viewModel.galleryController.setRemoveLocationOnExport(it) },
+                    onOpenSubfolder = { subPath -> viewModel.navigateToDirectory(subPath) },
+                    onItemClick = { item ->
+                        val sc = browser.galleryScope ?: GalleryScope.Library
+                        viewModel.openMediaViewer(sc, item.path)
+                    },
+                    onToggleSelect = { viewModel.galleryController.toggleSelection(it) },
+                    onToggleSectionSelect = { viewModel.galleryController.toggleSectionSelection(it) },
+                    onDragSelectUpdate = { anchor, cur, initSel, targetSel ->
+                        viewModel.galleryController.applyDragSelection(anchor, cur, initSel, targetSel)
+                    },
+                    onViewAsFiles = { viewModel.switchBrowseLens(BrowseLens.FILES) },
+                )
+            } else {
 
             if (browser.searchActive) {
                 Row(
@@ -926,11 +1195,13 @@ fun BrowserScreen(
                     }
                 }
             }
+            }
         }
     }
 
     // Sheets & Dialogs
     if (showSortSheet) {
+        val isVideoSortActive = isGalleryMode && galleryState.filter == MediaFilter.VIDEOS
         SortBottomSheet(
             currentSort = settings.sort,
             viewMode = settings.viewMode,
@@ -939,6 +1210,8 @@ fun BrowserScreen(
             onToggleViewMode = { viewModel.toggleViewMode() },
             onToggleShowHidden = { viewModel.toggleShowHidden() },
             onDismiss = { showSortSheet = false },
+            videoSortMode = if (isVideoSortActive) galleryState.videoSort else null,
+            onSelectVideoSort = if (isVideoSortActive) { { viewModel.galleryController.setVideoSort(it) } } else null,
         )
     }
 
@@ -1012,9 +1285,10 @@ fun BrowserScreen(
     }
 
     compressTargets?.let { nodes ->
+        val compressDir = curDir ?: VfsPath.Local(android.os.Environment.getExternalStorageDirectory().absolutePath)
         CompressZipDialog(
             items = nodes,
-            currentDir = curDir,
+            currentDir = compressDir,
             existingNames = existingNames,
             favorites = favorites,
             onConfirm = { name, dst, lvl ->
@@ -1031,9 +1305,10 @@ fun BrowserScreen(
     }
 
     extractTarget?.let { zipPath ->
+        val extractDir = curDir ?: VfsPath.Local(android.os.Environment.getExternalStorageDirectory().absolutePath)
         ExtractZipDialog(
             zipPath = zipPath,
-            defaultParentDir = curDir,
+            defaultParentDir = extractDir,
             favorites = favorites,
             onConfirm = { dst, sub, overwrite ->
                 viewModel.extractArchive(
@@ -1079,11 +1354,13 @@ fun BrowserScreen(
                 )
             },
             onAddCurrentFolderToFavorites = {
-                addFavoriteTarget = PendingFavorite(
-                    defaultName = browser.breadcrumbs.lastOrNull()?.label ?: curDir.displayName,
-                    path = curDir,
-                    isDirectory = true,
-                )
+                if (curDir != null) {
+                    addFavoriteTarget = PendingFavorite(
+                        defaultName = browser.breadcrumbs.lastOrNull()?.label ?: curDir.displayName,
+                        path = curDir,
+                        isDirectory = true,
+                    )
+                }
             },
             onDismiss = { favoritePickerRequest = null },
         )
@@ -1095,13 +1372,26 @@ fun BrowserScreen(
             viewModel = viewModel,
             onSelectPeer = { peer ->
                 sendToDeviceTargets = null
-                viewModel.sendToPeer(
-                    context = context,
-                    peer = peer,
-                    items = nodes.map { it.path },
-                )
+                val fromGallery = sendTargetsFromGallery
+                sendTargetsFromGallery = false
+                if (fromGallery) {
+                    viewModel.sendMediaToPeer(
+                        context = context,
+                        peer = peer,
+                        paths = nodes.map { it.path },
+                    )
+                } else {
+                    viewModel.sendToPeer(
+                        context = context,
+                        peer = peer,
+                        items = nodes.map { it.path },
+                    )
+                }
             },
-            onDismiss = { sendToDeviceTargets = null },
+            onDismiss = {
+                sendToDeviceTargets = null
+                sendTargetsFromGallery = false
+            },
         )
     }
 }

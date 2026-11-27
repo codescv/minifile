@@ -77,6 +77,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.minifile.explorer.core.gallery.GalleryScope
 import com.minifile.explorer.core.i18n.AppI18n
 import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.GDriveServerBookmark
@@ -106,6 +107,8 @@ import com.minifile.explorer.ui.screens.ArchivePreviewScreen
 import com.minifile.explorer.ui.screens.BrowserScreen
 import com.minifile.explorer.ui.screens.EditGDriveServerDialog
 import com.minifile.explorer.ui.screens.FavoritesScreen
+import com.minifile.explorer.ui.screens.MediaEditorScreen
+import com.minifile.explorer.ui.screens.MediaViewerScreen
 import com.minifile.explorer.ui.screens.PdfViewerScreen
 import com.minifile.explorer.ui.screens.TextEditorScreen
 import com.minifile.explorer.ui.screens.ToolsScreen
@@ -212,9 +215,11 @@ class MainActivity : ComponentActivity() {
         // Only activates when BLE permissions are already granted and Bluetooth is on; never prompts.
         (application as MiniFileApplication).container.blePeerCoordinator.acquirePresence()
         (application as MiniFileApplication).container.peerDiscoveryHolder.setForeground(true)
+        viewModel.galleryController.setForeground(true)
     }
 
     override fun onStop() {
+        viewModel.galleryController.setForeground(false)
         (application as MiniFileApplication).container.peerDiscoveryHolder.setForeground(false)
         (application as MiniFileApplication).container.blePeerCoordinator.releasePresence()
         super.onStop()
@@ -325,6 +330,7 @@ private fun MiniFileRoot(
     val activeTab by viewModel.activeTab.collectAsState()
     val overlay by viewModel.overlay.collectAsState()
     val browser by viewModel.browser.collectAsState()
+    val galleryState by viewModel.galleryController.state.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val volumes by viewModel.volumes.collectAsState()
     val ftpServers by viewModel.ftpServers.collectAsState()
@@ -349,8 +355,10 @@ private fun MiniFileRoot(
 
     val canHandleBack = overlay != null ||
         activeTab != MainTab.BROWSE ||
+        galleryState.isSelectionMode ||
         browser.isSelectionMode ||
         browser.searchActive ||
+        browser.galleryScope is GalleryScope.Library ||
         browser.currentDir != null
 
     BackHandler(enabled = canHandleBack) {
@@ -614,6 +622,27 @@ private fun MiniFileRoot(
         viewModel.reloadCurrentDirectory(silent = false)
     }
 
+    val mediaLocationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        viewModel.galleryController.onAccessMediaLocationResult(granted)
+        if (!granted) {
+            viewModel.emitSimpleMessage(AppI18n.current()[Str.GALLERY_ACCESS_MEDIA_LOCATION_DENIED])
+        }
+    }
+
+    val requestMediaLocationIfNeeded: () -> Unit = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_MEDIA_LOCATION,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                runCatching { mediaLocationLauncher.launch(Manifest.permission.ACCESS_MEDIA_LOCATION) }
+            }
+        }
+    }
+
     val requestAllFilesAccess: () -> Unit = {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             runCatching {
@@ -732,6 +761,23 @@ private fun MiniFileRoot(
                     )
                 }
 
+                is OverlayScreen.MediaViewer -> {
+                    MediaViewerScreen(
+                        galleryScope = currentOverlay.scope,
+                        startPath = currentOverlay.startPath,
+                        viewModel = viewModel,
+                        onClose = { viewModel.closeOverlay() },
+                    )
+                }
+
+                is OverlayScreen.MediaEditor -> {
+                    MediaEditorScreen(
+                        sourcePath = currentOverlay.path,
+                        viewModel = viewModel,
+                        onClose = { viewModel.closeOverlay() },
+                    )
+                }
+
                 null -> tabsStateHolder.SaveableStateProvider(MAIN_TABS_STATE_KEY) {
                     HorizontalPager(
                         state = pagerState,
@@ -763,6 +809,7 @@ private fun MiniFileRoot(
                                         }
                                     },
                                     onPickGoogleAccount = pickGoogleAccount,
+                                    onRequestMediaLocationPermission = requestMediaLocationIfNeeded,
                                 )
                             }
 

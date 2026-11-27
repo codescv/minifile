@@ -16,12 +16,28 @@ class AndroidMediaScanNotifier(
             val dir = File(path.normalized)
             val targets = buildList {
                 add(dir.absolutePath)
-                add(File(dir, ".nomedia").absolutePath)
+                if (dir.isDirectory) {
+                    add(File(dir, ".nomedia").absolutePath)
+                }
                 dir.parentFile?.let { add(it.absolutePath) }
-            }.toTypedArray()
+            }.distinct().toTypedArray()
             runCatching {
                 MediaScannerConnection.scanFile(appContext, targets, null, null)
             }
+        }
+    }
+
+    override fun rescanFiles(paths: List<VfsPath>) {
+        val targets = linkedSetOf<String>()
+        for (path in paths) {
+            if (path is VfsPath.Local) {
+                val f = File(path.normalized)
+                targets.add(f.absolutePath)
+            }
+        }
+        if (targets.isEmpty()) return
+        runCatching {
+            MediaScannerConnection.scanFile(appContext, targets.toTypedArray(), null, null)
         }
     }
 }

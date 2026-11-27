@@ -14,6 +14,10 @@ fun interface Clock {
 fun interface MediaScanNotifier {
     fun rescan(path: VfsPath)
 
+    fun rescanFiles(paths: List<VfsPath>) {
+        paths.forEach(::rescan)
+    }
+
     companion object {
         val NOOP: MediaScanNotifier = MediaScanNotifier { }
     }

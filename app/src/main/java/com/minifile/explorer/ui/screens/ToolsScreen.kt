@@ -56,6 +56,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -88,6 +91,7 @@ import com.minifile.explorer.core.feedback.FeedbackEmailTargetResolver
 import com.minifile.explorer.core.feedback.FeedbackMetadata
 import com.minifile.explorer.core.feedback.FeedbackSendIntentSpec
 import com.minifile.explorer.core.feedback.ResolvedEmailActivity
+import com.minifile.explorer.core.gallery.MediaExportFormat
 import com.minifile.explorer.core.i18n.AppI18n
 import com.minifile.explorer.core.i18n.AppLanguage
 import com.minifile.explorer.core.i18n.Str
@@ -250,6 +254,131 @@ fun ToolsScreen(
                                 OutlinedButton(onClick = onGrantAllFilesAccess) {
                                     Text(if (hasAllFiles) s[Str.MANAGE] else s[Str.GRANT])
                                 }
+                            },
+                        )
+                    }
+                }
+            }
+
+            // 1.5 Photos / Gallery preferences (spec §3.3 & §4.5)
+            item(key = "photos-settings") {
+                SectionLabel(s[Str.SETTINGS_SECTION_PHOTOS])
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            headlineContent = { Text(s[Str.SETTINGS_SHOW_RECENT_HOME]) },
+                            supportingContent = { Text(s[Str.SETTINGS_SHOW_RECENT_HOME_DESC]) },
+                            trailingContent = {
+                                Switch(
+                                    checked = settings.galleryShowRecentOnHome,
+                                    onCheckedChange = { on ->
+                                        viewModel.container.settingsRepository.update { it.copy(galleryShowRecentOnHome = on) }
+                                    },
+                                )
+                            },
+                            modifier = Modifier.clickable {
+                                viewModel.container.settingsRepository.update {
+                                    it.copy(galleryShowRecentOnHome = !it.galleryShowRecentOnHome)
+                                }
+                            },
+                        )
+                        ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            headlineContent = { Text(s[Str.SETTINGS_AUTO_OPEN_MEDIA]) },
+                            supportingContent = { Text(s[Str.SETTINGS_AUTO_OPEN_MEDIA_DESC]) },
+                            trailingContent = {
+                                Switch(
+                                    checked = settings.galleryAutoOpenMediaFolders,
+                                    onCheckedChange = { on ->
+                                        viewModel.container.settingsRepository.update { it.copy(galleryAutoOpenMediaFolders = on) }
+                                    },
+                                )
+                            },
+                            modifier = Modifier.clickable {
+                                viewModel.container.settingsRepository.update {
+                                    it.copy(galleryAutoOpenMediaFolders = !it.galleryAutoOpenMediaFolders)
+                                }
+                            },
+                        )
+                        ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            headlineContent = { Text(s[Str.SETTINGS_RESET_FOLDER_PREFS]) },
+                            supportingContent = { Text(s[Str.SETTINGS_RESET_FOLDER_PREFS_DESC]) },
+                            modifier = Modifier.clickable {
+                                viewModel.galleryController.resetFolderModePreferences()
+                                viewModel.emitSimpleMessage(s[Str.SETTINGS_FOLDER_PREFS_RESET_DONE])
+                            },
+                        )
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                        ) {
+                            Text(
+                                text = s[Str.SETTINGS_DEFAULT_EXPORT_FORMAT],
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                                SegmentedButton(
+                                    selected = settings.galleryExportFormat == MediaExportFormat.ORIGINAL,
+                                    onClick = { viewModel.galleryController.setExportFormat(MediaExportFormat.ORIGINAL) },
+                                    shape = SegmentedButtonDefaults.itemShape(0, 2),
+                                ) {
+                                    Text(s[Str.GALLERY_FORMAT_ORIGINAL])
+                                }
+                                SegmentedButton(
+                                    selected = settings.galleryExportFormat == MediaExportFormat.MOST_COMPATIBLE,
+                                    onClick = { viewModel.galleryController.setExportFormat(MediaExportFormat.MOST_COMPATIBLE) },
+                                    shape = SegmentedButtonDefaults.itemShape(1, 2),
+                                ) {
+                                    Text(s[Str.GALLERY_FORMAT_COMPATIBLE])
+                                }
+                            }
+                        }
+                        ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            headlineContent = { Text(s[Str.SETTINGS_REMOVE_LOCATION_DEFAULT]) },
+                            supportingContent = { Text(s[Str.SETTINGS_REMOVE_LOCATION_DEFAULT_DESC]) },
+                            trailingContent = {
+                                Switch(
+                                    checked = settings.galleryRemoveLocationOnExport,
+                                    onCheckedChange = { on ->
+                                        viewModel.galleryController.setRemoveLocationOnExport(on)
+                                    },
+                                )
+                            },
+                            modifier = Modifier.clickable {
+                                viewModel.galleryController.setRemoveLocationOnExport(!settings.galleryRemoveLocationOnExport)
+                            },
+                        )
+                        ListItem(
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            headlineContent = { Text(s[Str.SETTINGS_ONLINE_PLACE_NAMES]) },
+                            supportingContent = {
+                                Text(
+                                    if (settings.galleryOnlinePlaceNames) {
+                                        s[Str.SETTINGS_ONLINE_PLACE_NAMES_DESC]
+                                    } else {
+                                        "${s[Str.SETTINGS_ONLINE_PLACE_NAMES_DESC]} · ${s[Str.SETTINGS_OFFLINE_PLACES_CREDIT]}"
+                                    },
+                                )
+                            },
+                            trailingContent = {
+                                Switch(
+                                    checked = settings.galleryOnlinePlaceNames,
+                                    onCheckedChange = { on ->
+                                        viewModel.galleryController.setOnlinePlaceNames(on)
+                                    },
+                                )
+                            },
+                            modifier = Modifier.clickable {
+                                viewModel.galleryController.setOnlinePlaceNames(!settings.galleryOnlinePlaceNames)
                             },
                         )
                     }

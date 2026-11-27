@@ -447,26 +447,26 @@ class TestUpdater(unittest.TestCase):
         self.assertTrue((git_repo / "companion-v1.1.0").is_dir())
 
     def test_cli_update_exit_10_full_download_webui_throttle_and_hint(self) -> None:
-        zip_bytes = _make_companion_zip_bytes("1.1.0", with_prefix=True)
+        zip_bytes = _make_companion_zip_bytes("9.9.0", with_prefix=True)
         sha_hex = hashlib.sha256(zip_bytes).hexdigest()
         sums_body = (
-            f"{'a' * 64}  minifile-v1.1.0-release.apk\n"
-            f"{sha_hex}  minifile-companion-v1.1.0.zip\n"
+            f"{'a' * 64}  minifile-v9.9.0-release.apk\n"
+            f"{sha_hex}  minifile-companion-v9.9.0.zip\n"
         ).encode("utf-8")
 
         with _MockReleaseServer() as srv:
             release_obj = {
-                "tag_name": "v1.1.0",
-                "name": "MiniFile v1.1.0",
+                "tag_name": "v9.9.0",
+                "name": "MiniFile v9.9.0",
                 "body": "- Faster sync\n- Auto-update support",
-                "html_url": "https://github.com/codescv/minifile/releases/tag/v1.1.0",
+                "html_url": "https://github.com/codescv/minifile/releases/tag/v9.9.0",
                 "published_at": "2026-10-30T20:00:00Z",
                 "draft": False,
                 "prerelease": False,
                 "assets": [
                     {
-                        "name": "minifile-companion-v1.1.0.zip",
-                        "browser_download_url": f"{srv.base_url}/dl/minifile-companion-v1.1.0.zip",
+                        "name": "minifile-companion-v9.9.0.zip",
+                        "browser_download_url": f"{srv.base_url}/dl/minifile-companion-v9.9.0.zip",
                         "size": len(zip_bytes),
                     },
                     {
@@ -481,7 +481,7 @@ class TestUpdater(unittest.TestCase):
                 {"Content-Type": "application/json"},
                 json.dumps(release_obj).encode("utf-8"),
             )
-            srv.routes["/dl/minifile-companion-v1.1.0.zip"] = (
+            srv.routes["/dl/minifile-companion-v9.9.0.zip"] = (
                 200,
                 {"Content-Type": "application/zip"},
                 zip_bytes,
@@ -496,7 +496,7 @@ class TestUpdater(unittest.TestCase):
             self.assertEqual(
                 fetch_sha256_for_asset(
                     f"{srv.base_url}/dl/SHA256SUMS.txt",
-                    "minifile-companion-v1.1.0.zip",
+                    "minifile-companion-v9.9.0.zip",
                     allow_http_loopback=True,
                 ),
                 sha_hex,
@@ -509,9 +509,9 @@ class TestUpdater(unittest.TestCase):
             with contextlib.redirect_stdout(out_chk):
                 rc_chk = main(["update", "--check", "--allow-http-loopback"])
             self.assertEqual(rc_chk, EXIT_UPDATE_AVAILABLE)
-            self.assertIn("v1.1.0", out_chk.getvalue())
+            self.assertIn("v9.9.0", out_chk.getvalue())
 
-            # 2. CLI `update` stages companion-v1.1.0 next to install_dir and exits 0
+            # 2. CLI `update` stages companion-v9.9.0 next to install_dir and exits 0
             fake_install = self.tmp / "cli_install" / "companion"
             fake_install.mkdir(parents=True)
             out_apply = io.StringIO()
@@ -531,7 +531,7 @@ class TestUpdater(unittest.TestCase):
             up_json = json.loads(out_apply.getvalue())
             self.assertTrue(up_json["updated"])
             self.assertTrue(
-                (self.tmp / "cli_install" / "companion-v1.1.0" / "minifile_companion" / "__init__.py").is_file()
+                (self.tmp / "cli_install" / "companion-v9.9.0" / "minifile_companion" / "__init__.py").is_file()
             )
 
             # 3. 24-hour cached hint throttling
@@ -551,7 +551,7 @@ class TestUpdater(unittest.TestCase):
                     store, current="1.0.0", stream=hint_buf1, now_fn=lambda: fake_clock[0]
                 )
             )
-            self.assertIn("v1.1.0", hint_buf1.getvalue())
+            self.assertIn("v9.9.0", hint_buf1.getvalue())
             # Second call 1 hour later is suppressed
             fake_clock[0] += 3600.0
             hint_buf2 = io.StringIO()
@@ -587,7 +587,7 @@ class TestUpdater(unittest.TestCase):
                 d1 = json.loads(r1.read().decode("utf-8"))
                 self.assertEqual(r1.status, 200)
                 self.assertTrue(d1["available"])
-                self.assertEqual(d1["latest"], "v1.1.0")
+                self.assertEqual(d1["latest"], "v9.9.0")
                 self.assertFalse(d1["throttled"])
                 self.assertEqual(
                     srv.request_counts.get("/releases/latest", 0), before_hits + 1

@@ -85,6 +85,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.minifile.explorer.BuildConfig
+import com.minifile.explorer.core.gallery.MediaItem
 import com.minifile.explorer.core.gdrive.GDriveTokenParser
 import com.minifile.explorer.core.i18n.Str
 import com.minifile.explorer.core.model.ClipboardState
@@ -96,9 +97,11 @@ import com.minifile.explorer.core.vfs.PathUtils
 import com.minifile.explorer.core.vfs.VfsPath
 import com.minifile.explorer.core.vfs.Volume
 import com.minifile.explorer.core.vfs.VolumeKind
+import com.minifile.explorer.data.gallery.GalleryThumbnailCache
 import com.minifile.explorer.data.gdrive.AndroidAccountTokenProvider
 import com.minifile.explorer.data.gdrive.GDriveSignInState
 import com.minifile.explorer.ui.components.ClipboardBar
+import com.minifile.explorer.ui.components.RecentMediaStrip
 import com.minifile.explorer.ui.i18n.LocalAppStrings
 import com.minifile.explorer.ui.util.UiFormatters
 
@@ -182,6 +185,11 @@ fun StorageHomeScreen(
     onShowFavoriteProperties: (Favorite) -> Unit = {},
     onClipboardToFavorite: () -> Unit,
     onClearClipboard: () -> Unit,
+    recentMediaItems: List<MediaItem> = emptyList(),
+    showRecentMedia: Boolean = false,
+    thumbnailCache: GalleryThumbnailCache? = null,
+    onOpenRecentMedia: (MediaItem) -> Unit = {},
+    onSeeAllMedia: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val s = LocalAppStrings.current
@@ -323,6 +331,18 @@ fun StorageHomeScreen(
                             )
                         }
                     }
+                }
+            }
+
+            // 1.5 Recent Photos & Videos strip (spec §3.3)
+            if (hasAllFilesAccess && showRecentMedia && BuildConfig.THUMBNAILS && thumbnailCache != null && recentMediaItems.isNotEmpty()) {
+                item(key = "recent-media") {
+                    RecentMediaStrip(
+                        items = recentMediaItems,
+                        thumbnailCache = thumbnailCache,
+                        onItemClick = onOpenRecentMedia,
+                        onSeeAllClick = onSeeAllMedia,
+                    )
                 }
             }
 

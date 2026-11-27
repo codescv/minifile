@@ -1,6 +1,9 @@
 package com.minifile.explorer.data
 
 import com.minifile.explorer.core.feedback.AgentFeedbackBuilder
+import com.minifile.explorer.core.gallery.GalleryGroupBy
+import com.minifile.explorer.core.gallery.GridDensity
+import com.minifile.explorer.core.gallery.MediaExportFormat
 import com.minifile.explorer.core.i18n.AppLanguage
 import com.minifile.explorer.core.model.AppSettings
 import com.minifile.explorer.core.model.JsonValue
@@ -68,6 +71,16 @@ class SettingsRepository(
         const val KEY_AGENT_FEEDBACK_EMAIL = "agent_feedback_email"
         const val KEY_DIAGNOSTIC_LOGGING = "diagnostic_logging_enabled"
         const val KEY_APP_LANGUAGE = "app_language"
+
+        const val KEY_GALLERY_AUTO_OPEN = "gallery_auto_open_media_folders"
+        const val KEY_GALLERY_SHOW_RECENT_HOME = "gallery_show_recent_on_home"
+        const val KEY_GALLERY_GROUP_BY = "gallery_group_by"
+        const val KEY_GALLERY_GRID_DENSITY = "gallery_grid_density"
+        const val KEY_GALLERY_EXPORT_FORMAT = "gallery_export_format"
+        const val KEY_GALLERY_REMOVE_LOCATION = "gallery_remove_location_on_export"
+        const val KEY_GALLERY_ONLINE_PLACES = "gallery_online_place_names"
+        const val KEY_GALLERY_FOLDER_MODES = "gallery_folder_modes"
+        const val KEY_GALLERY_AUTO_HINT_SHOWN = "gallery_auto_entry_hint_shown"
     }
 
     private data class DebugFtpOverrides(
@@ -160,6 +173,21 @@ class SettingsRepository(
             gdriveLastClientSecret = store.getString(KEY_GDRIVE_LAST_CLIENT_SECRET, "") ?: "",
             agentFeedbackEmail = AgentFeedbackBuilder.normalizeEmail(store.getString(KEY_AGENT_FEEDBACK_EMAIL, "")),
             appLanguage = AppLanguage.fromStorage(store.getString(KEY_APP_LANGUAGE, null)),
+            galleryAutoOpenMediaFolders = store.getBoolean(KEY_GALLERY_AUTO_OPEN, true),
+            galleryShowRecentOnHome = store.getBoolean(KEY_GALLERY_SHOW_RECENT_HOME, true),
+            galleryGroupBy = store.getString(KEY_GALLERY_GROUP_BY, null)?.let { name ->
+                GalleryGroupBy.entries.firstOrNull { it.name == name }
+            } ?: GalleryGroupBy.DAY,
+            galleryGridDensity = store.getString(KEY_GALLERY_GRID_DENSITY, null)?.let { name ->
+                GridDensity.entries.firstOrNull { it.name == name }
+            } ?: GridDensity.MEDIUM,
+            galleryExportFormat = store.getString(KEY_GALLERY_EXPORT_FORMAT, null)?.let { name ->
+                MediaExportFormat.entries.firstOrNull { it.name == name }
+            } ?: MediaExportFormat.ORIGINAL,
+            galleryRemoveLocationOnExport = store.getBoolean(KEY_GALLERY_REMOVE_LOCATION, false),
+            galleryOnlinePlaceNames = store.getBoolean(KEY_GALLERY_ONLINE_PLACES, false),
+            galleryFolderModesJson = store.getString(KEY_GALLERY_FOLDER_MODES, "{}") ?: "{}",
+            galleryAutoEntryHintShown = store.getBoolean(KEY_GALLERY_AUTO_HINT_SHOWN, false),
         )
     }
 
@@ -312,5 +340,15 @@ class SettingsRepository(
         store.putString(KEY_GDRIVE_LAST_CLIENT_SECRET, s.gdriveLastClientSecret)
         store.putString(KEY_AGENT_FEEDBACK_EMAIL, AgentFeedbackBuilder.normalizeEmail(s.agentFeedbackEmail))
         store.putString(KEY_APP_LANGUAGE, s.appLanguage.storageValue)
+
+        store.putBoolean(KEY_GALLERY_AUTO_OPEN, s.galleryAutoOpenMediaFolders)
+        store.putBoolean(KEY_GALLERY_SHOW_RECENT_HOME, s.galleryShowRecentOnHome)
+        store.putString(KEY_GALLERY_GROUP_BY, s.galleryGroupBy.name)
+        store.putString(KEY_GALLERY_GRID_DENSITY, s.galleryGridDensity.name)
+        store.putString(KEY_GALLERY_EXPORT_FORMAT, s.galleryExportFormat.name)
+        store.putBoolean(KEY_GALLERY_REMOVE_LOCATION, s.galleryRemoveLocationOnExport)
+        store.putBoolean(KEY_GALLERY_ONLINE_PLACES, s.galleryOnlinePlaceNames)
+        store.putString(KEY_GALLERY_FOLDER_MODES, s.galleryFolderModesJson)
+        store.putBoolean(KEY_GALLERY_AUTO_HINT_SHOWN, s.galleryAutoEntryHintShown)
     }
 }
